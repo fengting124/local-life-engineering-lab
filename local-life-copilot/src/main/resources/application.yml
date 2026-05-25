@@ -1,0 +1,6 @@
+spring:
+  application:
+    name: local-life-copilot
+
+server:
+  port: 8081

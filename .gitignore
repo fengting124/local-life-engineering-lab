@@ -1,0 +1,33 @@
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Java
+target/
+out/
+*.class
+*.log
+
+# Maven wrapper
+.mvn/wrapper/maven-wrapper.jar
+
+# Node
+node_modules/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+
+# Env
+.env
+.env.local
+
+# Docker
+docker-data/
+
