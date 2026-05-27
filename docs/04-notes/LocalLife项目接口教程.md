@@ -1,0 +1,728 @@
+# LocalLife 项目接口全链路教程
+
+> 目标：读完这篇文档，你应该能对着面试官把任何一个接口从头讲到尾，不用背，靠真正理解。
+
+---
+
+## 目录
+
+1. [一次请求是怎么走的？先把地图画出来](#1-一次请求是怎么走的先把地图画出来)
+2. [统一响应结构：Result 是什么，为什么要它](#2-统一响应结构result-是什么为什么要它)
+3. [错误码：为什么不用数字，要用字符串](#3-错误码为什么不用数字要用字符串)
+4. [登录模块：从发验证码到拿 Token 的完整链路](#4-登录模块从发验证码到拿-token-的完整链路)
+5. [鉴权拦截器：每次请求背后发生了什么](#5-鉴权拦截器每次请求背后发生了什么)
+6. [门店模块：状态机和权限双校验](#6-门店模块状态机和权限双校验)
+7. [笔记模块：Redis 点赞计数与 N+1 问题](#7-笔记模块redis-点赞计数与-n1-问题)
+8. [关注模块：ZSet 与共同关注](#8-关注模块zset-与共同关注)
+9. [关键词卡片：用自己的话解释这 10 个词](#9-关键词卡片用自己的话解释这-10-个词)
+10. [链路复述练习题：面试前必做](#10-链路复述练习题面试前必做)
+
+---
+
+## 1. 一次请求是怎么走的？先把地图画出来
+
+在讲任何接口之前，先搞清楚一件事：**一个 HTTP 请求从前端发出到拿到响应，到底经过了哪些地方？**
+
+```
+前端（浏览器/App）
+    ↓  发出 HTTP 请求（GET/POST/PUT/DELETE）
+    ↓  Header 里带着 Authorization: Bearer {token}
+    
+DispatcherServlet（Spring MVC 的大门卫）
+    ↓  判断这个请求该交给哪个 Controller 处理
+    
+AuthInterceptor（鉴权拦截器，大门卫的助手）
+    ↓  在 Controller 之前先检查 Token
+    ↓  从 Redis 验证 Token → 读用户信息 → 存到 ThreadLocal
+    
+Controller（接待员）
+    ↓  接收请求参数，做基础格式校验（@Valid）
+    ↓  调用 Service
+    
+Service（业务逻辑核心）
+    ↓  检查权限、执行业务规则
+    ↓  调用 Mapper 查数据库
+    ↓  读写 Redis
+    ↓  返回 VO（View Object，给前端看的对象）
+    
+Mapper（数据库操作员）
+    ↓  执行 SQL，操作 MySQL
+    
+Controller 拿到 VO
+    ↓  包装成 Result<T> 统一格式
+    
+前端收到 JSON 响应
+```
+
+**记住这张图。** 面试官问「讲一下登录流程」，你脑子里要马上出现这条线，然后把每一层发生的事说清楚。
+
+---
+
+## 2. 统一响应结构：Result 是什么，为什么要它
+
+### 2.1 先讲人话
+
+假设你开了一家餐厅，顾客点菜后服务员回来告诉你结果。有两种回答方式：
+
+**方式 A（没有统一格式）**：
+- 上菜：直接端上来一盘菜
+- 没有：只说「没有」
+- 出错：说「厨房着火了」
+- 付钱：说「298块」
+
+**方式 B（统一格式）**：
+- 成功：「状态：成功，菜：一盘鱼香肉丝，时间：20:00」
+- 没有：「状态：失败，原因：食材卖完了，时间：20:00」
+- 出错：「状态：失败，原因：系统繁忙，时间：20:00」
+
+**方式 B 的优点**：前端只需要写一套处理逻辑，判断 `code == "OK"` 就行，不用对每种接口写不同的解析代码。
+
+### 2.2 我们项目的 Result 长什么样
+
+```json
+// 成功的时候
+{
+  "code": "OK",
+  "message": "操作成功",
+  "data": {
+    "userId": "10001",
+    "nickname": "小明"
+  },
+  "timestamp": "2026-05-26T20:00:00+08:00"
+}
+
+// 失败的时候
+{
+  "code": "SHOP_NOT_FOUND",
+  "message": "门店不存在",
+  "data": null,
+  "timestamp": "2026-05-26T20:00:00+08:00"
+}
+```
+
+### 2.3 代码在哪里，干了什么
+
+看 [Result.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/common/result/Result.java)，核心是三个静态工厂方法：
+
+```java
+// 有数据的成功响应 → 比如返回用户信息
+Result.ok(vo)         // {"code":"OK","data":{...}}
+
+// 没有数据的成功响应 → 比如删除、点赞
+Result.ok()           // {"code":"OK","data":null}
+
+// 失败响应 → 比如门店不存在
+Result.fail(ErrorCode.SHOP_NOT_FOUND)  // {"code":"SHOP_NOT_FOUND","message":"门店不存在","data":null}
+```
+
+**Controller 里是这样用的**（以查门店详情为例）：
+
+```java
+// ShopController.java
+@GetMapping("/{shopId}")
+public Result<ShopVO> getShopDetail(@PathVariable Long shopId) {
+    ShopVO vo = shopService.getShopDetail(shopId);  // Service 返回 VO
+    return Result.ok(vo);                            // 包装成 Result 返回
+}
+```
+
+**面试怎么说**：
+> 我们项目用 `Result<T>` 统一包装所有接口的响应。成功时 code 是 `OK`，失败时 code 是具体的业务错误码，data 为 null。前端只需要判断 code 字段，不需要对每个接口写不同的解析逻辑。
+
+---
+
+## 3. 错误码：为什么不用数字，要用字符串
+
+### 3.1 先讲人话
+
+想象你收到了一封报错邮件，上面写着：
+- 版本 A：「错误代码：40009」
+- 版本 B：「错误代码：COUPON_STOCK_EXHAUSTED（优惠券已抢完）」
+
+哪个一眼就懂？显然是 B。
+
+### 3.2 我们的错误码命名规则
+
+格式：`{模块}_{错误描述}`，全大写，下划线分隔。
+
+```
+AUTH_CODE_INVALID          → 验证码错误
+AUTH_TOKEN_MISSING         → 未携带 Token
+SHOP_NOT_FOUND             → 门店不存在
+SHOP_FORBIDDEN             → 无权操作该门店
+COUPON_STOCK_EXHAUSTED     → 优惠券已抢完
+ORDER_STATUS_ILLEGAL       → 订单状态不允许此操作
+POST_PUBLISH_TOO_FREQUENT  → 发布过于频繁
+```
+
+### 3.3 错误码和 HTTP 状态码的关系
+
+很多人会混淆这两个。记住：**HTTP 状态码是快速分类，业务错误码是精确原因**。
+
+| 场景 | HTTP 状态码 | 业务错误码 |
+|---|---|---|
+| 发布成功 | 200 | `OK` |
+| 验证码错误 | 400 | `AUTH_CODE_INVALID` |
+| 没登录 | 401 | `AUTH_TOKEN_MISSING` |
+| 无权限 | 403 | `SHOP_FORBIDDEN` |
+| 限流了 | 429 | `POST_PUBLISH_TOO_FREQUENT` |
+| 系统崩了 | 500 | `SYS_BUSY` |
+
+**注意**：我们项目不用 404！资源不存在统一用 400 + 业务码（`SHOP_NOT_FOUND`），原因是让前端只判断 `code` 字段，不用再分支判断 HTTP 状态码。
+
+### 3.4 全局异常处理器：错误码是怎么变成响应的
+
+当 Service 层抛出异常，Controller 不需要 try-catch，由 [GlobalExceptionHandler.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/common/exception/GlobalExceptionHandler.java) 统一兜底：
+
+```java
+// Service 层这样抛异常
+throw new BizException(ErrorCode.SHOP_NOT_FOUND);
+
+// GlobalExceptionHandler 捕获，自动转成响应
+// → HTTP 400，body: {"code":"SHOP_NOT_FOUND","message":"门店不存在","data":null}
+```
+
+**链路**：Service 抛 BizException → GlobalExceptionHandler 捕获 → 读取 ErrorCode 里的 httpStatus 设置响应状态码 → 调 `Result.fail(errorCode)` 构建响应体 → 返回给前端。
+
+**面试怎么说**：
+> 业务异常统一用 `BizException` 抛出，携带 `ErrorCode` 枚举。`GlobalExceptionHandler` 用 `@RestControllerAdvice` 全局捕获，根据 ErrorCode 里的 httpStatus 设置 HTTP 状态码，body 里返回字符串格式的业务码，这样前端只判断 code 字段就能知道具体原因。
+
+---
+
+## 4. 登录模块：从发验证码到拿 Token 的完整链路
+
+### 4.1 整个登录流程
+
+```
+第一步：用户输入手机号，点「获取验证码」
+    前端 → POST /api/v1/auth/code { "mobile": "13800138000" }
+    
+后端 AuthController.sendCode()
+    → AuthService.sendCode()
+        → 限流检查（60秒内只能发1次，Redis Key: login:sms:mobile:{mobile}）
+        → 生成6位随机数验证码
+        → 存入 Redis（Key: login:code:{mobile}，TTL 5分钟）
+        → 调短信服务发送（当前是 mock，只打 log）
+    ← 返回 {"code":"OK"}
+
+----------------------------------------------
+
+第二步：用户收到验证码，输入后点「登录」
+    前端 → POST /api/v1/auth/login { "mobile": "13800138000", "code": "123456" }
+    
+后端 AuthController.login()
+    → AuthService.login()
+        → 从 Redis 取验证码，比对（不匹配 → AUTH_CODE_INVALID）
+        → 验证码用完即删（一次性，防止重放攻击）
+        → 查数据库 user 表（手机号存不存在？）
+            → 不存在 → 自动注册（手机号即账户，INSERT user 记录）
+            → 存在 → 检查状态（DISABLED → USER_ACCOUNT_DISABLED）
+        → 生成 UUID 作为 Token
+        → 把用户摘要（userId、nickname 等）存入 Redis
+          （Key: login:token:{uuid}，TTL 7天）
+        → 返回 Token 给前端
+    ← 返回 {"code":"OK","data":{"token":"xxx","userId":"10001","nickname":"小明"}}
+```
+
+### 4.2 关键设计决策：为什么不用 JWT？
+
+JWT（JSON Web Token）是另一种常见的登录 Token 方案。我们选 UUID + Redis，原因：
+
+| 对比点 | UUID + Redis | JWT |
+|---|---|---|
+| 主动踢出登录 | ✅ 删 Redis Key 即可 | ❌ JWT 不能服务端主动失效 |
+| 账号封禁即时生效 | ✅ Redis 标记，下次请求立即拒绝 | ❌ JWT 要等到过期才失效 |
+| Token 大小 | 小（UUID 36字符） | 大（包含载荷，通常 200+ 字符） |
+| 服务器状态 | 有状态（依赖 Redis） | 无状态 |
+
+**面试追问**：「JWT 有什么优势？」
+> JWT 的优势是无状态，不需要 Redis，天然适合微服务（每个服务自己校验签名）。但对于需要主动踢用户下线的场景（封号、账号异常），UUID + Redis 更安全。这个项目选 Redis 方案是因为当前阶段有账号禁用需求，且还没到分布式微服务阶段。
+
+### 4.3 验证码防刷：Redis 怎么做限流
+
+```
+第一次发验证码（13800138000）：
+    Redis 里没有 Key → 允许发送
+    SET login:sms:mobile:13800138000 1 EX 3600  （写入，TTL 1小时）
+    → 短信发出
+
+60秒内再发：
+    Key: login:sms:mobile:13800138000 的 TTL 是否 > 3540 秒？
+    （3600 - 60 = 3540，说明刚刚设置）→ 拒绝，返回 AUTH_CODE_SEND_TOO_FREQUENT
+    
+1小时内发第6次：
+    INCR 计数器，发现 count > 5 → 拒绝
+```
+
+这里同时用了两个维度的限流：
+- **60 秒内最多 1 次**（防止用户手抖连续点）
+- **1 小时内最多 5 次**（防止批量爆破）
+
+---
+
+## 5. 鉴权拦截器：每次请求背后发生了什么
+
+### 5.1 先讲人话
+
+你进公司大楼要刷门禁卡，门禁系统会：
+1. 检查你有没有带卡（没卡 → 拒绝）
+2. 刷一下卡（卡失效 → 拒绝）
+3. 确认你是正式员工（被开除 → 拒绝）
+4. 放你进去，记录你的身份信息
+
+鉴权拦截器干的事情完全一样。
+
+### 5.2 每次请求的执行流程
+
+看 [AuthInterceptor.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/common/interceptor/AuthInterceptor.java)：
+
+```
+前端发请求，Header 里有：Authorization: Bearer abc123xxx
+
+AuthInterceptor.preHandle() 执行：
+
+1. 生成 requestId（UUID），存入 MDC（用于日志追踪，同一次请求的所有日志都有这个 ID）
+
+2. 从 Header 提取 Token
+   → 没有 Authorization Header → 抛 AUTH_TOKEN_MISSING
+
+3. Redis GET login:token:{token}
+   → Redis 里没有这个 Key → Token 过期或无效 → 抛 AUTH_TOKEN_EXPIRED
+   → 有 → 反序列化成 LoginUserDTO（含 userId、nickname、status）
+
+4. 检查用户状态
+   → status == "DISABLED" → 抛 USER_ACCOUNT_DISABLED
+
+5. 把 LoginUserDTO 存入 ThreadLocal（UserContext.set(dto)）
+   → Service 层可以通过 UserContext.getUserId() 随时取到当前用户 ID
+
+6. 刷新 Token 的 TTL（续期 7 天）
+   → 活跃用户不会因为 7 天没登录就被踢出
+
+7. 放行 → 继续执行 Controller
+```
+
+```
+请求处理完毕（不管成功还是报错），afterCompletion() 执行：
+
+1. UserContext.clear()（清除 ThreadLocal，防止线程池复用时读到上一个请求的用户信息）
+2. MDC.remove("requestId")（清除 MDC）
+```
+
+### 5.3 ThreadLocal 是什么，为什么用它
+
+**人话解释**：ThreadLocal 是每个线程自己的「私人储物柜」。每个请求在 Tomcat 里由一个线程处理，这个线程的储物柜里存着当前用户的信息，只有这个线程能拿到，其他线程看不见。
+
+**为什么不用全局变量？** 因为服务器同时处理成千上万个请求，如果用全局变量存用户信息，不同请求会互相覆盖，出现「A 用户的操作用了 B 用户的身份」这种灾难性 bug。
+
+**为什么 afterCompletion 里必须 clear？** Tomcat 用线程池，线程处理完请求 A 后会被复用去处理请求 B。如果 A 没有 clear，B 开始时 ThreadLocal 里还有 A 的用户信息，这个 bug 极难复现（只在线程复用时才出现）。
+
+### 5.4 白名单：哪些接口不需要 Token
+
+```java
+// WebMvcConfig.java — 以下路径跳过 AuthInterceptor
+.excludePathPatterns(
+    "/api/v1/auth/**",         // 登录相关（发验证码、登录）
+    "/api/v1/shops",           // 搜索门店列表（游客可以浏览）
+    "/api/v1/shops/*",         // 门店详情（游客可以浏览）
+    "/api/v1/posts/*",         // 笔记详情（游客可以浏览）
+    "/api/v1/payments/callback" // 支付回调（支付渠道服务器调用，没有用户 Token）
+)
+```
+
+**面试追问**：「/api/v1/auth/logout 也在白名单里，那 Token 过期的用户也能退出？」
+> 对，这是故意设计的。退出登录的动作应该永远能执行，即使 Token 已经过期。否则 Token 过期的用户就会陷入「无法退出」的死循环。退出时前端把 Token 发过来，后端直接删 Redis Key，没有 Key 删也无所谓，幂等处理。
+
+---
+
+## 6. 门店模块：状态机和权限双校验
+
+### 6.1 门店状态机
+
+门店的状态不是随意变的，有严格的合法路径：
+
+```
+DRAFT（草稿）
+  ↓  上线（PUT /shops/{id}/status/online）
+ONLINE（已上线）
+  ↓  下线（PUT /shops/{id}/status/offline）   ↗  恢复上线
+OFFLINE（已下线）
+  ↓  永久关闭（当前接口未暴露，预留）
+CLOSED（永久关闭，终态，不可逆）
+```
+
+**非法流转举例**：
+- CLOSED → ONLINE：不行，CLOSED 是终态，代码里明确拒绝
+- ONLINE → ONLINE：不行，已经上线了，没必要再上线
+
+```java
+// ShopService.java — 上线接口
+public ShopVO onlineShop(Long shopId) {
+    Shop shop = requireOwnShop(shopId);  // ← 先做权限校验
+
+    // 状态机保护：只有 DRAFT 或 OFFLINE 才能上线
+    if (!"DRAFT".equals(shop.getStatus()) && !"OFFLINE".equals(shop.getStatus())) {
+        throw new BizException(ErrorCode.SHOP_STATUS_ILLEGAL);
+    }
+
+    shop.setStatus("ONLINE");
+    shopMapper.updateById(shop);
+    return toVO(shop);
+}
+```
+
+### 6.2 权限双校验：防越权操作
+
+商家 A 不应该能修改商家 B 的门店。我们在 `requireOwnShop` 方法里同时做两件事：
+
+```java
+// ShopService.java — 私有辅助方法
+private Shop requireOwnShop(Long shopId) {
+    // 第一层：校验当前用户是 APPROVED 商家
+    Merchant merchant = merchantService.requireApprovedMerchant();
+
+    // 第二层：校验这个门店是你的
+    Shop shop = shopMapper.selectById(shopId);
+    if (shop == null || !merchant.getId().equals(shop.getMerchantId())) {
+        // 关键设计：「门店不存在」和「不是你的门店」返回同一个错误码 SHOP_FORBIDDEN
+        // 为什么？防止枚举攻击：攻击者无法通过错误码的差异判断这个 shopId 是否存在
+        throw new BizException(ErrorCode.SHOP_FORBIDDEN);
+    }
+    return shop;
+}
+```
+
+**面试追问**：「为什么不返回 SHOP_NOT_FOUND 和 SHOP_FORBIDDEN 两个不同的错误码？」
+> 这是信息安全的考量。如果我们返回「门店不存在」，攻击者就能通过遍历 shopId 知道哪些 ID 是有效的门店（枚举攻击）。统一返回 SHOP_FORBIDDEN，攻击者什么都猜不到。
+
+### 6.3 C 端查询为什么返回 SHOP_NOT_FOUND 而不是 OFFLINE
+
+```java
+// ShopService.java — C 端查门店详情
+public ShopVO getShopDetail(Long shopId) {
+    Shop shop = shopMapper.selectById(shopId);
+    if (shop == null || !"ONLINE".equals(shop.getStatus())) {
+        // DRAFT/OFFLINE/CLOSED 状态的门店也返回 SHOP_NOT_FOUND
+        // 不让用户知道「这个门店存在但没上线」，防止竞品爬取未上线门店的情报
+        throw new BizException(ErrorCode.SHOP_NOT_FOUND);
+    }
+    return toVO(shop);
+}
+```
+
+---
+
+## 7. 笔记模块：Redis 点赞计数与 N+1 问题
+
+### 7.1 点赞计数方案
+
+点赞是高频操作，不能每次点赞都写数据库（MySQL 写性能有限，高并发会把数据库打垮）。
+
+我们用 **Redis 双 Key 方案**：
+
+```
+Key 1：post:like:count:{postId}  → String 类型，存点赞总数
+Key 2：post:like:users:{postId}  → Set 类型，存所有点赞用户的 ID
+```
+
+**点赞操作**：
+```
+用户 A 点赞笔记 123：
+    SISMEMBER post:like:users:123 "10001"  → false（还没点过）
+    SADD post:like:users:123 "10001"       → 把用户 ID 加入 Set
+    INCR post:like:count:123               → 点赞数 +1
+```
+
+**取消点赞**：
+```
+    SISMEMBER post:like:users:123 "10001"  → true（点过了）
+    SREM post:like:users:123 "10001"       → 从 Set 移除
+    DECR post:like:count:123               → 点赞数 -1
+```
+
+**查「我有没有点赞」**：
+```
+    SISMEMBER post:like:users:123 "10001"  → O(1) 直接返回 true/false
+```
+
+**面试追问**：「为什么用两个 Key，用一个 Set 不行吗？SCARD 也能取总数。」
+> SCARD 确实是 O(1)，但 Set 随着点赞人数增长会越来越大，占用大量 Redis 内存（热门内容可能有几十万点赞用户）。String 计数只需要存一个整数，内存占用是固定的，更轻量。两个 Key 并存是计数轻量 + 判断高效的平衡方案。
+
+### 7.2 Redis 故障降级
+
+如果 Redis 挂了，点赞数读不出来怎么办？
+
+```java
+// PostService.java — 读取实时点赞数
+private int getRealTimeLikeCount(Post post) {
+    try {
+        String val = stringRedisTemplate.opsForValue().get(countKey);
+        if (val != null) return Integer.parseInt(val);
+    } catch (Exception e) {
+        // Redis 不可用：记 WARN 日志，不中断请求（降级策略）
+        log.warn("读取 Redis 点赞数失败，降级到 DB 快照，postId: {}", post.getId(), e);
+    }
+    // 降级到数据库快照值（可能和真实值有几秒误差，可以接受）
+    return post.getLikeCount() != null ? post.getLikeCount() : 0;
+}
+```
+
+**关键设计原则**：Redis 出问题不应该导致接口报错。点赞数展示不准确是可以接受的（最终一致性），但接口挂掉是不能接受的。
+
+### 7.3 N+1 查询问题和解决方案
+
+**什么是 N+1 问题？**
+
+假设查一个门店下的 20 篇笔记，需要展示每篇笔记的作者昵称：
+
+```
+错误做法（N+1 查询）：
+    查 20 篇笔记 → 1 次 SQL
+    循环 20 篇，每篇查一次作者 → 20 次 SQL
+    总计：21 次 SQL （这就是 N+1）
+```
+
+随着数据量增长，性能会线性下降。10 条数据 11 次查询，100 条数据 101 次查询。
+
+**正确做法（批量查询）**：
+
+```java
+// PostService.java — listPostsByShop 方法
+// 1. 先查 20 篇笔记
+List<Post> posts = postMapper.selectList(wrapper);
+
+// 2. 提取所有 userId，去重
+List<Long> userIds = posts.stream()
+    .map(Post::getUserId)
+    .distinct()
+    .collect(Collectors.toList());
+
+// 3. 一次 IN 查询，查所有作者（只有 1 次 SQL）
+List<User> users = userMapper.selectBatchIds(userIds);
+// 对应的 SQL：SELECT * FROM user WHERE id IN (1001, 1002, 1003, ...)
+
+// 4. 转 Map，方便按 userId 快速查找作者
+Map<Long, User> userMap = users.stream()
+    .collect(Collectors.toMap(User::getId, u -> u));
+
+// 5. 组装 VO（从 Map 取，O(1)，不再查数据库）
+posts.stream().map(post -> {
+    User user = userMap.get(post.getUserId());  // ← 从内存 Map 取，不查 DB
+    return toVO(post, user, ...);
+})
+```
+
+总计：2 次 SQL（查笔记 + 批量查用户）。
+
+**面试怎么说**：
+> 我们在查笔记列表时，需要展示每个作者的昵称和头像。如果循环 N 篇笔记各查一次 user 表，就是 N+1 问题。解决方式是先从所有笔记中提取 userId 列表，一次 IN 查询拿到所有作者，再转成 Map 按 ID 索引，组装 VO 时直接从内存取，总共 2 次 SQL，不随数据量线性增长。
+
+### 7.4 发布频率限流
+
+```java
+// PostService.java — checkPublishRateLimit
+String limitKey = String.format("post:publish:limit:%d", userId);
+// setIfAbsent = Redis SETNX：Key 不存在才设置，同时设 TTL
+Boolean allowed = stringRedisTemplate.opsForValue()
+    .setIfAbsent(limitKey, "1", 60, TimeUnit.SECONDS);
+
+if (!Boolean.TRUE.equals(allowed)) {
+    // SETNX 返回 false → Key 已存在 → 60 秒内已发过 → 拒绝
+    throw new BizException(ErrorCode.POST_PUBLISH_TOO_FREQUENT);
+}
+```
+
+**为什么这样能限流？**
+- SETNX（Set if Not eXists）只在 Key 不存在时才设置
+- 第一次发布：Key 不存在 → 设置成功（返回 true）→ Key 的 TTL 是 60 秒
+- 60 秒内再发：Key 已存在 → 设置失败（返回 false）→ 拒绝
+- 60 秒后：Key 自动过期 → 允许再发
+
+---
+
+## 8. 关注模块：ZSet 与共同关注
+
+### 8.1 为什么用 ZSet（有序集合）而不是 Set
+
+| 数据结构 | 判断是否关注 | 查关注列表（按时间） | 求共同关注 |
+|---|---|---|---|
+| Set | ✅ SISMEMBER O(1) | ❌ 无序 | ✅ SINTER |
+| ZSet | ✅ ZSCORE O(log N) | ✅ ZREVRANGE | ✅ ZINTERSTORE |
+
+我们选 ZSet，Score 存关注时间戳：
+- 关注时：ZADD follow:set:{userId} {timestamp} "{targetUserId}"
+- 取关时：ZREM follow:set:{userId} "{targetUserId}"
+- 查关注列表（按时间倒序）：ZREVRANGE follow:set:{userId} 0 -1
+- 判断是否关注：ZSCORE follow:set:{userId} "{targetUserId}"（不为 null 则已关注）
+
+### 8.2 共同关注计算
+
+「我和用户 B 的共同关注」= 我关注的人 ∩ B 关注的人
+
+```
+我的关注集合：follow:set:1001 = {2001, 2002, 2003, 2004}
+B 的关注集合：follow:set:1002 = {2002, 2003, 2005}
+
+ZINTERSTORE temp_key 2 follow:set:1001 follow:set:1002
+→ 交集 = {2002, 2003}  ← 这就是共同关注的用户 ID
+
+ZRANGE temp_key 0 -1   → 读取交集
+DEL temp_key           → 删掉临时 Key（避免垃圾数据）
+
+再批量查 user 表（selectBatchIds）→ 返回用户信息
+```
+
+### 8.3 冷启动处理
+
+用户登录后第一次查共同关注，Redis 里可能没有这个用户的关注集合（Redis 重启了，或者用户是第一次用）：
+
+```java
+// FollowService.java — ensureFollowSetLoaded
+private void ensureFollowSetLoaded(Long userId, String followSetKey) {
+    Long size = stringRedisTemplate.opsForZSet().zCard(followSetKey);
+    if (size != null && size > 0) return;  // Redis 已有数据，不用加载
+
+    // 从数据库加载该用户的全量关注列表，写入 Redis ZSet
+    List<FollowRelation> relations = followRelationMapper.selectList(
+        new LambdaQueryWrapper<FollowRelation>()
+            .eq(FollowRelation::getFollowerUserId, userId)
+    );
+    // 批量 ZADD
+    for (FollowRelation r : relations) {
+        stringRedisTemplate.opsForZSet().add(followSetKey, String.valueOf(r.getFollowedUserId()), score);
+    }
+}
+```
+
+这个模式叫 **Cache Rebuild on Miss**（缓存未命中时重建），是缓存使用的标准策略之一。
+
+---
+
+## 9. 关键词卡片：用自己的话解释这 10 个词
+
+> 要求：不准背定义，必须加上「在我们项目里，它用来做___」。
+
+### DTO（Data Transfer Object，数据传输对象）
+**你的解释模板**：DTO 是在层与层之间传递数据的容器。在我们项目里，`CreateShopRequest` 是 DTO，它接收前端发来的「创建门店」的 JSON，里面有 `@NotBlank` 等校验注解，用于限制格式。
+
+### VO（View Object，视图对象）
+**你的解释模板**：VO 是专门给前端返回的对象，只包含前端需要的字段，敏感字段不放进来。在我们项目里，`ShopVO` 里 shopId 是 String 类型（不是 Long），因为 JS 处理不了超大 Long，这是有意识的设计决定。
+
+### Entity（实体）
+**你的解释模板**：Entity 和数据库表一一对应，用于 Mapper 层的 SQL 操作。在我们项目里，`Shop.java` 里有 `@TableLogic` 注解的 deleted 字段，这个字段普通查询时被自动过滤，用户感知不到。
+
+### ThreadLocal
+**你的解释模板**：ThreadLocal 是每个线程自己的私有变量，线程之间互不干扰。在我们项目里，`UserContext` 用 ThreadLocal 存当前请求的用户信息，拦截器写入、Service 随时取用、请求结束后必须 clear，否则线程池复用时会带入上个请求的用户身份。
+
+### 拦截器（Interceptor）
+**你的解释模板**：拦截器在请求到达 Controller 之前和之后执行额外逻辑。在我们项目里，`AuthInterceptor` 在 preHandle 里做 Token 校验和用户信息注入，在 afterCompletion 里做 ThreadLocal 清理。
+
+### 逻辑删除（Logical Delete）
+**你的解释模板**：逻辑删除不是真正把数据从数据库删掉，而是把 deleted 字段设为 1，查询时自动过滤 deleted=1 的记录。在我们项目里，用 MyBatis-Plus 的 `@TableLogic` 注解实现，deleteById 会被改写为 `UPDATE SET deleted = 1`，数据保留用于分析。
+
+### 幂等（Idempotent）
+**你的解释模板**：幂等是指同一个操作执行多次，结果和执行一次相同。在我们项目里，发布验证码后 60 秒内再发，会直接拒绝（不是报错而是友好提示）；点赞已点过的笔记，直接返回成功而不是报错，这都是幂等设计。
+
+### 雪花 ID（Snowflake ID）
+**你的解释模板**：雪花 ID 是一种分布式唯一 ID 生成算法，生成的是 64 位 Long 整数，趋势递增（按时间）、全局唯一。在我们项目里，所有主键用 MyBatis-Plus 的 `ASSIGN_ID` 策略，但这个 ID 返回给前端时要转成 String，因为 JS 的 Number 类型最大只支持 2^53-1，雪花 ID 可能超过这个范围导致精度丢失。
+
+### 状态机（State Machine）
+**你的解释模板**：状态机定义了对象状态的合法流转路径，阻止非法状态转换。在我们项目里，门店有 DRAFT→ONLINE↔OFFLINE→CLOSED 的状态机，代码里用 if 判断当前状态是否合法，非法流转抛 SHOP_STATUS_ILLEGAL，不是靠数据库约束而是在 Service 层保护。
+
+### N+1 查询问题
+**你的解释模板**：N+1 是指查询 N 条主数据时，又对每条主数据单独发了 1 次关联查询，共 N+1 次 SQL。在我们项目里，查笔记列表需要展示作者信息，我们用 `selectBatchIds` 一次查所有作者，再转成 Map 按 ID 索引，把 N+1 次查询变成 2 次。
+
+---
+
+## 10. 链路复述练习题：面试前必做
+
+> 方法：关掉代码，试着用口语讲出来，再去对照代码检查有没有遗漏。
+
+### 练习题 1：完整讲清手机号验证码登录的链路
+
+提示词：前端发什么请求？→ Controller 调了什么？→ Service 做了哪几件事？→ Redis 里发生了什么变化？→ 数据库发生了什么变化？→ 前端拿到什么？
+
+**答案检查点**（对照 [AuthService.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/module/auth/service/AuthService.java)）：
+- [ ] 验证码对比，比完即删（一次性，防重放）
+- [ ] 手机号不存在则自动注册（手机号即账户）
+- [ ] 检查用户状态（DISABLED 拒绝）
+- [ ] 生成 UUID Token，存入 Redis，TTL 7 天
+- [ ] 返回 token + userId + nickname
+
+---
+
+### 练习题 2：讲清一次需要鉴权的请求（比如「创建门店」）
+
+提示词：Token 在哪？→ 拦截器做了什么？→ Controller 怎么知道当前用户是谁？→ Service 里做了哪两层校验？
+
+**答案检查点**（对照 [AuthInterceptor.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/common/interceptor/AuthInterceptor.java) 和 [ShopService.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/module/shop/service/ShopService.java)）：
+- [ ] Header: Authorization: Bearer {token}
+- [ ] 拦截器从 Redis 取用户信息，存入 UserContext（ThreadLocal）
+- [ ] Service 通过 UserContext.getUserId() 取当前用户
+- [ ] 第一层：requireApprovedMerchant 校验商家身份
+- [ ] 门店创建后状态是 DRAFT，不对 C 端可见
+
+---
+
+### 练习题 3：讲清点赞笔记的 Redis 操作
+
+提示词：用到了哪两个 Redis Key？→ 点赞时 Redis 发生什么变化？→ 取消点赞时呢？→ 查「我有没有点赞」用的哪个命令？→ Redis 挂了怎么办？
+
+**答案检查点**（对照 [PostService.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/module/post/service/PostService.java)）：
+- [ ] 两个 Key：count（String）和 users（Set）
+- [ ] 点赞：SADD users + INCR count
+- [ ] 幂等：先 SISMEMBER 检查，已点赞直接返回
+- [ ] Redis 降级：try-catch，失败时用 DB 快照值
+
+---
+
+### 练习题 4：讲清共同关注的计算原理
+
+提示词：用的什么 Redis 数据结构？→ 为什么不用普通 Set？→ ZINTERSTORE 是什么操作？→ 临时 Key 为什么要删掉？
+
+**答案检查点**（对照 [FollowService.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/module/follow/service/FollowService.java)）：
+- [ ] ZSet，Score 是关注时间戳
+- [ ] ZSet 比 Set 多了排序能力（按关注时间展示）
+- [ ] ZINTERSTORE 把两个 ZSet 取交集，写入临时 Key
+- [ ] 用完删临时 Key，防止垃圾数据积累
+- [ ] 冷启动：Redis 没数据时从 DB 加载
+
+---
+
+### 练习题 5：讲清门店上线/下线的状态机保护
+
+提示词：门店有哪几个状态？→ 合法流转路径是什么？→ 代码在哪里做保护？→ 权限校验分几层？
+
+**答案检查点**（对照 [ShopService.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/module/shop/service/ShopService.java)）：
+- [ ] DRAFT → ONLINE ↔ OFFLINE → CLOSED
+- [ ] CLOSED 是终态，不可再次上线
+- [ ] requireOwnShop 同时校验商家身份 + 门店归属
+- [ ] 不区分「不存在」和「无权限」→ 统一 SHOP_FORBIDDEN（防枚举攻击）
+
+---
+
+## 附录：面试高频追问和推荐回答
+
+### Q：你们项目的接口是 RESTful 风格吗？
+
+> 是的，我们遵循 RESTful 风格：资源名用复数小写（/shops、/posts），HTTP 方法表达操作语义（GET 查询、POST 创建、PUT 全量更新、DELETE 删除），版本号放路径前缀（/api/v1/）。状态变更接口用 `/shops/{id}/status/online` 这种子资源风格，表达「把门店状态设置为 online」。
+
+### Q：你们为什么不用 404 状态码？
+
+> 我们只用 6 个 HTTP 状态码（200、400、401、403、429、500），资源不存在统一走 400 + 业务错误码（如 SHOP_NOT_FOUND）。这样做的好处是前端只需要判断响应体里的 code 字段，不用再分支判断 HTTP 状态码，减少了前端的开发复杂度。
+
+### Q：雪花 ID 的主键为什么要转成 String 返回给前端？
+
+> 雪花 ID 是 64 位 Long 整数，可能超过 JavaScript Number 类型的安全整数范围（2^53-1 ≈ 9 千万亿）。如果直接传 Long，JSON 序列化后在浏览器 JS 里解析时可能出现精度丢失，导致最后几位变 0，ID 错乱。转成 String 就不存在这个问题。
+
+### Q：ThreadLocal 在你们项目里有没有可能产生内存泄漏？
+
+> 有可能。如果在 afterCompletion 里没有 clear，线程池中的线程处理完一个请求后，ThreadLocal 里的引用不会被 GC 回收（因为 ThreadLocalMap 持有弱引用 key 但强引用 value），在长时间运行的服务器进程中可能累积。我们在 AuthInterceptor.afterCompletion 里强制调用 UserContext.clear()，这是防止内存泄漏和信息串流的双重保障。
+
+### Q：发布笔记的限流和验证码限流有什么区别？
+
+> 验证码限流用了两层（60秒维度 + 1小时总量），用计数器实现。笔记发布限流只用了单层（60秒 1 篇），用 SETNX 实现，更简单。区别在于验证码是安全敏感操作，需要更严格的多维度限制；笔记发布是内容操作，频率适当限制即可。更细粒度的限流（滑动窗口计数）后续可以用 Lua 脚本实现。
+
+---
+
+*教程版本：2026-05-27 | 对应代码版本：commit 0d389c6*
