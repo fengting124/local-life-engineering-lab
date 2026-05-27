@@ -116,6 +116,13 @@ public enum ErrorCode {
      */
     USER_ACCOUNT_DISABLED(403, "USER_ACCOUNT_DISABLED", "账号已被禁用，如有疑问请联系客服"),
 
+    /**
+     * 目标用户不存在。
+     * 触发场景：关注一个不存在的用户 ID，或查看一个已注销用户的主页。
+     * 注意：不暴露「账号被禁用」等细节，统一返回「用户不存在」。
+     */
+    USER_NOT_FOUND(400, "USER_NOT_FOUND", "用户不存在"),
+
     // ===================================================
     // MERCHANT - 商家
     // ===================================================
@@ -174,6 +181,35 @@ public enum ErrorCode {
      * Redis Key：publish:limit:{userId}，TTL 1 分钟，超过阈值拒绝。
      */
     POST_PUBLISH_TOO_FREQUENT(429, "POST_PUBLISH_TOO_FREQUENT", "发布过于频繁，请稍后再试"),
+
+    /**
+     * 笔记不存在（已被删除、未发布，或 ID 不合法）。
+     * C 端查询时统一返回此码，不区分「不存在」和「未发布」，防止信息泄露。
+     */
+    POST_NOT_FOUND(400, "POST_NOT_FOUND", "笔记不存在"),
+
+    /**
+     * 无权操作该笔记。
+     * 触发场景：尝试删除他人笔记。
+     * 与 POST_NOT_FOUND 合并处理：不区分「不存在」和「无权限」，防枚举攻击。
+     */
+    POST_FORBIDDEN(403, "POST_FORBIDDEN", "无权操作该笔记"),
+
+    /**
+     * 无权操作该评论。
+     * 触发场景：尝试删除他人评论，或评论不属于指定笔记。
+     */
+    COMMENT_FORBIDDEN(403, "COMMENT_FORBIDDEN", "无权操作该评论"),
+
+    // ===================================================
+    // FOLLOW - 关注关系
+    // ===================================================
+
+    /**
+     * 不能关注自己。
+     * 触发场景：POST /api/v1/follows/{userId} 时 targetUserId == 当前用户自己的 userId。
+     */
+    FOLLOW_SELF_NOT_ALLOWED(400, "FOLLOW_SELF_NOT_ALLOWED", "不能关注自己"),
 
     // ===================================================
     // COUPON - 优惠券

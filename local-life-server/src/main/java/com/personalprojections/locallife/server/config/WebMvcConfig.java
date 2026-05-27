@@ -58,10 +58,12 @@ public class WebMvcConfig implements WebMvcConfigurer {
                         "/api/v1/auth/**",
 
                         // 公开内容（访客可浏览，不强制登录）
-                        "/api/v1/shops",          // 搜索门店列表
-                        "/api/v1/shops/*",         // 门店详情（* 匹配单层路径变量）
-                        "/api/v1/posts/*",         // 笔记详情
-                        "/api/v1/coupons/templates", // 可抢券列表
+                        "/api/v1/shops",              // 搜索门店列表
+                        "/api/v1/shops/*",            // 门店详情（* 匹配单层路径变量）
+                        "/api/v1/shops/*/posts",      // 门店下的笔记列表
+                        "/api/v1/posts/*",            // 笔记详情（GET /posts/{postId}）
+                        "/api/v1/posts/*/comments",   // 笔记评论列表（GET /posts/{postId}/comments）
+                        "/api/v1/coupons/templates",  // 可抢券列表
 
                         // 支付回调（支付渠道服务器调用，用渠道验签代替 Token 鉴权）
                         "/api/v1/payments/callback",

@@ -55,3 +55,6 @@
 - 门店状态机：DRAFT → ONLINE ↔ OFFLINE → CLOSED（CLOSED 为终态），含并发安全保护注释
 - 权限校验策略：商家身份校验 + 门店归属校验双层，防枚举攻击统一返回 SHOP_FORBIDDEN
 - 错误码扩充：新增 MERCHANT_NOT_FOUND、MERCHANT_NOT_APPROVED、SHOP_FORBIDDEN、SHOP_STATUS_ILLEGAL
+- 已完成内容笔记模块：V3 SQL（post + comment + follow_relation）、Post/Comment/FollowRelation 实体与 Mapper、DTO（CreatePostRequest、PostVO、CreateCommentRequest、CommentVO）、PostService（发布限流 SETNX、Redis 点赞计数 String+Set、N+1 批量查询、降级策略）、PostController（发布/详情/删除/点赞/取消点赞/评论/门店笔记列表）
+- 已完成关注关系模块：FollowUserVO、FollowService（ZSet 关注集合、共同关注 ZINTERSTORE、冷启动加载）、FollowController（关注/取关/共同关注/关注状态）
+- 错误码扩充：新增 USER_NOT_FOUND、POST_NOT_FOUND、POST_FORBIDDEN、COMMENT_FORBIDDEN、FOLLOW_SELF_NOT_ALLOWED
