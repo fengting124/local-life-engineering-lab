@@ -46,3 +46,12 @@
 - 已完成第一阶段第八个正式产物 `接口规范文档`，覆盖统一响应结构、HTTP 状态码、业务错误码（18 个）、鉴权规范、分页规范、幂等规范、数据格式规范、URL 路径规范及核心接口清单（30 个接口）
 - 每章节内嵌「为什么这么设计」，可直接用于面试口述
 - 第一阶段所有规划产物已全部完成，可进入编码阶段
+- 已完成编码第一批：通用基础层（Result、ErrorCode、BizException、GlobalExceptionHandler、UserContext、AuthInterceptor、WebMvcConfig、RedisConfig、MybatisPlusConfig）
+- 已完成鉴权模块：User 实体、SendCodeRequest、LoginRequest、LoginResponse、AuthService（Redis 验证码+Token）、AuthController
+- 已完成用户模块：UserProfileVO、UserService、UserController
+- 已完成 SQL 迁移：V1（user 表）、V2（merchant + shop 表）
+- 已完成商家模块：Merchant 实体、MerchantMapper、ApplyMerchantRequest、MerchantVO、MerchantService、MerchantController
+- 已完成门店模块：Shop 实体、ShopMapper、CreateShopRequest、UpdateShopRequest、ShopVO、ShopService、ShopController
+- 门店状态机：DRAFT → ONLINE ↔ OFFLINE → CLOSED（CLOSED 为终态），含并发安全保护注释
+- 权限校验策略：商家身份校验 + 门店归属校验双层，防枚举攻击统一返回 SHOP_FORBIDDEN
+- 错误码扩充：新增 MERCHANT_NOT_FOUND、MERCHANT_NOT_APPROVED、SHOP_FORBIDDEN、SHOP_STATUS_ILLEGAL

@@ -117,6 +117,24 @@ public enum ErrorCode {
     USER_ACCOUNT_DISABLED(403, "USER_ACCOUNT_DISABLED", "账号已被禁用，如有疑问请联系客服"),
 
     // ===================================================
+    // MERCHANT - 商家
+    // ===================================================
+
+    /**
+     * 当前用户没有商家身份（尚未申请或申请记录不存在）。
+     * 触发场景：调用需要商家权限的接口（创建门店、发布活动）时，
+     * Service 层发现当前用户在 merchant 表中没有记录。
+     */
+    MERCHANT_NOT_FOUND(400, "MERCHANT_NOT_FOUND", "您还不是商家，请先申请商家资质"),
+
+    /**
+     * 商家审核未通过或已被禁用，无法执行商家操作。
+     * 触发场景：merchant.status 不是 APPROVED（可能是 PENDING/REJECTED/DISABLED）。
+     * 只有 APPROVED 状态的商家才能创建门店、发布活动。
+     */
+    MERCHANT_NOT_APPROVED(403, "MERCHANT_NOT_APPROVED", "商家资质审核未通过，暂无权限"),
+
+    // ===================================================
     // SHOP - 门店
     // ===================================================
 
@@ -132,6 +150,20 @@ public enum ErrorCode {
      * 门店状态流转：DRAFT → ONLINE ↔ OFFLINE → CLOSED
      */
     SHOP_NOT_ONLINE(400, "SHOP_NOT_ONLINE", "门店当前未上线"),
+
+    /**
+     * 无权操作该门店。
+     * 触发场景：商家 A 尝试修改商家 B 的门店（越权操作）。
+     * Service 层校验 shop.merchantId != 当前登录商家的 merchantId 时抛此异常。
+     * 注意：不区分「不存在」和「无权限」，统一返回此码，防止枚举攻击（信息泄露）。
+     */
+    SHOP_FORBIDDEN(403, "SHOP_FORBIDDEN", "无权操作该门店"),
+
+    /**
+     * 门店当前状态不允许执行此操作。
+     * 例如：尝试将 CLOSED 状态的门店重新上线（CLOSED 是终态，不可逆）。
+     */
+    SHOP_STATUS_ILLEGAL(400, "SHOP_STATUS_ILLEGAL", "当前门店状态不支持此操作"),
 
     // ===================================================
     // POST - 内容笔记

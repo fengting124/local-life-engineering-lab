@@ -31,3 +31,6 @@ __pycache__/
 # Docker
 docker-data/
 
+# Obsidian 编辑器配置（本地个人设置，不提交仓库）
+docs/.obsidian/
+
