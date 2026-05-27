@@ -25,3 +25,24 @@
 - 已启动并验证 `MySQL` 与 `Redis` 容器
 - 已修复 `mysql:8.4` 过时启动参数导致的启动失败
 - 已确认 Docker 内部 WSL 数据盘当前仍在 `C:\Users\86155\AppData\Local\Docker\wsl`
+- 已初始化本地 git 仓库并创建首个提交 `bootstrap local life workspace`
+- 已创建 GitHub 私有仓库 `fengting124/local-life-engineering-lab`
+- 已将当前 `main` 分支推送到远程 `origin`
+- 已完成根目录 Markdown 整理：项目文档、环境文档、过程文档、学习笔记、参考资料已分层归档到 `docs/`
+- 已完成第一阶段第一个正式产物 `项目边界文档`
+- 已完成第一阶段第二个正式产物 `领域模型文档`
+- 已完成第一阶段第三个正式产物 `ER 图文档`
+- 已完成第一阶段第四个正式产物 `核心时序图文档` 的登录链路，并为发笔记、抢券、下单支付预留结构
+- 已将核心流程图调整为自上而下展示，并补全 `发笔记链路`
+- 已补全 `抢券链路`，覆盖 Redis Lua 预扣、MQ 异步下单、幂等消费、失败补偿和面试深挖点
+- 已补全 `下单支付链路`，覆盖订单与支付单边界、状态机、回调幂等、延时关单和对账补偿
+- 已将主链路图改回 `sequenceDiagram` 保留组件泳道，订单状态机和支付单状态机继续保留 `flowchart TD`
+- 已新增 `Copilot 企业级 Agent 设计`，将 AI 线升级为 Java MCP Server + Python LangGraph Agent + RAG + HITL + Evals 的企业级 Agent 方案
+- 已新增 `技术选型文档`，同时覆盖 LocalLife 主项目和 LocalLife Copilot 的选型、替代方案、暂缓项和面试表达
+- 已修补核心时序图、Copilot 设计和技术选型文档中的闭环问题：延时关单失败兜底、事务边界、短信防刷、抢券结果查询、MCP Schema、ReAct trace、模块化边界和模型选型
+- 已新增 `项目增强路线图`，收敛 Canal、消息防丢、链路追踪、Streaming Tool Call、Prompt Injection、ShardingSphere、模型路由、Hybrid Search 等增强项的优先级和排期
+
+## 2026-05-27
+- 已完成第一阶段第八个正式产物 `接口规范文档`，覆盖统一响应结构、HTTP 状态码、业务错误码（18 个）、鉴权规范、分页规范、幂等规范、数据格式规范、URL 路径规范及核心接口清单（30 个接口）
+- 每章节内嵌「为什么这么设计」，可直接用于面试口述
+- 第一阶段所有规划产物已全部完成，可进入编码阶段
