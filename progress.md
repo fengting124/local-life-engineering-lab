@@ -58,3 +58,10 @@
 - 已完成内容笔记模块：V3 SQL（post + comment + follow_relation）、Post/Comment/FollowRelation 实体与 Mapper、DTO（CreatePostRequest、PostVO、CreateCommentRequest、CommentVO）、PostService（发布限流 SETNX、Redis 点赞计数 String+Set、N+1 批量查询、降级策略）、PostController（发布/详情/删除/点赞/取消点赞/评论/门店笔记列表）
 - 已完成关注关系模块：FollowUserVO、FollowService（ZSet 关注集合、共同关注 ZINTERSTORE、冷启动加载）、FollowController（关注/取关/共同关注/关注状态）
 - 错误码扩充：新增 USER_NOT_FOUND、POST_NOT_FOUND、POST_FORBIDDEN、COMMENT_FORBIDDEN、FOLLOW_SELF_NOT_ALLOWED
+- 已完成优惠券 & 秒杀模块：V4 SQL（coupon_template + seckill_session + user_coupon，含唯一索引 uk_user_coupon_template）
+- CouponTemplate / SeckillSession / UserCoupon 实体与 Mapper
+- SeckillService：Redis Lua 脚本原子性防超卖（判重→判库存→DECR+SADD），DuplicateKeyException 幂等处理，当前同步写 DB 并标注 MQ 升级方向
+- Lua 脚本（resources/lua/seckill.lua）：详细注释解释为什么必须原子执行、竞争条件场景
+- CouponService：两步查（ACTIVE 场次→批量查模板→批量查门店），N+1 优化
+- SeckillController：4 个接口（可抢券列表/秒杀/查结果/我的券包）
+- 新增 docs/04-notes/LocalLife项目接口教程.md（728 行，含链路图、关键词卡片、5 道复述练习题、面试追问答案）
