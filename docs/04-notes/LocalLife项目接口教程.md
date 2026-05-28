@@ -701,6 +701,308 @@ private void ensureFollowSetLoaded(Long userId, String followSetKey) {
 
 ---
 
+## 第六章：订单与支付模块
+
+> **本章主线**：用户用优惠券在门店下单，到支付完成的完整链路。
+> 这是技术含量最高的一章——涉及订单状态机、支付单与订单分离设计、支付回调幂等、延迟关单等经典面试话题。
+
+---
+
+### 6.1 为什么订单（order_info）和支付单（payment_order）要分开两张表
+
+很多人第一次做项目，会把订单和支付放在一张表里（`is_paid = true/false`）。这个问题在面试里一定被问到：**为什么分两张表？**
+
+**一笔订单可能对应多次支付行为：**
+
+```
+用户下单 → order_info 创建（WAIT_PAY）
+    ↓ 点「去支付」
+payment_order #1 创建（PENDING）← 第一次发起支付
+    ↓ 用户支付宝没钱，超时
+payment_order #1（FAILED）
+    ↓ 用户充了钱，重新点「去支付」
+payment_order #2 创建（PENDING）← 第二次发起支付
+    ↓ 支付成功，渠道回调
+payment_order #2（SUCCESS）
+order_info（PAID）             ← 订单才变为「已支付」
+```
+
+如果合并在一张表：「支付失败后重新支付」的历史就丢失了。分开后，每次支付行为都有完整记录，方便对账和排查问题。
+
+---
+
+### 6.2 下单流程详解（createOrder）
+
+```
+POST /api/v1/orders
+Authorization: Bearer {token}
+X-Idempotency-Key: {UUID}（可选，防双击）
+
+{
+  "shopId": "1234567890",
+  "userCouponId": "9876543210",   // 不用券时省略
+  "remark": "不要辣"
+}
+```
+
+服务端处理步骤（对应 OrderService.createOrder 的 7 个步骤）：
+
+**Step 1：幂等检查（防双击）**
+
+用户快速点两次「确认下单」，或网络抖动导致前端重试，可能发两条一模一样的请求。
+前端每次下单时生成一个 UUID（`X-Idempotency-Key`），重试时带同一个 Key。
+服务端查 Redis：`idempotent:order:{key}` → 已有 orderNo → 直接返回原订单（不重复创建）。
+5 分钟 TTL，超时后认为是新请求。
+
+```
+第1次请求: Key=abc → Redis 没有 → 创建订单 → Redis 写 abc=ORD001 → 返回 ORD001
+第2次请求: Key=abc → Redis 有 abc=ORD001 → 直接返回 ORD001（幂等）
+```
+
+**Step 2：校验门店**
+
+```java
+// 门店必须存在且 status = ONLINE 才能下单
+if (!"ONLINE".equals(shop.getStatus())) {
+    throw new BizException(ErrorCode.SHOP_NOT_ONLINE);
+}
+```
+
+**Step 3：校验优惠券（5个子检查）**
+
+```
+a. 券属于当前用户（防跨用户使用他人券）
+b. 状态 = UNUSED（已使用 or 已过期的券不能用）
+c. 未超过 expire_at（即使状态是 UNUSED，也可能已过期）
+d. 券模板 status = ACTIVE（模板被停用了也不能用）
+e. 订单金额 ≥ 券的最低使用门槛 minOrderAmount
+```
+
+统一返回 `ORDER_COUPON_INVALID`，不区分哪种原因（防信息泄露）。
+门槛不足时返回 `ORDER_COUPON_BELOW_MIN_AMOUNT`（前端可以显示具体提示）。
+
+**Step 4：计算金额（三个字段都由服务端算，客户端不传金额）**
+
+```
+originalAmount = shop.price（门店价格，单位：分）
+couponDiscount = CASH 券：直接取 discountValue（分）
+                 PERCENT 券：originalAmount × (1 - discountValue/100)
+orderAmount    = max(originalAmount - couponDiscount, 0)
+```
+
+为什么不让客户端传金额？**安全性**——客户端传的金额不可信，可能被抓包篡改。
+
+**Step 5：核销券（与创建订单在同一个 @Transactional）**
+
+```java
+// WHERE couponStatus = 'UNUSED'：并发保护，只核销 UNUSED 的券
+int updated = userCouponMapper.update(...WHERE status='UNUSED');
+if (updated == 0) {
+    throw new BizException(ErrorCode.ORDER_COUPON_INVALID); // 并发下被抢先核销
+}
+```
+
+**关键点**：先核销券，再创建订单，都在同一个事务里。
+如果创建订单失败 → 事务回滚 → 券状态也回滚到 UNUSED。
+这避免了「券被核销但订单没创建成功」的悬空状态。
+
+**Step 6：INSERT order_info**
+
+```java
+OrderInfo order = OrderInfo.builder()
+    .userId(userId)
+    .shopId(shopId)
+    .orderStatus("WAIT_PAY")
+    .expireAt(now.plusMinutes(30))  // 30分钟后过期
+    // ...
+    .build();
+orderInfoMapper.insert(order);
+// @TableId(ASSIGN_ID) 自动填充雪花 ID 到 order.id
+String orderNo = String.valueOf(order.getId()); // 用 id 作为业务单号
+```
+
+**Step 7：写幂等 Key**
+
+```
+Redis SET idempotent:order:{key} = orderNo, EX 300
+```
+
+---
+
+### 6.3 发起支付（createPayment）
+
+```
+POST /api/v1/payments
+Authorization: Bearer {token}
+
+{ "orderId": "1234567890", "channel": "MOCK" }
+```
+
+处理流程：
+
+```
+1. 校验订单：存在 + 属于当前用户 + status = WAIT_PAY
+2. 创建 payment_order（PENDING）
+3. 生成 paymentNo = 雪花 ID（作为「商户订单号」传给渠道）
+4. 生成 payUrl：
+   MOCK → "/api/v1/payments/mock-pay?paymentNo=xxx"（测试用）
+   Alipay → 调用支付宝 SDK，返回收银台 URL
+5. 返回 PaymentVO { paymentNo, orderNo, payAmount, channel, payUrl }
+```
+
+前端拿到 `payUrl` 后，根据 `channel` 决定如何处理：
+- MOCK：直接访问 payUrl（GET 请求）→ 触发支付成功
+- Alipay：跳转到支付宝收银台
+- Wechat：调用微信 JSAPI 或展示二维码
+
+---
+
+### 6.4 支付回调处理（handleCallback）——面试必讲
+
+**支付回调是什么**：用户在支付宝/微信完成付款后，这些平台的服务器会向我们的服务器发送一个 POST 请求，告知「某笔支付成功了」。这个机制叫**回调（Callback）**，也叫**通知（Notify）**。
+
+**为什么回调接口不需要用户登录？**
+
+因为不是用户在调用，是支付宝/微信的服务器在调用。它们没有用户的 Token。
+所以这个接口在 `WebMvcConfig` 白名单中跳过了 JWT 鉴权，
+改用**验签（Sign Verification）**来确认请求来自合法渠道。
+
+**验签逻辑**：
+```
+支付宝用私钥 → 签名参数 → 生成 sign 字符串
+我们用支付宝公钥 → 重新验证 sign → 签名匹配 = 合法请求
+Mock 渠道 → sign 固定 "mock-sign" → 直接字符串比对
+```
+
+**五步核心处理**：
+
+```
+Step 1: 根据 paymentNo 查 payment_order（渠道回调会携带我们当初给的「商户订单号」）
+Step 2: 验签（防伪造回调）
+Step 3: 金额核对（paidAmount == payment_order.payAmount，防篡改金额攻击）
+Step 4: 幂等更新支付单（WHERE pay_status='PENDING'，防重复处理）
+Step 5: 同步更新 order_info 为 PAID（WHERE order_status='WAIT_PAY'，同样防重复）
+```
+
+**Step 4 的幂等机制（面试核心）**：
+
+```sql
+-- 这条 SQL 是防重复回调的关键
+UPDATE payment_order
+SET pay_status = 'SUCCESS', trade_no = ?, paid_amount = ?, ...
+WHERE id = ? AND pay_status = 'PENDING'  -- 关键：只处理 PENDING 状态
+```
+
+```
+第1次回调（正常）: status=PENDING → UPDATE 成功，affected=1 → 继续处理
+第2次回调（重复）: status=SUCCESS → UPDATE affected=0 → 直接 return，幂等跳过
+```
+
+**Step 3 的金额核对（防篡改）**：
+
+假设黑客伪造了一个回调，把 `paidAmount` 从 9900 改成 1（只付了1分钱）。
+服务端拿 `paidAmount`（1）和 `payment_order.payAmount`（9900）比对：
+```java
+if (!callback.getPaidAmount().equals(paymentOrder.getPayAmount())) {
+    throw new BizException(ErrorCode.PAYMENT_AMOUNT_MISMATCH); // 拒绝！
+}
+```
+
+---
+
+### 6.5 延迟关单（closeExpiredOrders）
+
+**问题**：下单后 30 分钟不支付，订单应该自动关闭（释放资源，让用户重新操作）。
+但 HTTP 接口是「请求-响应」模式，不能自己定时触发。
+
+**当前方案：定时任务轮询**
+
+```java
+@Scheduled(fixedDelay = 60_000)  // 每 60 秒执行一次
+public void closeExpiredOrders() {
+    // 查所有 WAIT_PAY 且 expire_at < NOW() 的订单
+    List<OrderInfo> expiredOrders = orderInfoMapper.selectList(
+        WHERE order_status='WAIT_PAY' AND expire_at < NOW() LIMIT 200
+    );
+    for (OrderInfo order : expiredOrders) {
+        // 原子更新，WHERE status='WAIT_PAY'，幂等
+        orderInfoMapper.updateStatusFromWaitPay(order.getId(), "CANCELLED");
+        // 如有券，回退券状态 USED → UNUSED
+        if (order.getUserCouponId() != null) { 回退券; }
+    }
+}
+```
+
+**需要 `@EnableScheduling` 在启动类上才会生效！**（LocalLifeServerApplication 已添加）
+
+**升级路径（面试亮点）**：
+
+当前定时轮询的精度是 1 分钟（扫描间隔）。
+更优方案：**RocketMQ 延时消息**
+- 下单时投递一条「30分钟后投递」的延时消息
+- 消费时检查订单状态：若已 PAID 忽略，若仍 WAIT_PAY 则关闭
+- 好处：精度到秒，不依赖轮询，数据库压力从「每分钟全表扫」→「事件驱动」
+
+---
+
+### 6.6 取消订单（cancelOrder）
+
+用户主动取消时的并发安全：
+
+```java
+// WHERE status='WAIT_PAY'：原子更新，防止并发下重复取消
+int affected = orderInfoMapper.updateStatusFromWaitPay(orderId, "CANCELLED");
+if (affected == 0) {
+    // 订单已非 WAIT_PAY：可能已支付或已被关闭
+    throw new BizException(ErrorCode.ORDER_STATUS_ILLEGAL);
+}
+// 回退优惠券（如有），让用户可以下次重用
+if (order.getUserCouponId() != null) {
+    userCouponMapper.update(... SET couponStatus='UNUSED' WHERE id=? AND status='USED');
+}
+```
+
+**为什么 UPDATE WHERE status='WAIT_PAY' 可以防并发？**
+
+数据库 UPDATE 是原子操作。两个请求同时调用 cancelOrder：
+- 请求 A：WHERE status='WAIT_PAY' → 命中 → affected=1 → 更新为 CANCELLED
+- 请求 B：WHERE status='WAIT_PAY' → 已被 A 改为 CANCELLED → 不命中 → affected=0 → 抛异常
+
+---
+
+### 6.7 关键词卡片（订单支付模块）
+
+| 关键词 | 一句话解释 |
+|--------|-----------|
+| **订单/支付单分离** | 一个 order_info 对应多条 payment_order，支持失败重试，历史完整保留 |
+| **支付回调** | 渠道服务器主动通知我方「支付成功」，不是用户调用 |
+| **验签** | 用渠道公钥校验签名，防止伪造回调 |
+| **幂等回调** | `UPDATE WHERE status='PENDING'`，重复回调 affected=0 直接跳过 |
+| **金额核对** | paidAmount == 应付金额，防止篡改金额攻击 |
+| **延迟关单** | 定时任务每分钟扫描过期未支付订单批量关闭 |
+| **券核销事务** | 核销券 + 创建订单在同一 @Transactional，失败回滚，无悬空状态 |
+| **下单幂等** | X-Idempotency-Key + Redis SETNX，防双击创建重复订单 |
+| **状态机保护** | `UPDATE WHERE status='WAIT_PAY'` 实现原子状态流转 + 并发安全 |
+| **Mock 渠道** | 内部测试接口，访问 mock-pay URL = 模拟支付宝通知 |
+
+---
+
+### 6.8 完整链路复述练习题
+
+**题目：从用户点击「下单」到订单变为「已支付」，完整说一遍链路**
+
+> 参考答案：
+> 1. 用户点「确认下单」→ POST /orders，前端可附 X-Idempotency-Key 防双击
+> 2. 服务端校验门店 ONLINE + 券合法（属于我、UNUSED、未过期、满足门槛）
+> 3. 服务端计算 originalAmount（门店价）、couponDiscount、orderAmount
+> 4. 在一个事务内：先把券标记 USED，再 INSERT order_info（WAIT_PAY）
+> 5. 用户点「去支付」→ POST /payments，创建 payment_order（PENDING），返回 payUrl
+> 6. 用户在支付宝完成付款 → 支付宝向我方 POST /payments/callback
+> 7. 回调处理：验签 → 金额核对 → `UPDATE payment_order WHERE status='PENDING'` → `UPDATE order_info WHERE status='WAIT_PAY'`
+> 8. 前端轮询 GET /orders/{id}，看到 orderStatus = PAID，展示「支付成功」
+
+---
+
 ## 附录：面试高频追问和推荐回答
 
 ### Q：你们项目的接口是 RESTful 风格吗？
@@ -725,4 +1027,4 @@ private void ensureFollowSetLoaded(Long userId, String followSetKey) {
 
 ---
 
-*教程版本：2026-05-27 | 对应代码版本：commit 0d389c6*
+*教程版本：2026-05-28 | 对应代码版本：feat: add order & payment module*

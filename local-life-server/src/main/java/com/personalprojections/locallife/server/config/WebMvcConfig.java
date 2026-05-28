@@ -68,6 +68,9 @@ public class WebMvcConfig implements WebMvcConfigurer {
                         // 支付回调（支付渠道服务器调用，用渠道验签代替 Token 鉴权）
                         "/api/v1/payments/callback",
 
+                        // Mock 支付触发（仅测试用，模拟支付宝通知；生产环境通过 @Profile 关闭）
+                        "/api/v1/payments/mock-pay",
+
                         // Spring Boot Actuator 运维端点（健康检查）
                         "/actuator/**",
 

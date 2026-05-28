@@ -100,6 +100,14 @@ public class Shop {
     private BigDecimal score;
 
     /**
+     * 门店价格（分），如 9900 = 99 元。
+     * 用途：下单时作为 order_info.original_amount 的来源。
+     * 单位「分」而非元：避免浮点数精度问题（BigDecimal 主要用于地理坐标存储）。
+     * 0 表示价格待定（DRAFT 状态时可以先不填）。
+     */
+    private Integer price;
+
+    /**
      * 门店状态：DRAFT / ONLINE / OFFLINE / CLOSED。
      * 用户端只能看到 ONLINE 状态的门店。
      */
