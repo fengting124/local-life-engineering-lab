@@ -1,0 +1,219 @@
+package com.personalprojections.locallife.server.module.mq.service;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.personalprojections.locallife.server.domain.entity.OutboxMessage;
+import com.personalprojections.locallife.server.domain.mapper.OutboxMessageMapper;
+import com.personalprojections.locallife.server.module.mq.event.PaymentSuccessEvent;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.rocketmq.spring.core.RocketMQTemplate;
+import org.springframework.messaging.support.MessageBuilder;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+/**
+ * 本地消息表（Outbox）Service。
+ *
+ * <h2>职责拆分</h2>
+ * <ul>
+ *   <li>{@code saveToOutbox}：在业务事务内写 outbox_message（同一事务，原子性保证）</li>
+ *   <li>{@code relayMessages}：定时扫描 PENDING 消息，投递到 RocketMQ（独立事务，与业务解耦）</li>
+ * </ul>
+ *
+ * <h2>为什么 relayMessages 不用 @Transactional</h2>
+ * <p>Relay 任务扫描的消息已经写入 DB（commitd），不需要 DB 事务。
+ * 每条消息独立发送，发送成功立即更新状态（减少锁持有时间）。
+ * 如果整批加一个大事务，任何一条失败都会回滚所有状态更新，反而更复杂。
+ *
+ * <h2>指数退避策略</h2>
+ * <pre>
+ *   第 1 次失败：nextRetryAt = NOW() + 10s
+ *   第 2 次失败：nextRetryAt = NOW() + 30s
+ *   第 3 次失败：nextRetryAt = NOW() + 60s
+ *   第 4 次（retryCount ≥ 3）：status = FAILED，停止重试，等待人工干预
+ * </pre>
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class OutboxService {
+
+    private final OutboxMessageMapper outboxMessageMapper;
+    private final RocketMQTemplate rocketMQTemplate;
+    private final ObjectMapper objectMapper;
+
+    /** 最大重试次数，超过后标记 FAILED。 */
+    private static final int MAX_RETRY_COUNT = 3;
+
+    /** 指数退避各阶段等待秒数（第 1 次 10s，第 2 次 30s，第 3 次 60s）。 */
+    private static final int[] RETRY_BACKOFF_SECONDS = {10, 30, 60};
+
+    /** 每批最多处理的消息数，防止一次扫描太多堵塞线程。 */
+    private static final int RELAY_BATCH_SIZE = 100;
+
+    // =========================================================
+    // 写入本地消息表（在业务事务内调用）
+    // =========================================================
+
+    /**
+     * 将支付成功事件写入本地消息表（需要在业务事务内调用）。
+     *
+     * <p>此方法使用 {@code Propagation.MANDATORY}：强制要求调用方已有事务。
+     * 如果没有外层事务就调用此方法，会抛 {@code IllegalTransactionStateException}。
+     * 这样确保 outbox_message 和业务数据（payment_order、order_info）在同一个事务里，
+     * 要么都提交，要么都回滚。
+     *
+     * <p>调用场景：PaymentService.handleCallback → orderService.markOrderAsPaid → 成功后调此方法
+     * （handleCallback 有 @Transactional，满足 MANDATORY 要求）
+     *
+     * @param event     支付成功事件对象
+     * @param topic     目标 RocketMQ Topic
+     * @param tag       消息 Tag（可为空字符串）
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void saveToOutbox(PaymentSuccessEvent event, String topic, String tag) {
+        String payload;
+        try {
+            payload = objectMapper.writeValueAsString(event);
+        } catch (JsonProcessingException e) {
+            // 序列化失败是 bug，抛出让事务回滚
+            throw new RuntimeException("Outbox payload 序列化失败: " + e.getMessage(), e);
+        }
+
+        OutboxMessage message = OutboxMessage.builder()
+                .eventId(event.getEventId())
+                .topic(topic)
+                .tag(tag != null ? tag : "")
+                .payload(payload)
+                .status("PENDING")
+                .retryCount(0)
+                .nextRetryAt(LocalDateTime.now()) // 立即可投递
+                .build();
+
+        outboxMessageMapper.insert(message);
+        log.debug("[Outbox] 写入消息: eventId={}, topic={}", event.getEventId(), topic);
+    }
+
+    // =========================================================
+    // Relay 任务：扫描 PENDING 消息并投递到 RocketMQ
+    // =========================================================
+
+    /**
+     * 定时 Relay 任务，每 10 秒扫描一次本地消息表，将 PENDING 消息投递到 RocketMQ。
+     *
+     * <p>执行逻辑：
+     * <ol>
+     *   <li>查 PENDING 且 next_retry_at &lt;= NOW() 的消息（限 100 条）</li>
+     *   <li>逐条调用 rocketMQTemplate.send 发送到对应 Topic</li>
+     *   <li>发送成功 → markAsSent（PENDING → SENT）</li>
+     *   <li>发送失败 → markAsRetry（retryCount+1，更新 nextRetryAt，超限标 FAILED）</li>
+     * </ol>
+     *
+     * <h2>多实例并发安全</h2>
+     * <p>多个节点同时扫描，可能扫到同一条消息：
+     * <ul>
+     *   <li>{@code markAsSent} 内部 WHERE status='PENDING'，只有一个节点能 affected=1</li>
+     *   <li>另一个节点 affected=0，跳过（幂等）</li>
+     * </ul>
+     * 生产级升级：用 SELECT ... FOR UPDATE（悲观锁）或 Redis 分布式锁做更严格互斥。
+     *
+     * <h2>RocketMQ 不可用时的行为</h2>
+     * <p>发送失败 → retryCount+1 + 指数退避 → 最终 FAILED。
+     * 运维告警：监控 outbox_message WHERE status='FAILED' COUNT(*) > 0。
+     * 恢复后人工重置为 PENDING 重新投递，或写自动化脚本补偿。
+     */
+    @Scheduled(fixedDelay = 10_000) // 每 10 秒执行一次（上次完成后计时）
+    public void relayMessages() {
+        // 查 PENDING 且已到重试时间的消息
+        List<OutboxMessage> pending = outboxMessageMapper.selectList(
+                new LambdaQueryWrapper<OutboxMessage>()
+                        .eq(OutboxMessage::getStatus, "PENDING")
+                        .le(OutboxMessage::getNextRetryAt, LocalDateTime.now()) // next_retry_at <= NOW()
+                        .orderByAsc(OutboxMessage::getCreatedAt)  // 按创建时间顺序投递，先进先出
+                        .last("LIMIT " + RELAY_BATCH_SIZE));
+
+        if (pending.isEmpty()) {
+            return;
+        }
+
+        log.info("[Outbox] Relay 任务：发现 {} 条待投递消息", pending.size());
+        int sentCount = 0;
+        int failCount = 0;
+
+        for (OutboxMessage msg : pending) {
+            try {
+                // 构造 RocketMQ 消息，topic:tag 格式
+                String destination = msg.getTag() != null && !msg.getTag().isEmpty()
+                        ? msg.getTopic() + ":" + msg.getTag()
+                        : msg.getTopic();
+
+                // 同步发送，确保 Broker 收到消息后才返回
+                // （异步发送性能更好，但需要回调处理失败，当前用同步更简单可靠）
+                rocketMQTemplate.syncSend(destination,
+                        MessageBuilder.withPayload(msg.getPayload())
+                                .setHeader("eventId", msg.getEventId()) // 消费者可从 Header 读取 eventId
+                                .build());
+
+                // 发送成功：原子标记为 SENT（WHERE status='PENDING' 防并发重复处理）
+                int affected = outboxMessageMapper.markAsSent(msg.getId());
+                if (affected > 0) {
+                    sentCount++;
+                    log.debug("[Outbox] 投递成功: eventId={}, topic={}", msg.getEventId(), msg.getTopic());
+                } else {
+                    // affected=0：另一个节点已处理，本节点幂等跳过
+                    log.debug("[Outbox] 幂等跳过（已被其他节点处理）: eventId={}", msg.getEventId());
+                }
+
+            } catch (Exception e) {
+                // 发送失败：指数退避重试
+                failCount++;
+                handleSendFailure(msg, e);
+            }
+        }
+
+        if (sentCount > 0 || failCount > 0) {
+            log.info("[Outbox] Relay 完成：成功={}, 失败={}", sentCount, failCount);
+        }
+    }
+
+    // =========================================================
+    // 私有工具方法
+    // =========================================================
+
+    /**
+     * 处理消息发送失败：更新重试次数，计算下次重试时间（指数退避）。
+     * 超过最大重试次数时标记为 FAILED（需人工介入）。
+     *
+     * @param msg 失败的消息
+     * @param e   发送时的异常
+     */
+    private void handleSendFailure(OutboxMessage msg, Exception e) {
+        int newRetryCount = msg.getRetryCount() + 1;
+        String newStatus;
+        LocalDateTime nextRetryAt;
+
+        if (newRetryCount >= MAX_RETRY_COUNT) {
+            // 超过最大重试次数，标记为 FAILED
+            newStatus = "FAILED";
+            nextRetryAt = LocalDateTime.now(); // 已失败，next_retry_at 无意义
+            log.error("[Outbox] 消息投递失败（已达最大重试次数，标记 FAILED）: eventId={}, error={}",
+                    msg.getEventId(), e.getMessage());
+        } else {
+            // 还可以重试：指数退避计算下次时间
+            int backoffSeconds = RETRY_BACKOFF_SECONDS[Math.min(newRetryCount - 1, RETRY_BACKOFF_SECONDS.length - 1)];
+            newStatus = "PENDING";
+            nextRetryAt = LocalDateTime.now().plusSeconds(backoffSeconds);
+            log.warn("[Outbox] 消息投递失败（{}秒后重试，第{}/{}次）: eventId={}, error={}",
+                    backoffSeconds, newRetryCount, MAX_RETRY_COUNT, msg.getEventId(), e.getMessage());
+        }
+
+        outboxMessageMapper.markAsRetry(msg.getId(), newStatus, nextRetryAt);
+    }
+}

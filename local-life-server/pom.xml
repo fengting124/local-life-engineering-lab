@@ -76,6 +76,37 @@
             <artifactId>caffeine</artifactId>
         </dependency>
 
+        <!-- ===== 消息队列 ===== -->
+
+        <!--
+            RocketMQ Spring Boot Starter 2.3.x 支持 Spring Boot 3.x。
+            提供 @RocketMQMessageListener、RocketMQTemplate 等注解/模板。
+            版本选择说明：
+              - 2.3.x 对应 Apache RocketMQ 5.x（当前 docker-compose 使用 5.3.2）
+              - 不选更新版本：2.3.x 已稳定，与项目依赖的 Spring Boot 3.x 兼容验证充分
+            用途：
+              1. 本地消息表（outbox_message）+ 定时 Relay 任务：保证消息不丢
+              2. 支付成功事件异步通知（解耦 PaymentService 和下游处理）
+              3. 死信队列处理（重试超限后进 DLQ，人工或自动补偿）
+        -->
+        <dependency>
+            <groupId>org.apache.rocketmq</groupId>
+            <artifactId>rocketmq-spring-boot-starter</artifactId>
+            <version>2.3.1</version>
+        </dependency>
+
+        <!-- ===== JSON 处理 ===== -->
+
+        <!--
+            Jackson Databind：Spring Boot Web 默认已包含，此处显式声明以便在非 Web 上下文中也可用。
+            用于：本地消息表的 payload 序列化（PaymentSuccessEvent → JSON 字符串）
+            Spring Boot BOM 管理版本，不需要手写 version。
+        -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
         <!-- ===== 工具 ===== -->
 
         <!--

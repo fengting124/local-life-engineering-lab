@@ -7,6 +7,9 @@ import com.personalprojections.locallife.server.common.result.ErrorCode;
 import com.personalprojections.locallife.server.domain.entity.OrderInfo;
 import com.personalprojections.locallife.server.domain.entity.PaymentOrder;
 import com.personalprojections.locallife.server.domain.mapper.PaymentOrderMapper;
+import com.personalprojections.locallife.server.module.mq.constant.MqTopics;
+import com.personalprojections.locallife.server.module.mq.event.PaymentSuccessEvent;
+import com.personalprojections.locallife.server.module.mq.service.OutboxService;
 import com.personalprojections.locallife.server.module.order.dto.CreatePaymentRequest;
 import com.personalprojections.locallife.server.module.order.dto.PaymentCallbackRequest;
 import com.personalprojections.locallife.server.module.order.dto.PaymentVO;
@@ -68,6 +71,7 @@ public class PaymentService {
 
     private final PaymentOrderMapper paymentOrderMapper;
     private final OrderService orderService;
+    private final OutboxService outboxService;
 
     // =========================================================
     // 发起支付
@@ -274,7 +278,29 @@ public class PaymentService {
             log.warn("[Payment] 支付单已成功但订单状态非 WAIT_PAY, orderId={}", paymentOrder.getOrderId());
         }
 
-        log.info("[Payment] 支付成功处理完毕, paymentNo={}, orderId={}, paidAmount={}分",
+        // ---- Step 6: 写本地消息表（与上面的 DB 操作同一事务）----
+        // Transactional Outbox：在同一事务内写 outbox_message（PENDING），
+        // 事务提交后 Relay 任务负责异步投递到 RocketMQ。
+        // 保证：payment_order / order_info 更新成功 <=> outbox_message 写入成功（原子）
+        // 即使后续 RocketMQ 不可用，消息也不会丢失，Relay 任务会在 MQ 恢复后重试投递。
+        OrderInfo orderInfo = orderService.getOrderById(paymentOrder.getOrderId());
+        PaymentSuccessEvent event = PaymentSuccessEvent.builder()
+                .eventId(paymentOrder.getId() + "_paid") // 全局唯一事件 ID
+                .paymentOrderId(paymentOrder.getId())
+                .paymentNo(paymentOrder.getPaymentNo())
+                .orderId(paymentOrder.getOrderId())
+                .orderNo(paymentOrder.getOrderNo())
+                .userId(paymentOrder.getUserId())
+                .shopId(orderInfo != null ? orderInfo.getShopId() : null)
+                .paidAmount(callback.getPaidAmount())
+                .channel(callback.getChannel())
+                .tradeNo(callback.getTradeNo())
+                .paidAt(payAt)
+                .eventAt(LocalDateTime.now())
+                .build();
+        outboxService.saveToOutbox(event, MqTopics.PAYMENT_SUCCESS_TOPIC, MqTopics.TAG_PAYMENT_SUCCESS);
+
+        log.info("[Payment] 支付成功处理完毕（含 Outbox 写入）, paymentNo={}, orderId={}, paidAmount={}分",
                 callback.getPaymentNo(), paymentOrder.getOrderId(), callback.getPaidAmount());
     }
 

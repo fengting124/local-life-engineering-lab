@@ -41,6 +41,22 @@ spring:
     # 如有特殊需求，在具体 VO 上用 @JsonInclude(JsonInclude.Include.ALWAYS) 覆盖
     default-property-inclusion: non_null
 
+# ===== RocketMQ 配置 =====
+rocketmq:
+  # Name Server 地址，对应 docker-compose rocketmq-namesrv:9876
+  # 开发环境连本地，生产环境用 VIP 地址（逗号分隔多个节点）
+  name-server: localhost:9876
+  producer:
+    # 生产者组名，同一业务的 Producer 用同一 Group（事务消息需要同组重试）
+    group: local-life-producer-group
+    # 消息发送超时（毫秒），超过后抛 RemotingTooMuchRequestException
+    send-message-timeout: 3000
+    # 消息发送失败重试次数（不含第一次）
+    retry-times-when-send-failed: 2
+  consumer:
+    # 消费者组，同一业务的 Consumer 用同一 Group（实现负载均衡和集群消费）
+    group: local-life-consumer-group
+
 # ===== MyBatis-Plus 配置 =====
 mybatis-plus:
   # Mapper XML 文件位置，* 通配符匹配所有 XML

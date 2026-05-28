@@ -1027,4 +1027,219 @@ if (order.getUserCouponId() != null) {
 
 ---
 
-*教程版本：2026-05-28 | 对应代码版本：feat: add order & payment module*
+## 第七章：消息可靠性——Transactional Outbox + RocketMQ
+
+> **本章主线**：支付成功后如何保证消息不丢，同时保证下游不重复处理。
+> 这是分布式系统中「最终一致性」的经典实现，面试必考。
+
+---
+
+### 7.1 问题：为什么不能直接在支付成功后发 MQ？
+
+```java
+// ❌ 危险的做法（不要这样写）
+@Transactional
+public void handleCallback(PaymentCallbackRequest callback) {
+    // Step 1: 更新数据库
+    paymentOrderMapper.updateStatusOnSuccess(...);
+    orderService.markOrderAsPaid(...);
+    // 数据库事务提交 ↑
+
+    // Step 2: 发 MQ
+    rocketMQTemplate.send("payment-success-topic", event); // ← 如果这里失败？
+}
+```
+
+**问题场景**：
+```
+1. 数据库事务提交成功（payment_order = PAID，order_info = PAID）
+2. rocketMQTemplate.send 网络超时 → 抛异常
+3. MQ 消息丢失！下游永远收不到「支付成功」通知
+4. 用户明明付了钱，但短信没发、统计没更新、积分没发放
+```
+
+**根本原因**：数据库事务和 MQ 发送是**两个独立的操作**，无法合并成一个原子操作。
+
+---
+
+### 7.2 解决方案：Transactional Outbox Pattern（事务性发件箱）
+
+**核心思路**：把「发 MQ」变成「写数据库」，利用数据库的事务原子性保证消息一定被记录。
+
+```
+原来的问题：DB 提交成功 → MQ 发送失败 → 消息丢失
+
+Outbox 方案：
+  BEGIN 同一事务
+    UPDATE payment_order → PAID
+    UPDATE order_info    → PAID
+    INSERT outbox_message (PENDING)  ← 和业务数据同一事务！
+  COMMIT
+```
+
+只要事务提交成功，`outbox_message` 一定在数据库里。
+然后由独立的 **Relay 任务**（定时扫描）异步投递到 RocketMQ：
+
+```
+每 10 秒：
+  SELECT * FROM outbox_message WHERE status='PENDING' AND next_retry_at <= NOW()
+  rocketMQTemplate.syncSend(topic, payload)
+  UPDATE outbox_message SET status='SENT'
+```
+
+**保证**：消息要么在事务里一起回滚（不写），要么写入后 Relay 任务最终投递出去（不丢）。
+
+---
+
+### 7.3 outbox_message 表设计
+
+```sql
+CREATE TABLE outbox_message (
+    id          BIGINT UNSIGNED  NOT NULL,   -- 雪花 ID
+    event_id    VARCHAR(64)      NOT NULL,   -- 业务事件唯一 ID（消费者幂等用）
+    topic       VARCHAR(64)      NOT NULL,   -- RocketMQ Topic
+    tag         VARCHAR(64)      NOT NULL,   -- RocketMQ Tag
+    payload     TEXT             NOT NULL,   -- 消息体 JSON
+    status      VARCHAR(16)      NOT NULL,   -- PENDING / SENT / FAILED
+    retry_count TINYINT UNSIGNED NOT NULL,   -- 已重试次数
+    next_retry_at DATETIME       NOT NULL,   -- 下次重试时间（指数退避）
+    ...
+    UNIQUE KEY uk_event_id (event_id),       -- 防重复写入
+    KEY idx_outbox_status_retry (status, next_retry_at)  -- Relay 扫描索引
+)
+```
+
+**关键字段**：
+- `event_id`：全局唯一，消费者用它做幂等判重（`{paymentOrderId}_paid`）
+- `status`：PENDING → SENT（正常）or PENDING → FAILED（超限）
+- `retry_count + next_retry_at`：支持指数退避重试
+
+---
+
+### 7.4 指数退避重试（Exponential Backoff）
+
+```
+第 1 次失败 → 10 秒后重试
+第 2 次失败 → 30 秒后重试
+第 3 次失败 → 60 秒后重试
+第 4 次（retryCount ≥ 3） → status = FAILED，停止重试
+```
+
+为什么用指数退避而不是固定间隔？
+- 固定 10s 重试：MQ 宕机 30 分钟，发起了 180 次无效请求，白白消耗资源
+- 指数退避：随着失败次数增加，等待时间拉长，减少对故障 MQ 的冲击
+
+FAILED 后运维监控告警，人工处理（重置为 PENDING 重新投递，或补偿脚本）。
+
+---
+
+### 7.5 消费者幂等（防重复消费）
+
+Relay 任务保证「至少一次投递（AT LEAST ONCE）」，同一条消息可能被投递多次。
+消费者必须保证**幂等**。
+
+**当前方案：Redis SETNX**
+
+```java
+// 消费时先判重
+String idempotentKey = "consume:payment_success:" + event.getEventId();
+Boolean isNew = redis.setIfAbsent(idempotentKey, "1", 24小时);
+
+if (!isNew) {
+    log.info("幂等跳过：已消费过 eventId={}", event.getEventId());
+    return; // 直接 ACK，不重复处理
+}
+
+// 执行业务逻辑（记录日志、发通知等）
+processPaymentSuccess(event);
+```
+
+**为什么用 Redis 而不是 DB 唯一索引？**
+
+| 方案 | 优点 | 缺点 |
+|------|------|------|
+| Redis SETNX | 内存操作，性能高（微秒级） | Redis 宕机时失效（极低概率） |
+| DB 唯一索引 | 持久化，绝对可靠 | 每次消费都要 INSERT，有写入压力 |
+
+业务逻辑本身幂等（重复记录日志无副作用）时，Redis 方案已足够。
+
+---
+
+### 7.6 完整链路（加入 MQ 后）
+
+```
+支付回调
+    ↓
+PaymentService.handleCallback（@Transactional）
+    ├── UPDATE payment_order → PAID
+    ├── UPDATE order_info    → PAID
+    └── INSERT outbox_message (PENDING) ← 同一事务
+         ↓（事务提交）
+         [Relay 任务，每 10s 扫描]
+         ↓
+    rocketMQTemplate.syncSend(payment-success-topic)
+         ↓
+    UPDATE outbox_message → SENT
+         ↓
+    [PaymentSuccessConsumer 消费]
+         ├── Redis SETNX 判重（幂等）
+         ├── processPaymentSuccess（记日志/发通知等）
+         └── ACK
+```
+
+若 Relay 投递失败 → 指数退避重试 → 超限 FAILED → 运维告警人工补偿。
+若消费者处理失败 → 抛异常 → RocketMQ 自动重试（最多 16 次）→ 超限进死信。
+
+---
+
+### 7.7 死信队列（DLQ）
+
+RocketMQ 消费者默认重试 **16 次**，每次间隔递增（10s、30s、1min、2min...）。
+16 次全失败后，消息进入死信 Topic：`%DLQ%{消费者组}`。
+
+```
+死信 Topic：%DLQ%payment-success-consumer-group
+```
+
+处理死信的方案：
+1. **监控告警**：死信 Topic 有消息 → 触发告警
+2. **人工重放**：排查问题后，从死信 Topic 重新投递
+3. **自动补偿**：专门的死信消费者，执行降级逻辑（如只记录日志，不重试完整流程）
+
+---
+
+### 7.8 关键词卡片（消息可靠性模块）
+
+| 关键词 | 一句话解释 |
+|--------|-----------|
+| **Transactional Outbox** | 把「发 MQ」变成「写 DB」，利用 DB 事务原子性保证消息不丢 |
+| **Relay 任务** | 定时扫描 outbox_message，将 PENDING 消息投递到 MQ |
+| **AT LEAST ONCE** | 至少投递一次，可能重复，下游必须幂等 |
+| **指数退避** | 失败后等待时间指数增长，减少对故障系统的冲击 |
+| **消费者幂等** | Redis SETNX 判重，防止重复消费同一条消息 |
+| **死信队列 DLQ** | 重试超限后的消息最终去处，需人工介入 |
+| **eventId** | 消费者幂等判重的全局唯一 Key（`{paymentOrderId}_paid`） |
+| **syncSend** | 同步发送，Broker 确认收到才返回，保证 Relay 任务知道是否成功 |
+
+---
+
+### 7.9 面试复述练习
+
+**题目：支付成功后如何保证消息不丢、下游不重复处理？**
+
+> 参考答案：
+>
+> 消息不丢用 **Transactional Outbox**：
+> 支付回调处理中，更新 payment_order、order_info 和写 outbox_message 在**同一个事务**里。
+> 事务提交后，独立的 Relay 任务每 10 秒扫描 PENDING 消息投递到 RocketMQ。
+> 失败则指数退避重试，超限标 FAILED 触发告警。
+>
+> 不重复处理用**消费者幂等**：
+> 每条消息携带全局唯一 eventId，消费时 Redis SETNX 判重。
+> 已处理过则直接 ACK 跳过，保证同一事件只处理一次。
+>
+> 这套方案保证：**AT LEAST ONCE 投递 + 消费者幂等 = EXACTLY ONCE 效果**。
+
+---
+
+*教程版本：2026-05-28 | 对应代码版本：feat: add RocketMQ message reliability*
