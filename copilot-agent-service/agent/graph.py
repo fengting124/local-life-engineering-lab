@@ -22,7 +22,7 @@ LangGraph ReAct Agent 状态图。
 """
 import structlog
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.memory import MemorySaver  # 仅作为 fallback
 
 from agent.state import AgentState
 from agent import nodes
@@ -123,11 +123,18 @@ def build_graph() -> StateGraph:
     # Final Answer：输出结果，循环结束
     builder.add_edge("final_node",      END)
 
-    # Checkpoint Saver（支持 HITL 恢复，实际使用 MySQL Saver 替换 MemorySaver）
-    # 开发阶段用内存 Saver，生产替换为：
-    # from langgraph.checkpoint.mysql import AsyncMySQLSaver
-    # checkpointer = AsyncMySQLSaver(...)
-    checkpointer = MemorySaver()
+    # ---- Checkpoint Saver ----
+    # 生产环境：AsyncMySQLCheckpointer（持久化到 langgraph_checkpoint 表）
+    #   优点：服务重启后 HITL 状态不丢失，审批通过后仍可恢复
+    # 开发 fallback：MemorySaver（进程内存，重启丢失，仅用于快速调试）
+    try:
+        from session.checkpointer import AsyncMySQLCheckpointer
+        checkpointer = AsyncMySQLCheckpointer()
+        log.info("checkpointer_type", type="AsyncMySQLCheckpointer", persistence="MySQL")
+    except Exception as e:
+        # DB 不可用时降级为内存（开发场景，不影响启动）
+        log.warning("mysql_checkpointer_failed", error=str(e), fallback="MemorySaver")
+        checkpointer = MemorySaver()
 
     return builder.compile(checkpointer=checkpointer)
 

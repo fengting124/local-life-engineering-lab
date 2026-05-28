@@ -150,6 +150,12 @@ management:
     tracing:
       endpoint: http://localhost:9411/api/v2/spans
 
+
+# ===== 内部服务接口密钥（Copilot MCP Server 调用用）=====
+# 生产环境从 Secret Manager 注入，不要硬编码到代码仓库
+internal:
+  api-key: local-life-internal-secret
+
 # ===== 日志配置 =====
 logging:
   level:

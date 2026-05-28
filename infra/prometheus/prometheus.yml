@@ -1,0 +1,50 @@
+# =========================================================
+# Prometheus 抓取配置（开发环境）
+# =========================================================
+# 启动方式：docker compose --profile observability up -d
+# Grafana 配置 Datasource：http://prometheus:9090
+
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: "local-life-dev"
+
+scrape_configs:
+  # =========================================================
+  # LocalLife Server（Spring Boot Actuator + Micrometer）
+  # =========================================================
+  - job_name: 'local-life-server'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+        labels:
+          service: 'local-life-server'
+
+  # =========================================================
+  # LocalLife Copilot MCP Server
+  # =========================================================
+  - job_name: 'local-life-copilot'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['host.docker.internal:8081']
+        labels:
+          service: 'local-life-copilot'
+
+  # =========================================================
+  # Copilot Agent Service（Python FastAPI）
+  # 需要在 main.py 添加 prometheus_fastapi_instrumentator
+  # =========================================================
+  - job_name: 'copilot-agent-service'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['host.docker.internal:8000']
+        labels:
+          service: 'copilot-agent-service'
+
+  # =========================================================
+  # Prometheus 自监控
+  # =========================================================
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

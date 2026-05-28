@@ -81,6 +81,9 @@ public class WebMvcConfig implements WebMvcConfigurer {
                         "/api/v1/search/shops",
                         "/api/v1/search/posts",
 
+                        // 内部服务接口（仅 Copilot MCP Server 调用，走 X-Internal-Key 验证，不用 JWT）
+                        "/internal/**",
+
                         // Spring Boot Actuator 运维端点（健康检查）
                         "/actuator/**",
 

@@ -405,29 +405,59 @@ uvicorn main:app --port 8000 --reload
 
 ---
 
-## 11. 迭代计划
+## 11. 实现进度
 
-### 第 7 周（当前）
-- [x] Java MCP Server 骨架（McpController + ToolRegistry + RBAC）
-- [x] 基础工具（query_order / shop_metrics_query / execute_refund）
-- [x] Python Agent Service（FastAPI + LangGraph + MCP Client）
-- [x] SSE 流式输出端点
-- [ ] 完整 Mapper 注入（工具实际查询数据库）
+### ✅ 已完成（生产级）
 
-### 第 8 周
-- [ ] LangGraph MySQL Checkpointer（替换 MemorySaver）
-- [ ] HITL 完整流程（hitl_approval 表 + 审批恢复）
-- [ ] 订单异常排查完整链路跑通
-- [ ] 限流（工具级 + 用户级）
+**Java MCP Server**
+- [x] McpController + JSON-RPC 2.0 协议层（initialize / tools/list / tools/call）
+- [x] RBAC：RbacFilter 解析 X-User-Id/Role/Merchant-Id Header → ThreadLocal
+- [x] ToolRegistry：自动发现所有 `@Component McpTool` 注册
+- [x] 9 个生产级工具：
+  - L1 只读：query_order / query_payment / query_coupon_issue_log /
+    query_mq_dead_letter / shop_metrics_query / coupon_policy_lookup
+  - L2 草稿：campaign_draft_generate
+  - L4 高风险：execute_refund / issue_compensation_coupon（HITL + 内部 API）
+- [x] CopilotOrderMapper + CopilotCouponMapper：只读 SQL（含 JOIN/聚合）
+- [x] ToolRateLimiter：Redis 计数（100次/分钟/工具 + 30次/分钟/用户）
+- [x] LocalLifeInternalClient：调用主服务 /internal/* API 执行退款/补券
+- [x] ToolAuditService：@Async 异步写 tool_audit_log
 
-### 第 9 周
-- [ ] Milvus RAG 接入（文档向量化 + 检索）
-- [ ] 权限感知 RAG（merchant_id 隔离）
-- [ ] Reranker 集成
-- [ ] 执行类工具（execute_refund 真实调用 LocalLife API）
+**Python Agent Service**
+- [x] LangGraph StateGraph + 5 个节点（llm/tool/reflection/hitl/final）
+- [x] AsyncMySQLCheckpointer：持久化 checkpoint（服务重启可恢复 HITL）
+- [x] ToolRouter：按 role + task type + context 三层动态过滤工具
+- [x] Self-Reflection：每 5 步或工具失败时触发
+- [x] 6 种终止条件（completed / max_steps / token_budget / hitl / repeat / no_tools）
+- [x] SSE 端点：astream_events → agent_step / tool_call / tool_result / final_answer
+- [x] Session + Message 持久化（agent_session / agent_message）
+- [x] HITL 完整流程：DB 写入 + POST /chat/resume + 审批工作台 API
+- [x] Guardrails：12+ 输入注入规则（BLOCK/WARN/ALLOW）+ 输出脱敏检查
+- [x] RAG 完整流水线：embedding（multilingual-e5）+ Milvus + Reranker（Cross-Encoder）
+- [x] knowledge_search Python 原生工具（绕过 MCP，本地向量检索）
+- [x] Evals 评测集 50 条用例 + 6 项指标自动化脚本
 
-### 第 10 周
-- [ ] Evals 评测集（50 条用例）
-- [ ] 六项指标评测脚本
-- [ ] Guardrails（Prompt Injection 检测）
-- [ ] LangSmith 集成（开发期观察）
+**主服务（LocalLife Server）配套**
+- [x] InternalController + InternalService：/internal/orders/{n}/refund + compensate-coupon
+- [x] X-Internal-Key 验证（防止外部恶意调用）
+- [x] BizException 业务错误码转换为 MCP 结构化错误
+
+**Docker Compose 完整环境**
+- [x] MySQL 8 / Redis 7 / Elasticsearch 8 / RocketMQ 5
+- [x] Milvus 2.4（+ etcd + MinIO + Attu UI）
+- [x] Prometheus + Grafana + Zipkin（可观测性套件）
+
+**性能测试**
+- [x] Locust 压测脚本（locallife_server + copilot 两个文件）
+- [x] 性能基准文档（performance-tests/README.md）
+- [x] 瓶颈定位指南（MySQL / Redis / JVM / LLM）
+
+### 🚧 后续增强（可选）
+
+| 项 | 优先级 | 说明 |
+|---|--------|------|
+| LangSmith 集成 | P2 | 开发期可视化 Agent trace |
+| 模型路由（Haiku for simple, Sonnet for hard） | P2 | 降低 token 成本 |
+| Streaming Tool Call | P2 | SSE 推送工具调用进度更细 |
+| 智能运营日报（Proactive Agent） | P3 | 定时任务自动生成运营建议 |
+| Hybrid Search（向量 + BM25） | P2 | 提升专有名词召回率 |（开发期观察）

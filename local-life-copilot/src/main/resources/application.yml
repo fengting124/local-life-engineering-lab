@@ -57,6 +57,14 @@ management:
     health:
       show-details: always
 
+# ===== LocalLife 主服务调用配置 =====
+# MCP Server 通过内部 HTTP API 调用 LocalLife Server 执行高风险动作（退款/补券）
+locallife:
+  server:
+    url: http://localhost:8080
+    # 内部密钥（必须与 local-life-server application.yml 中的 internal.api-key 一致）
+    internal-key: local-life-internal-secret
+
 # ===== MCP Server 业务配置 =====
 mcp:
   server:

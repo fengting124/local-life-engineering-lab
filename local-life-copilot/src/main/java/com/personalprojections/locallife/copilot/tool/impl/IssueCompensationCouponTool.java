@@ -10,7 +10,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
-import java.util.Map;
 
 /**
  * 工具：issue_compensation_coupon —— 发放补偿优惠券（L4 高风险，必须 HITL）。
@@ -45,6 +44,7 @@ import java.util.Map;
 public class IssueCompensationCouponTool implements McpTool {
 
     private final ObjectMapper objectMapper;
+    private final com.personalprojections.locallife.copilot.client.LocalLifeInternalClient internalClient;
 
     @Override
     public String getName() {
@@ -117,31 +117,8 @@ public class IssueCompensationCouponTool implements McpTool {
         log.info("[IssueCompensationCouponTool] 发放补偿券: userId={}, orderId={}, amount={}分, approvalId={}",
                 userId, orderId, compensationAmount, approvalId);
 
-        // 实际实现：调用 LocalLife Server 的内部 API
-        // POST /internal/coupon/compensate
-        // {
-        //   user_id: userId,
-        //   order_no: orderId,
-        //   face_value: compensationAmount,
-        //   reason: reason,
-        //   approval_id: approvalId
-        // }
-        // 内部 API 会：
-        // 1. 验证 approvalId 有效且已 APPROVED
-        // 2. 创建临时 coupon_template（面值=compensationAmount，用途=COMPENSATION）
-        // 3. 发放 user_coupon 给 userId
-        // 4. 发送用户通知（短信/App Push）
-        // 5. 返回新券 ID
-
-        return Map.of(
-                "status",               "PROCESSING",
-                "user_id",              userId,
-                "order_id",             orderId,
-                "compensation_amount",  compensationAmount,
-                "reason",               reason,
-                "approval_id",          approvalId,
-                "_note",                "补偿券发放中，实际 API 对接开发中"
-        );
+        // 调用 LocalLife Server 内部补偿券 API（POST /internal/orders/{orderNo}/compensate-coupon）
+        return internalClient.compensateCoupon(orderId, userId, compensationAmount, approvalId, reason);
     }
 
     private String extractRequiredString(JsonNode args, String key) {

@@ -68,6 +68,34 @@ async def chat(
     user_role   = x_user_role
     merchant_id = int(x_merchant_id) if x_merchant_id else None
 
+    # ---- Guardrails 输入检查（Prompt Injection / 越权尝试）----
+    from guardrails.input_checker import check_input, GuardLevel
+    guard_result = check_input(request.message, user_role)
+    if guard_result.level == GuardLevel.BLOCK:
+        log.warning("chat_blocked_by_guardrails", user_id=user_id, reason=guard_result.reason)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code":    "BLOCKED_BY_GUARDRAILS",
+                "message": "请求被安全策略拦截",
+                "reason":  guard_result.reason,
+            },
+        )
+
+    # ---- Session 持久化：保存用户输入消息（异步，不阻塞 SSE 启动）----
+    # 写 agent_message 表（role=user, step_index=0），方便后续会话回放和评测
+    try:
+        from session.manager import session_manager
+        await session_manager.save_message(
+            session_id=request.session_id,
+            role="user",
+            content=request.message,
+            step_index=0,
+        )
+    except Exception as e:
+        # DB 不可用时不阻塞主流程，仅日志告警
+        log.warning("session_save_failed", error=str(e))
+
     # 初始化 Agent 状态
     import uuid
     thread_id = request.thread_id or str(uuid.uuid4())

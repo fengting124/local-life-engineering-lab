@@ -16,9 +16,16 @@ langchain-openai==0.2.6      # 备选 OpenAI
 # ===== LLM =====
 anthropic==0.40.0
 
-# ===== RAG（Milvus 向量检索）=====
+# ===== RAG 完整流水线 =====
+# Milvus 向量库（pymilvus 2.4.x 对应 Milvus 2.4.x）
 pymilvus==2.4.9
 langchain-milvus==0.1.6
+# Embedding 模型 + Cross-Encoder Reranker（本地推理，无 API 费用）
+# multilingual-e5-base：768 维，中英双语
+# cross-encoder/ms-marco-MiniLM-L-6-v2：本地 Reranker
+sentence-transformers==3.3.1
+torch>=2.0.0                  # sentence-transformers 依赖（PyTorch）
+numpy>=1.26.0                 # 向量运算
 
 # ===== 数据库（会话 + 消息 + checkpoint 持久化）=====
 sqlalchemy==2.0.36

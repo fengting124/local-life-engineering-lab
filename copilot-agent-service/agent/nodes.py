@@ -126,8 +126,16 @@ async def llm_node(state: AgentState) -> dict:
     )
     tools = router.route(all_tools)
 
-    # 将过滤后的工具转换为 LangChain tool 格式
-    lc_tools = _convert_to_lc_tools(tools)
+    # ---- 注入 Python 原生工具：knowledge_search（RAG） ----
+    # knowledge_search 不通过 MCP（向量检索在 Python 侧本地执行，避免跨语言传输大向量）
+    # 它作为 LangChain 原生 tool 绑定到 LLM，tool_node 中会被特判调用本地函数
+    from rag.knowledge_tool import make_knowledge_search_tool
+    native_knowledge_tool = make_knowledge_search_tool(merchant_id=state.get("merchant_id"))
+
+    # 将过滤后的 MCP 工具转换为 LangChain tool 格式
+    lc_mcp_tools = _convert_to_lc_tools(tools)
+    # 合并 MCP 工具 + Python 原生工具
+    lc_tools = lc_mcp_tools + [native_knowledge_tool]
 
     # 绑定工具到 LLM
     llm_with_tools = _llm.bind_tools(lc_tools) if lc_tools else _llm
@@ -197,12 +205,21 @@ async def tool_node(state: AgentState) -> dict:
         log.info("tool_calling", tool=tool_name, args=tool_args, step=state["step_count"])
 
         try:
-            result = await mcp.call_tool(
-                tool_name=tool_name,
-                arguments=tool_args,
-                session_id=state.get("session_id"),
-                thread_id=state.get("thread_id"),
-            )
+            # ---- Python 原生工具分发（不经 MCP）----
+            if tool_name == "knowledge_search":
+                # 直接在 Python 侧调用 RAG 流水线
+                from rag.knowledge_tool import make_knowledge_search_tool
+                native_tool = make_knowledge_search_tool(merchant_id=state.get("merchant_id"))
+                # LangChain tool 通过 .ainvoke 调用（支持异步）
+                result = await native_tool.ainvoke(tool_args)
+            else:
+                # ---- MCP 工具调用 ----
+                result = await mcp.call_tool(
+                    tool_name=tool_name,
+                    arguments=tool_args,
+                    session_id=state.get("session_id"),
+                    thread_id=state.get("thread_id"),
+                )
             tool_messages.append(ToolMessage(
                 content=result,
                 tool_call_id=call_id,

@@ -43,6 +43,7 @@ import java.util.Map;
 public class ExecuteRefundTool implements McpTool {
 
     private final ObjectMapper objectMapper;
+    private final com.personalprojections.locallife.copilot.client.LocalLifeInternalClient internalClient;
 
     @Override
     public String getName() {
@@ -100,24 +101,14 @@ public class ExecuteRefundTool implements McpTool {
         log.info("[ExecuteRefundTool] 执行退款: orderId={}, amount={}分, approvalId={}, reason={}",
                 orderId, amount, approvalId, reason);
 
-        // 实际实现：调用 LocalLife Server 内部退款 API
-        // POST http://locallife-server:8080/internal/refund
-        // { "order_no": orderId, "amount": amount, "approval_id": approvalId, "reason": reason }
-        //
+        // 调用 LocalLife Server 内部退款 API（POST /internal/orders/{orderNo}/refund）
         // 内部 API 会：
-        // 1. 验证 approvalId 有效且状态为 APPROVED
-        // 2. 更新 order_info.order_status = REFUNDING
-        // 3. 创建 payment_order（类型 REFUND）
-        // 4. 调用支付渠道退款 API（当前 MOCK 渠道直接成功）
-        // 5. 返回退款单号
-
-        return Map.of(
-                "refund_status", "PROCESSING",
-                "order_id", orderId,
-                "amount", amount,
-                "approval_id", approvalId,
-                "_note", "退款处理中，实际退款 API 对接开发中"
-        );
+        // 1. 校验订单存在且状态为 PAID
+        // 2. 校验退款金额 <= 实付金额
+        // 3. 更新订单状态
+        // 4. 返回退款单号
+        java.util.Map<String, Object> result = internalClient.refund(orderId, amount, approvalId, reason);
+        return result;
     }
 
     private String extractString(JsonNode args, String key) {

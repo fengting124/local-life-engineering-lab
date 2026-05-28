@@ -27,16 +27,18 @@ log = structlog.get_logger(__name__)
 
 # 所有工具的角色权限配置（与 Java MCP Server 的 x-allowed-roles 保持一致）
 TOOL_ROLE_MAP: dict[str, list[str]] = {
+    # === Java MCP 工具 ===
     "query_order":               ["merchant", "cs", "admin"],
     "query_payment":             ["cs", "admin"],
     "query_coupon_issue_log":    ["cs", "admin"],
     "query_mq_dead_letter":      ["cs", "admin"],
     "shop_metrics_query":        ["merchant", "cs", "admin"],
     "coupon_policy_lookup":      ["merchant", "cs", "admin"],
-    "knowledge_search":          ["merchant", "cs", "admin"],
     "campaign_draft_generate":   ["merchant", "admin"],
     "execute_refund":            ["cs", "admin"],
     "issue_compensation_coupon": ["cs", "admin"],
+    # === Python 原生工具（RAG） ===
+    "knowledge_search":          ["merchant", "cs", "admin"],
 }
 
 # 工具任务分组（按使用场景分类）

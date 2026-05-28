@@ -62,6 +62,7 @@ public class McpController {
     private final ToolRegistry toolRegistry;
     private final ToolAuditService auditService;
     private final ObjectMapper objectMapper;
+    private final com.personalprojections.locallife.copilot.ratelimit.ToolRateLimiter rateLimiter;
 
     @Value("${mcp.server.name:locallife-mcp-server}")
     private String serverName;
@@ -168,6 +169,18 @@ public class McpController {
                             .build());
         }
         McpTool tool = toolOpt.get();
+
+        // ---- 工具级别限流（在 RBAC 之后，防止非法请求消耗配额）----
+        if (!rateLimiter.isAllowed(toolName)) {
+            return McpResponse.error(id, McpError.builder()
+                    .code(-32603)
+                    .message("tool_timeout")
+                    .data(Map.of(
+                            "reason", "tool_rate_limited",
+                            "detail", "工具 " + toolName + " 调用过于频繁，请稍后再试（限制：每分钟 100 次/工具）",
+                            "hint",   "如果是 Agent 循环调用，请检查终止条件"))
+                    .build());
+        }
 
         // ---- RBAC 权限校验 ----
         RbacContext ctx = RbacContext.get();

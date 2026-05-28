@@ -173,25 +173,37 @@
 - 节点（agent/nodes.py / llm_node/tool_node/reflection_node/hitl_node/final_node）
 - SSE 端点（astream_events → SSE 事件类型：agent_step/tool_call/tool_result/final_answer）
 
-### 待完成（第 8-10 周）
+### 已完成（生产级）
 
-**优先级 1（第 8 周）**：
-- [ ] 工具 Mapper 注入（QueryOrderTool 实际查 order_info + payment_order + user_coupon）
-- [ ] LangGraph MySQL Checkpointer（替换 MemorySaver，支持服务重启后恢复）
-- [ ] HITL 完整流程（hitl_approval 写 + POST /chat/resume 带 thread_id 恢复）
-- [ ] 限流（Redis 计数器，每分钟每工具 100 次）
-- [ ] 剩余工具：query_payment / query_mq_dead_letter / coupon_policy_lookup / knowledge_search / issue_compensation_coupon
+**Java MCP Server**：
+- ✅ MCP JSON-RPC 2.0 协议层（McpController + DTOs + 结构化错误）
+- ✅ RBAC（RbacFilter + ThreadLocal）+ ToolRegistry 自动注册
+- ✅ 9 个生产级工具（query_order/payment/coupon_issue_log/mq_dead_letter/
+  shop_metrics/coupon_policy/campaign_draft/execute_refund/issue_compensation_coupon）
+- ✅ CopilotOrderMapper + CopilotCouponMapper（真实 DB JOIN 查询）
+- ✅ ToolRateLimiter（Redis 计数：100次/分钟/工具 + 30次/分钟/用户）
+- ✅ LocalLifeInternalClient（HTTP 调用主服务 /internal/* API）
+- ✅ ToolAuditService（@Async 异步写 tool_audit_log）
 
-**优先级 2（第 9 周）**：
-- [ ] Milvus 接入（pymilvus + 文档向量化 + 权限感知检索 metadata 过滤）
-- [ ] Reranker 集成（Cross-Encoder 或 Cohere API）
-- [ ] execute_refund 实际调用 LocalLife Server 内部 API
+**Python Agent Service**：
+- ✅ LangGraph StateGraph + 5 节点 + 6 种终止条件
+- ✅ AsyncMySQLCheckpointer（替换 MemorySaver，支持服务重启后恢复 HITL）
+- ✅ ToolRouter（按 role + task type + context 三层过滤）
+- ✅ SSE 端点 + Session/Message 持久化
+- ✅ HITL 完整流程（DB 写 + /chat/resume 恢复 + 审批工作台 API）
+- ✅ Guardrails（12+ 输入注入规则 + 输出脱敏）
+- ✅ RAG 完整流水线（multilingual-e5 + Milvus + Cross-Encoder Reranker + 权限过滤）
+- ✅ knowledge_search Python 原生工具（绕过 MCP，本地向量检索）
+- ✅ Evals 50 条评测集 + 6 项指标自动化脚本
 
-**优先级 3（第 10 周）**：
-- [ ] Evals 评测集 50 条用例
-- [ ] 六项评测指标自动化脚本
-- [ ] Guardrails（Prompt Injection 输入检测 / 输出越权检查）
-- [ ] LangSmith 集成
+**LocalLife Server 主服务配套**：
+- ✅ InternalController + InternalService（/internal/orders/{n}/refund + compensate-coupon）
+- ✅ X-Internal-Key 验证（防止外部调用）
+
+**基础设施 & 测试**：
+- ✅ Docker Compose 完整环境（MySQL/Redis/ES/MQ + Milvus/Prometheus/Grafana/Zipkin）
+- ✅ Locust 性能测试（LocalLifeServer + Copilot 两套场景）
+- ✅ 性能基准 + 瓶颈定位 + 调优指南
 
 ---
 

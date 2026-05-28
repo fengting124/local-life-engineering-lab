@@ -76,10 +76,132 @@ services:
     networks:
       - local-life-net
 
+  # =========================================================
+  # 可观测性套件：Prometheus + Grafana + Zipkin
+  # 启动方式：docker compose --profile observability up -d
+  # =========================================================
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: local-life-prometheus
+    profiles: ["observability"]
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+    networks:
+      - local-life-net
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: local-life-grafana
+    profiles: ["observability"]
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - local-life-net
+
+  zipkin:
+    image: openzipkin/zipkin:3.4
+    container_name: local-life-zipkin
+    profiles: ["observability"]
+    ports:
+      - "${ZIPKIN_PORT:-9411}:9411"
+    environment:
+      STORAGE_TYPE: mem   # 开发用内存存储，生产用 ES/Cassandra
+    networks:
+      - local-life-net
+
+  # =========================================================
+  # Milvus 向量库（RAG 必需）
+  # 启动方式：docker compose --profile rag up -d
+  # =========================================================
+
+  # Milvus 依赖 etcd 和 MinIO
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.16
+    container_name: local-life-etcd
+    profiles: ["rag"]
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd_data:/etcd
+    command:
+      - etcd
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --data-dir=/etcd
+    networks:
+      - local-life-net
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: local-life-minio
+    profiles: ["rag"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    networks:
+      - local-life-net
+
+  milvus:
+    image: milvusdb/milvus:v2.4.16
+    container_name: local-life-milvus
+    profiles: ["rag"]
+    ports:
+      - "${MILVUS_PORT:-19530}:19530"   # Milvus 主端口
+      - "9091:9091"                      # Milvus 监控端口
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus_data:/var/lib/milvus
+    command: ["milvus", "run", "standalone"]
+    depends_on:
+      - etcd
+      - minio
+    networks:
+      - local-life-net
+
+  attu:   # Milvus Web UI（类似 Adminer for Milvus）
+    image: zilliz/attu:v2.4.10
+    container_name: local-life-attu
+    profiles: ["rag"]
+    ports:
+      - "${ATTU_PORT:-3001}:3000"
+    environment:
+      MILVUS_URL: milvus:19530
+    depends_on:
+      - milvus
+    networks:
+      - local-life-net
+
 volumes:
   mysql_data:
   redis_data:
   elastic_data:
+  prometheus_data:
+  grafana_data:
+  etcd_data:
+  minio_data:
+  milvus_data:
 
 networks:
   local-life-net:
