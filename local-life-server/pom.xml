@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"        xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+ 
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
@@ -215,6 +215,18 @@
             <groupId>org.apache.shardingsphere</groupId>
             <artifactId>shardingsphere-jdbc</artifactId>
             <version>5.5.0</version>
+            <exclusions>
+                <!--
+                    shardingsphere-test-util 是 5.5.0 的打包 bug：
+                    这个测试工具被错误地声明为非 test 作用域的传递依赖，
+                    但它没有发布到 Maven Central，导致 Maven 解析失败。
+                    排除后不影响任何运行时功能（它只是测试辅助类）。
+                -->
+                <exclusion>
+                    <groupId>org.apache.shardingsphere</groupId>
+                    <artifactId>shardingsphere-test-util</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- ===== 测试 ===== -->
