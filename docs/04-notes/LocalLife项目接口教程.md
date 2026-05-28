@@ -20,6 +20,7 @@
 12. [订单 & 支付模块：状态机与幂等设计](#第-6-章订单--支付模块)
 13. [MQ 可靠消息：Transactional Outbox 模式](#第-7-章消息可靠性transactional-outbox--指数退避--消费者幂等)
 14. [Elasticsearch 全文搜索：门店和笔记怎么搜出来的](#第-8-章elasticsearch-全文搜索门店和笔记怎么搜出来的)
+15. [接口限流：Redis 滑动窗口怎么防刷](#第-10-章接口限流redis-滑动窗口怎么防刷)
 
 ---
 
@@ -1659,6 +1660,218 @@ public class TraceIdFilter implements Filter {
 | **Brave** | Zipkin 生态的追踪库，负责生成和传播 traceId/spanId |
 | **MDC** | SLF4J 的线程本地存储，日志格式里 %X{traceId} 从这里读 |
 | **X-Trace-Id** | 响应头，前端错误上报时带上，运维可按此快速定位 |
+
+---
+
+## 第 10 章：接口限流——Redis 滑动窗口怎么防刷
+
+### 10.1 为什么要限流？
+
+先讲一个不限流的后果：
+
+**场景**：秒杀优惠券，用户 A 写了个脚本每秒发 1000 个请求。
+- 没有限流 → 1000 个请求全打到 Redis，竞争同一把锁，Redis 变慢，影响所有用户
+- 有限流（5 秒内最多 1 次）→ 第 2 个请求起直接返回 429，Redis 只处理第 1 个
+
+**限流的三个典型场景：**
+
+| 场景 | 业务问题 | 限流策略 |
+|------|---------|---------|
+| 发短信验证码 | 防短信轰炸（每条约 0.05 元成本） | 同 IP 60 秒内最多 1 次 |
+| 参与秒杀抢券 | 防重复点击、防脚本刷券 | 同用户 5 秒内最多 1 次 |
+| 全文搜索 | ES 查询比读 DB 开销大 10 倍 | 同 IP 每秒最多 10 次 |
+
+---
+
+### 10.2 限流算法对比：为什么选「滑动窗口」
+
+三种常见限流算法：
+
+**方案 A：固定窗口计数**
+```
+规则：每分钟最多 10 次
+
+[0:00 - 1:00)  请求 10 次  → 到上限
+[1:00 - 2:00)  重置计数    → 又可以 10 次
+
+问题：0:59 发 10 次 + 1:00 发 10 次 = 2 秒内 20 次，窗口边界突刺
+```
+
+**方案 B：令牌桶**
+- 以固定速率往桶里放令牌，请求消耗令牌
+- 实现复杂，需要记录上次填充时间
+
+**方案 C：滑动窗口**（本项目选择）
+```
+规则：任意 60 秒内最多 10 次
+
+每次请求都看「过去 60 秒」的请求数，没有固定边界，平滑限流。
+没有固定窗口的突刺问题，实现也不复杂。
+```
+
+---
+
+### 10.3 Redis ZSet 实现滑动窗口的核心原理
+
+**数据结构**：Redis 有序集合（Sorted Set / ZSet）
+
+```
+Key:   rate_limit:seckill:do:10001   ← 用户 10001 的秒杀限流桶
+Value: {member=时间戳, score=时间戳}
+```
+
+每次请求来了，往 ZSet 里塞一条记录，score 是当前时间戳（毫秒）。
+查「过去 5000ms 内有多少条记录」= ZCARD 当前 ZSet 去掉过期记录后的大小。
+
+**三步原子操作（Lua 脚本保证）：**
+
+```lua
+-- Step 1：删掉窗口之外的旧记录（ZREMRANGEBYSCORE）
+redis.call('ZREMRANGEBYSCORE', key, 0, now - window)
+
+-- Step 2：数当前窗口内有多少条（ZCARD）
+local count = redis.call('ZCARD', key)
+
+-- Step 3：未超限则写入本次请求
+if count < limit then
+    redis.call('ZADD', key, now, now)
+    redis.call('EXPIRE', key, expire)
+    return 0   -- 放行
+end
+return 1       -- 拒绝
+```
+
+**为什么要 Lua 脚本？**
+
+如果三步分开执行：
+```
+线程 A：ZREMRANGEBYSCORE → ZCARD（返回 4，limit=5，可以）
+线程 B：ZREMRANGEBYSCORE → ZCARD（也返回 4，limit=5，可以）
+线程 A：ZADD（count=5）
+线程 B：ZADD（count=6）← 超限了！
+```
+
+Redis 是单线程，但网络来回之间可能被其他请求插队。Lua 脚本在 Redis 端原子执行，中间不会被打断。
+
+---
+
+### 10.4 `@RateLimit` 注解的设计
+
+自定义注解，声明在 Controller 方法上：
+
+```java
+@RateLimit(
+    key = "seckill:do",     // 业务 key（标识哪个接口）
+    limit = 1,              // 窗口内最多 N 次
+    window = 5,             // 窗口大小
+    unit = TimeUnit.SECONDS,// 单位（默认秒）
+    keyType = KeyType.USER  // 限流维度：USER（按用户）或 IP（按 IP）
+)
+@PostMapping("/api/v1/seckill")
+public Result<SeckillResultVO> doSeckill(...)
+```
+
+**keyType 的选择原则：**
+- **需登录的接口** → `USER`（按用户 ID 限流，精准到人）
+- **公开接口（发验证码、搜索）** → `IP`（未登录没有用户 ID，用 IP 兜底）
+
+---
+
+### 10.5 拦截器：在 Controller 之前拦截
+
+限流逻辑放在 `RateLimitInterceptor`（实现 `HandlerInterceptor`），在 `AuthInterceptor` 之后执行：
+
+```
+请求到达
+    ↓
+AuthInterceptor（鉴权：Token 合法吗？用户是谁？）
+    ↓ 通过才往下
+RateLimitInterceptor（限流：频率超了吗？）
+    ↓ 未超限才往下
+Controller（真正的业务处理）
+```
+
+**为什么限流在鉴权之后？**
+
+非法 Token 的请求不应该消耗限流计数 —— 限流是对合法用户的保护，不是对攻击请求的计数器。
+
+**拦截器核心逻辑：**
+
+```java
+public boolean preHandle(HttpServletRequest request, ...) {
+    // 1. 不是 Controller 方法（静态资源等），跳过
+    if (!(handler instanceof HandlerMethod handlerMethod)) return true;
+
+    // 2. 方法上没有 @RateLimit 注解，跳过
+    RateLimit rateLimit = handlerMethod.getMethodAnnotation(RateLimit.class);
+    if (rateLimit == null) return true;
+
+    // 3. 构建 Redis Key：rate_limit:{key}:{userId 或 IP}
+    String limitKey = buildLimitKey(request, rateLimit);
+
+    // 4. 执行 Lua 脚本
+    Long result = redisTemplate.execute(script, keys, now, window, limit, expire);
+
+    // 5. 返回 1 = 超限 → 返回 HTTP 429
+    if (result == 1L) {
+        response.setStatus(429);
+        response.getWriter().write("{\"code\":\"AUTH_CODE_SEND_TOO_FREQUENT\",...}");
+        return false;
+    }
+    return true;  // 放行
+}
+```
+
+---
+
+### 10.6 实际接口限流配置汇总
+
+| 接口 | 注解参数 | 含义 |
+|------|---------|------|
+| `POST /api/v1/auth/code` | `limit=1, window=60, IP` | 同 IP 60 秒内最多发 1 次验证码 |
+| `POST /api/v1/auth/login` | `limit=10, window=60, IP` | 同 IP 60 秒内最多登录尝试 10 次 |
+| `POST /api/v1/seckill` | `limit=1, window=5, USER` | 同用户 5 秒内最多抢 1 次 |
+| `POST /api/v1/posts` | `limit=3, window=60, USER` | 同用户 60 秒内最多发 3 篇笔记 |
+| `POST /api/v1/posts/.../comments` | `limit=5, window=10, USER` | 同用户 10 秒内最多评论 5 次 |
+| `POST /api/v1/orders` | `limit=2, window=10, USER` | 同用户 10 秒内最多下单 2 次 |
+| `GET /api/v1/search/shops` | `limit=10, window=1, IP` | 同 IP 每秒最多搜索 10 次 |
+| `GET /api/v1/search/posts` | `limit=10, window=1, IP` | 同 IP 每秒最多搜索 10 次 |
+
+---
+
+### 10.7 面试常问：限流被触发时返回什么？
+
+**HTTP 状态码**：`429 Too Many Requests`（专属状态码，前端统一处理）
+
+**响应 Body**：与普通错误格式一致（`Result<Void>`）
+
+```json
+{
+  "code": "AUTH_CODE_SEND_TOO_FREQUENT",
+  "message": "请求过于频繁，请稍后再试",
+  "data": null,
+  "timestamp": "2026-05-28T20:00:00+08:00"
+}
+```
+
+前端拦截到 429 后弹一个 Toast 提示「操作太频繁，请稍后再试」，不需要区分是哪个接口触发的。
+
+---
+
+### 10.8 关键词卡片（限流模块）
+
+| 关键词 | 一句话解释 |
+|--------|-----------|
+| **滑动窗口** | 任意时间段内控制请求数，无固定边界突刺问题 |
+| **固定窗口** | 把时间切成固定格子计数，有窗口边界突刺问题 |
+| **令牌桶** | 以固定速率放令牌，请求拿令牌通过，突发流量有缓冲 |
+| **ZSet** | Redis 有序集合，score 存时间戳实现时间窗口滑动 |
+| **ZREMRANGEBYSCORE** | 删除 score 在某区间内的成员（清理过期请求记录） |
+| **Lua 脚本** | Redis 端原子执行多条命令，解决 ZCARD + ZADD 之间的并发问题 |
+| **HandlerInterceptor** | Spring MVC 拦截器接口，`preHandle` 在 Controller 执行前触发 |
+| **429 Too Many Requests** | HTTP 标准限流状态码 |
+| **keyType=USER** | 按用户 ID 限流，需登录接口用 |
+| **keyType=IP** | 按客户端 IP 限流，公开接口用 |
 
 ---
 

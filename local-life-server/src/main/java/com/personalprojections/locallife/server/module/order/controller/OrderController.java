@@ -1,5 +1,6 @@
 package com.personalprojections.locallife.server.module.order.controller;
 
+import com.personalprojections.locallife.server.common.ratelimit.RateLimit;
 import com.personalprojections.locallife.server.common.result.Result;
 import com.personalprojections.locallife.server.module.order.dto.CreateOrderRequest;
 import com.personalprojections.locallife.server.module.order.dto.OrderVO;
@@ -79,6 +80,8 @@ public class OrderController {
      * @param idempotencyKey 幂等 Key（从 Header X-Idempotency-Key 读取，可为 null）
      * @return 创建好的订单 VO
      */
+    // 同一用户 10 秒内最多下单 2 次（防重复点击，配合幂等 Key 双重保护）
+    @RateLimit(key = "order:create", limit = 2, window = 10, keyType = RateLimit.KeyType.USER)
     @PostMapping("/api/v1/orders")
     public Result<OrderVO> createOrder(
             @Valid @RequestBody CreateOrderRequest request,

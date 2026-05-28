@@ -1,5 +1,6 @@
 package com.personalprojections.locallife.server.module.seckill.controller;
 
+import com.personalprojections.locallife.server.common.ratelimit.RateLimit;
 import com.personalprojections.locallife.server.common.result.Result;
 import com.personalprojections.locallife.server.domain.entity.UserCoupon;
 import com.personalprojections.locallife.server.module.seckill.dto.CouponTemplateVO;
@@ -95,6 +96,8 @@ public class SeckillController {
      * @param request 秒杀请求体（sessionId + couponTemplateId）
      * @return 秒杀结果（success=true 表示抢到）
      */
+    // 同一用户 5 秒内最多抢 1 次（防重复点击 & 防机器刷券）
+    @RateLimit(key = "seckill:do", limit = 1, window = 5, keyType = RateLimit.KeyType.USER)
     @PostMapping("/api/v1/seckill")
     public Result<SeckillResultVO> doSeckill(@Valid @RequestBody SeckillRequest request) {
         SeckillResultVO vo = seckillService.doSeckill(request);

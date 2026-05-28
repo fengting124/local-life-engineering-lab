@@ -1,5 +1,6 @@
 package com.personalprojections.locallife.server.module.post.controller;
 
+import com.personalprojections.locallife.server.common.ratelimit.RateLimit;
 import com.personalprojections.locallife.server.common.result.Result;
 import com.personalprojections.locallife.server.module.post.dto.CommentVO;
 import com.personalprojections.locallife.server.module.post.dto.CreateCommentRequest;
@@ -76,6 +77,8 @@ public class PostController {
      * @param request 发布请求体
      * @return 发布后的笔记 VO
      */
+    // 同一用户 60 秒内最多发 3 篇（防刷内容）
+    @RateLimit(key = "post:publish", limit = 3, window = 60, keyType = RateLimit.KeyType.USER)
     @PostMapping("/api/v1/posts")
     public Result<PostVO> publishPost(@Valid @RequestBody CreatePostRequest request) {
         PostVO vo = postService.publishPost(request);
@@ -183,6 +186,8 @@ public class PostController {
      * @param request 评论内容
      * @return 评论 VO（含评论者昵称和头像）
      */
+    // 同一用户 10 秒内最多评论 5 次（防评论刷屏）
+    @RateLimit(key = "post:comment", limit = 5, window = 10, keyType = RateLimit.KeyType.USER)
     @PostMapping("/api/v1/posts/{postId}/comments")
     public Result<CommentVO> addComment(
             @PathVariable Long postId,

@@ -1,6 +1,7 @@
 package com.personalprojections.locallife.server.config;
 
 import com.personalprojections.locallife.server.common.interceptor.AuthInterceptor;
+import com.personalprojections.locallife.server.common.ratelimit.RateLimitInterceptor;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
@@ -39,6 +40,13 @@ public class WebMvcConfig implements WebMvcConfigurer {
     private final AuthInterceptor authInterceptor;
 
     /**
+     * 限流拦截器：解析 {@link com.personalprojections.locallife.server.common.ratelimit.RateLimit}
+     * 注解，执行 Redis 滑动窗口限流。
+     * 注册在 AuthInterceptor 之后，鉴权通过才做限流（避免非法请求消耗计数）。
+     */
+    private final RateLimitInterceptor rateLimitInterceptor;
+
+    /**
      * 注册拦截器并配置白名单。
      *
      * <p>拦截器执行顺序：多个拦截器按 addInterceptor 的顺序执行。
@@ -50,9 +58,7 @@ public class WebMvcConfig implements WebMvcConfigurer {
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(authInterceptor)
-                // 拦截所有路径
                 .addPathPatterns("/**")
-                // 白名单：以下路径跳过鉴权
                 .excludePathPatterns(
                         // 登录相关（登录前没有 Token）
                         "/api/v1/auth/**",
@@ -82,5 +88,10 @@ public class WebMvcConfig implements WebMvcConfigurer {
                         "/swagger-ui/**",
                         "/v3/api-docs/**"
                 );
+
+        // 限流拦截器：在 AuthInterceptor 之后注册，拦截所有路径
+        // 实际生效范围由 @RateLimit 注解决定，无注解的方法直接跳过
+        registry.addInterceptor(rateLimitInterceptor)
+                .addPathPatterns("/**");
     }
 }

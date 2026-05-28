@@ -1,5 +1,6 @@
 package com.personalprojections.locallife.server.module.auth.controller;
 
+import com.personalprojections.locallife.server.common.ratelimit.RateLimit;
 import com.personalprojections.locallife.server.common.result.Result;
 import com.personalprojections.locallife.server.module.auth.dto.LoginRequest;
 import com.personalprojections.locallife.server.module.auth.dto.LoginResponse;
@@ -66,6 +67,8 @@ public class AuthController {
      * @param request 请求体，包含 mobile（@Valid 触发校验）
      * @return 无数据的成功响应（data 字段不返回，避免把验证码暴露在响应中）
      */
+    // 同一用户/IP 60 秒内最多发 1 次验证码（防短信轰炸）
+    @RateLimit(key = "auth:code", limit = 1, window = 60, keyType = RateLimit.KeyType.IP)
     @PostMapping("/code")
     public Result<Void> sendCode(@Valid @RequestBody SendCodeRequest request) {
         authService.sendCode(request);
@@ -99,6 +102,8 @@ public class AuthController {
      * @param request 请求体，包含 mobile 和 code（@Valid 触发校验）
      * @return 包含 token、userId、nickname 的登录响应
      */
+    // 同一 IP 1 分钟内最多尝试登录 10 次（防暴力破解）
+    @RateLimit(key = "auth:login", limit = 10, window = 60, keyType = RateLimit.KeyType.IP)
     @PostMapping("/login")
     public Result<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
         LoginResponse response = authService.login(request);

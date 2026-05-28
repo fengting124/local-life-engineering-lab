@@ -1,5 +1,6 @@
 package com.personalprojections.locallife.server.module.search.controller;
 
+import com.personalprojections.locallife.server.common.ratelimit.RateLimit;
 import com.personalprojections.locallife.server.common.result.PageResult;
 import com.personalprojections.locallife.server.common.result.Result;
 import com.personalprojections.locallife.server.module.search.dto.*;
@@ -86,6 +87,8 @@ public class SearchController {
      * @param req 搜索请求参数（从 Query String 绑定）
      * @return 分页搜索结果
      */
+    // 同一 IP 每秒最多搜索 10 次（ES 查询比普通读接口开销大，控制频率）
+    @RateLimit(key = "search:shops", limit = 10, window = 1, keyType = RateLimit.KeyType.IP)
     @GetMapping("/shops")
     public Result<PageResult<ShopSearchVO>> searchShops(@Valid @ModelAttribute ShopSearchRequest req) {
         PageResult<ShopSearchVO> result = shopSearchService.searchShops(req);
@@ -132,6 +135,8 @@ public class SearchController {
      * @param req 搜索请求参数
      * @return 分页搜索结果
      */
+    // 同一 IP 每秒最多搜索 10 次（与门店搜索同策略）
+    @RateLimit(key = "search:posts", limit = 10, window = 1, keyType = RateLimit.KeyType.IP)
     @GetMapping("/posts")
     public Result<PageResult<PostSearchVO>> searchPosts(@Valid @ModelAttribute PostSearchRequest req) {
         PageResult<PostSearchVO> result = postSearchService.searchPosts(req);
