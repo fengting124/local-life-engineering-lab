@@ -1,0 +1,107 @@
+# ================================================================
+# ShardingSphere JDBC 分片配置
+# ================================================================
+#
+# 使用方式：application.yml 中配置
+#   spring.datasource.url: jdbc:shardingsphere:classpath:sharding.yaml
+#   spring.datasource.driver-class-name: org.apache.shardingsphere.driver.ShardingSphereDriver
+#
+# 分片设计思路（面试高频）：
+#   Q: 为什么订单表需要分片？
+#   A: 电商/本地生活平台订单量级大，单表数据量可达亿级。
+#      MySQL 单表超过 1000 万行后索引树层数增加，查询性能急剧下降。
+#      分片后每张物理表数据量缩小为总量的 1/4，查询走单分片更高效。
+#
+#   Q: 为什么用 user_id 作为分片键？
+#   A: 核心查询场景是「查某个用户的订单列表」，用 user_id 分片后
+#      同一用户所有订单落在同一物理表，查询无需跨片，效率最高。
+#      如果用 order_id 分片，则用户订单会散落多个分片，列表查询需广播。
+#
+#   Q: 为什么开发环境只用 1 个数据库 4 张物理表，不用 2 个数据库？
+#   A: 开发演示目的，减少 MySQL 实例数量。
+#      生产环境可配置为 2 个数据源（ds0 / ds1），各包含 2 张表：
+#        ds0.order_info_0, ds0.order_info_1
+#        ds1.order_info_2, ds1.order_info_3
+#      配置变更：actualDataNodes: ds${0..1}.order_info_${0..3}
+#      算法：先对 user_id % 2 决定库，再对 user_id % 4 决定表
+#
+# 局限性和面试答法：
+#   1. 不支持跨片 JOIN：order_info 和 payment_order 不在同一分片维度，
+#      不能用 SQL JOIN。当前 OrderService 代码已避免这类 JOIN（分步查询）。
+#   2. 非分片键查询广播：按 order_no 查订单时，ShardingSphere 会广播到
+#      所有 4 个分片，汇总结果返回。可用 ES 订单索引解决跨片检索问题。
+#   3. 分片键不可变：user_id 一旦写入不能修改（分片键变更需迁移数据）。
+#
+# ================================================================
+
+# 数据库逻辑名称（与物理数据库名称无关，ShardingSphere 内部标识）
+databaseName: local_life_sharding
+
+# 运行模式：Standalone（单机内存模式，适合开发；生产用 Cluster 模式配合注册中心）
+mode:
+  type: Standalone
+
+# ================================================================
+# 数据源配置（开发环境：单 MySQL 实例）
+# 生产环境可在此添加 ds1 指向另一台 MySQL 实例
+# ================================================================
+dataSources:
+  ds0:
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    driverClassName: com.mysql.cj.jdbc.Driver
+    jdbcUrl: jdbc:mysql://localhost:3306/local_life?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=UTF-8&allowPublicKeyRetrieval=true&useSSL=false
+    username: root
+    password: 123456
+    # HikariCP 连接池参数（与 application.yml 中原配置保持一致）
+    connectionTimeout: 3000
+    maximumPoolSize: 16
+    minimumIdle: 2
+    idleTimeout: 600000
+
+# ================================================================
+# 分片规则
+# ================================================================
+rules:
+  - !SHARDING
+    tables:
+      # 逻辑表 order_info → 物理表 ds0.order_info_{0..3}
+      # 所有对 order_info 的 INSERT/SELECT/UPDATE/DELETE 都经此路由
+      order_info:
+        # actualDataNodes：真实物理节点表达式
+        # ds0.order_info_${0..3} = ds0.order_info_0 / ds0.order_info_1 / ds0.order_info_2 / ds0.order_info_3
+        actualDataNodes: ds0.order_info_${0..3}
+
+        # 表分片策略：按 user_id 列使用 order-mod-4 算法
+        tableStrategy:
+          standard:
+            shardingColumn: user_id
+            shardingAlgorithmName: orderModSharding
+
+        # 注意：不配置 keyGenerateStrategy，ID 由 MyBatis-Plus 雪花算法在应用层生成。
+        # ShardingSphere 的 KeyGenerate 会与 MyBatis-Plus 的 @TableId(ASSIGN_ID) 冲突，故禁用。
+
+    # 分片算法定义
+    shardingAlgorithms:
+      orderModSharding:
+        # MOD 取模算法：user_id % sharding-count 决定路由到哪个物理表
+        # 例：user_id=10001 → 10001 % 4 = 1 → order_info_1
+        # 例：user_id=10002 → 10002 % 4 = 2 → order_info_2
+        type: MOD
+        props:
+          sharding-count: '4'
+
+    # 默认分片键（当 SQL 中未包含分片键时生效的广播策略）
+    # 不设置默认分片策略：非分片键查询（如按 order_no）会广播到所有分片，
+    # 这是 ShardingSphere 的默认行为，结果正确但效率较低。
+    # 生产优化：对高频的 order_no 查询，建立 ES 订单索引，绕过广播查询。
+
+# ================================================================
+# 全局属性
+# ================================================================
+props:
+  # 打印 ShardingSphere 路由后的真实 SQL（开发调试用，可清楚看到路由到哪张物理表）
+  # 示例输出：Actual SQL: ds0 ::: SELECT * FROM order_info_1 WHERE user_id = 10001
+  # 生产环境建议关闭：sql-show: false
+  sql-show: true
+  # 打印精简 SQL（不含参数值），与 sql-show 互斥，sql-show 优先
+  sql-simple: false

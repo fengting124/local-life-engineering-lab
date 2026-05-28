@@ -24,7 +24,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -353,7 +352,8 @@ public class OrderService {
         }
 
         // 原子性更新：WHERE status='WAIT_PAY'，防止并发双重取消
-        int affected = orderInfoMapper.updateStatusFromWaitPay(orderId, "CANCELLED");
+        // 传入 userId 让 ShardingSphere 精准路由到目标分片，避免广播
+        int affected = orderInfoMapper.updateStatusFromWaitPay(orderId, userId, "CANCELLED");
         if (affected == 0) {
             // 状态不是 WAIT_PAY（可能已被支付、已被关闭），不允许取消
             throw new BizException(ErrorCode.ORDER_STATUS_ILLEGAL);
@@ -415,7 +415,8 @@ public class OrderService {
         for (OrderInfo order : expiredOrders) {
             // 每笔订单单独处理，某一笔失败不影响其他笔
             try {
-                int affected = orderInfoMapper.updateStatusFromWaitPay(order.getId(), "CANCELLED");
+                // 传入 userId 精准路由到目标分片（order 对象已含 userId）
+                int affected = orderInfoMapper.updateStatusFromWaitPay(order.getId(), order.getUserId(), "CANCELLED");
                 if (affected > 0) {
                     closedCount++;
                     // 如果使用了优惠券，回退券（让用户可以再次使用）
@@ -451,8 +452,9 @@ public class OrderService {
      * @param payAt   支付成功时间（来自渠道回调，非本地时间）
      * @return 是否更新成功（false = 幂等跳过，订单已是 PAID 状态）
      */
-    public boolean markOrderAsPaid(Long orderId, LocalDateTime payAt) {
-        int affected = orderInfoMapper.markAsPaid(orderId, payAt);
+    public boolean markOrderAsPaid(Long orderId, Long userId, LocalDateTime payAt) {
+        // userId 是 ShardingSphere 分片键，确保 UPDATE 路由到正确物理表而非广播
+        int affected = orderInfoMapper.markAsPaid(orderId, userId, payAt);
         if (affected == 0) {
             // affected = 0 说明订单不是 WAIT_PAY 状态（已处理过），幂等跳过
             log.warn("[Order] markOrderAsPaid 幂等跳过：orderId={} 状态已非 WAIT_PAY", orderId);

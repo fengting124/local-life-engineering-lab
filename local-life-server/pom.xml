@@ -192,6 +192,31 @@
             不引入，避免不必要的依赖。
         -->
 
+        <!-- ===== 分库分表 ===== -->
+
+        <!--
+            ShardingSphere JDBC 5.5.0：在 JDBC 层透明拦截 SQL，按分片规则路由到物理表。
+            选择 shardingsphere-jdbc（含 ShardingSphereDriver），兼容 Spring Boot 3.x。
+            工作原理：
+              应用代码写 order_info（逻辑表）
+              → ShardingSphereDriver 拦截 JDBC 调用
+              → 按 user_id % 4 路由到 order_info_0 / order_info_1 / order_info_2 / order_info_3
+              → 透明返回结果（应用层无感知）
+            配置方式：
+              spring.datasource.url = jdbc:shardingsphere:classpath:sharding.yaml
+              spring.datasource.driver-class-name = ShardingSphereDriver
+            分片设计：
+              逻辑表   → order_info
+              物理表   → order_info_{0..3}（同一数据库，开发环境简化；生产可跨库）
+              分片键   → user_id（保证同一用户订单落同一分片，避免跨片 JOIN）
+              算法     → MOD 取模（user_id % 4）
+        -->
+        <dependency>
+            <groupId>org.apache.shardingsphere</groupId>
+            <artifactId>shardingsphere-jdbc</artifactId>
+            <version>5.5.0</version>
+        </dependency>
+
         <!-- ===== 测试 ===== -->
 
         <!-- Spring Boot Test：包含 JUnit 5 / Mockito / Spring Test，测试范围依赖 -->

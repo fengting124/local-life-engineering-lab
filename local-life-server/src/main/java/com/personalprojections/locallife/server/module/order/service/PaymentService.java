@@ -1,6 +1,5 @@
 package com.personalprojections.locallife.server.module.order.service;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.personalprojections.locallife.server.common.context.UserContext;
 import com.personalprojections.locallife.server.common.exception.BizException;
 import com.personalprojections.locallife.server.common.metrics.BusinessMetrics;
@@ -273,7 +272,8 @@ public class PaymentService {
         LocalDateTime payAt = callback.getPaidAt() != null
                 ? callback.getPaidAt()
                 : LocalDateTime.now();
-        boolean orderUpdated = orderService.markOrderAsPaid(paymentOrder.getOrderId(), payAt);
+        // paymentOrder 冗余存储了 userId，可直接传入作为分片键，避免 ShardingSphere 广播查询
+        boolean orderUpdated = orderService.markOrderAsPaid(paymentOrder.getOrderId(), paymentOrder.getUserId(), payAt);
 
         if (!orderUpdated) {
             // 订单状态已非 WAIT_PAY（理论上不应出现，因为和 payment_order 同步更新）

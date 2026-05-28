@@ -21,6 +21,7 @@
 13. [MQ 可靠消息：Transactional Outbox 模式](#第-7-章消息可靠性transactional-outbox--指数退避--消费者幂等)
 14. [Elasticsearch 全文搜索：门店和笔记怎么搜出来的](#第-8-章elasticsearch-全文搜索门店和笔记怎么搜出来的)
 15. [接口限流：Redis 滑动窗口怎么防刷](#第-10-章接口限流redis-滑动窗口怎么防刷)
+16. [ShardingSphere 订单分库分表：数据量膨胀怎么解决](#第-11-章shardingsphere-订单分库分表数据量膨胀怎么解决)
 
 ---
 
@@ -1875,4 +1876,242 @@ public boolean preHandle(HttpServletRequest request, ...) {
 
 ---
 
-*教程版本：2026-05-28 | 对应代码版本：feat: add observability*
+---
+
+## 第 11 章：ShardingSphere 订单分库分表——数据量膨胀怎么解决
+
+### 11.1 为什么要分表？
+
+先讲一个不分表的后果：
+
+**MySQL 单表性能退化过程**：
+```
+数据量 < 100 万    → 主键/索引查询 < 1ms，稳定
+数据量 > 1000 万   → B+ 树层数从 3 层增到 4 层，IO 次数增加，查询 10ms+
+数据量 > 5000 万   → 单次 SELECT 可能 100ms+，写入也慢（索引维护开销）
+数据量 > 1 亿      → 严重影响可用性，即使有索引，ORDER BY / GROUP BY 都非常慢
+```
+
+本地生活平台每天可能产生 10 万+ 订单，一年下来轻松超过 3000 万行，需要提前规划。
+
+**分表的目标**：将大表拆成多个小表（物理上独立），每张表的数据量保持在千万级以下。
+
+---
+
+### 11.2 分库 vs 分表 vs 读写分离——三个概念分清楚
+
+| 方案 | 解决的问题 | 适用场景 |
+|------|---------|---------|
+| **读写分离** | 读请求压力大（写 Master，读 Slave） | 读多写少（如商品详情） |
+| **垂直分表** | 表列太多，热字段和冷字段分开 | 宽表优化（如用户基础信息 + 扩展信息） |
+| **水平分表** | 单表行数太多，数据量膨胀 | 订单、日志、消息等高增长数据 |
+| **水平分库** | 单机写入 QPS 达到上限 | 极高并发写入（通常在分表之后才需要） |
+
+**本项目选择：水平分表（同一数据库 4 张物理表）**
+- 开发阶段单 MySQL 实例，演示分表路由逻辑
+- 生产扩展：增加第二个数据库（ds1）即可升级为分库分表
+
+---
+
+### 11.3 分片键的选择：为什么是 user_id？
+
+这是面试最常被追问的问题。先列出候选分片键：
+
+| 候选键 | 优点 | 缺点 |
+|-------|------|------|
+| `order_id` | 数据均匀分布 | 「我的订单」需广播所有分片（N 次查询） |
+| `shop_id` | 按门店聚集 | 热门门店数据倾斜（大门店订单集中在一个分片） |
+| **`user_id`** | 「我的订单」只查 1 个分片 | 下单量极端不均的用户会导致热点（可加二次哈希解决） |
+| `created_at`（时间） | 按时间归档方便 | 最新时间段的分片成热点，历史数据冷分片闲置 |
+
+**选 `user_id` 的核心理由**：
+```
+核心查询场景 = 「某用户查自己的订单」
+用 user_id 分片 → 同一用户所有订单在同一物理表 → 单分片查询
+用 order_id 分片 → 同一用户订单散落 4 个表 → 广播查询，性能差 4 倍
+```
+
+---
+
+### 11.4 ShardingSphere-JDBC 工作原理
+
+**透明拦截，应用无感知**：
+
+```
+应用代码：orderInfoMapper.selectList(WHERE user_id = 10001)
+             ↓
+MyBatis-Plus 生成 SQL：SELECT * FROM order_info WHERE user_id = 10001
+             ↓
+ShardingSphere Driver 拦截 JDBC 调用
+             ↓
+解析 SQL → 提取分片键值 user_id = 10001
+             ↓
+计算路由：10001 % 4 = 1 → 路由到 order_info_1
+             ↓
+改写 SQL：SELECT * FROM order_info_1 WHERE user_id = 10001
+             ↓
+真实执行并返回结果
+```
+
+应用层看到的永远是逻辑表 `order_info`，物理表 `order_info_1` 只在 JDBC 层可见。
+
+**路由日志示例**（配置了 `sql-show: true`）：
+```
+ShardingSphere - Logic SQL: SELECT * FROM order_info WHERE user_id = ?
+ShardingSphere - Actual SQL: ds0 ::: SELECT * FROM order_info_1 WHERE user_id = ?
+```
+
+---
+
+### 11.5 配置结构说明
+
+**两个文件配合使用**：
+
+**`application.yml`**（切换驱动）：
+```yaml
+spring:
+  datasource:
+    url: jdbc:shardingsphere:classpath:sharding.yaml
+    driver-class-name: org.apache.shardingsphere.driver.ShardingSphereDriver
+```
+
+**`sharding.yaml`**（分片规则）：
+```yaml
+dataSources:
+  ds0:
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    jdbcUrl: jdbc:mysql://localhost:3306/local_life?...
+    username: root
+    password: 123456
+
+rules:
+  - !SHARDING
+    tables:
+      order_info:
+        actualDataNodes: ds0.order_info_${0..3}
+        tableStrategy:
+          standard:
+            shardingColumn: user_id
+            shardingAlgorithmName: orderModSharding
+    shardingAlgorithms:
+      orderModSharding:
+        type: MOD
+        props:
+          sharding-count: '4'
+```
+
+**为什么把连接池配置放在 sharding.yaml 而不是 application.yml？**
+
+因为 ShardingSphere 接管了数据源，`spring.datasource.url` 只是一个 ShardingSphere 配置文件的路径。真正的 MySQL 连接信息在 `sharding.yaml` 的 `dataSources` 中。
+
+---
+
+### 11.6 三类 SQL 的路由行为
+
+**类型 1：精准路由（包含分片键）**
+```sql
+-- 查询包含 user_id，精准路由到 order_info_1
+SELECT * FROM order_info WHERE user_id = 10001 AND order_status = 'WAIT_PAY'
+-- 实际执行：ds0.order_info_1
+```
+
+**类型 2：广播查询（不含分片键）**
+```sql
+-- 查询不含 user_id，ShardingSphere 广播到全部 4 个分片后合并
+SELECT * FROM order_info WHERE order_no = '1234567890'
+-- 实际执行：ds0.order_info_0 + ds0.order_info_1 + ds0.order_info_2 + ds0.order_info_3
+```
+
+**类型 3：全局表（不分片）**
+```sql
+-- user / shop / post 等表不在分片规则中，直接路由到 ds0
+SELECT * FROM shop WHERE id = 100
+-- 实际执行：ds0.shop（无改写）
+```
+
+**本项目对广播查询的处理策略**：
+
+| 查询场景 | 解决方案 |
+|---------|---------|
+| 延迟关单扫描 WAIT_PAY 订单 | 接受广播（管理任务，频率低） |
+| 按 order_no 查订单 | 接受广播（极低频，仅管理场景） |
+| 支付回调更新订单（paymentOrder 携带 userId） | `payment_order` 冗余存 `user_id`，回调时传入精准路由 |
+
+---
+
+### 11.7 ID 生成与 ShardingSphere 的协作
+
+ShardingSphere 自带 Snowflake 主键生成器，但本项目**禁用了它**，理由：
+
+1. MyBatis-Plus 的 `@TableId(ASSIGN_ID)` 已经在应用层用雪花算法生成 ID
+2. 如果两者都配置，会发生冲突（双重 ID 赋值）
+3. 应用层雪花 ID 在分片场景下依然全局唯一（时间戳 + 机器 ID + 序列号，不依赖数据库自增）
+
+**为什么雪花 ID 在分库分表场景下安全？**
+```
+雪花 ID = [41位时间戳][10位机器ID][12位序列号]
+
+同一毫秒内同一机器最多生成 2^12 = 4096 个不重复 ID
+跨机器靠机器 ID 区分，全局唯一
+不依赖数据库 AUTO_INCREMENT（AUTO_INCREMENT 在多库场景下会重复）
+```
+
+---
+
+### 11.8 生产扩展：从分表到分库
+
+当单 MySQL 实例的写入 QPS 成为瓶颈时，扩展为两个数据库只需改配置，代码不动：
+
+**当前开发配置**：
+```yaml
+dataSources:
+  ds0: { jdbcUrl: jdbc:mysql://localhost:3306/local_life }
+
+tables:
+  order_info:
+    actualDataNodes: ds0.order_info_${0..3}
+```
+
+**生产双库配置**：
+```yaml
+dataSources:
+  ds0: { jdbcUrl: jdbc:mysql://db-master-0:3306/local_life }
+  ds1: { jdbcUrl: jdbc:mysql://db-master-1:3306/local_life }
+
+tables:
+  order_info:
+    actualDataNodes: ds${0..1}.order_info_${0..1}
+    # ds0.order_info_0, ds0.order_info_1
+    # ds1.order_info_0, ds1.order_info_1
+    databaseStrategy:
+      standard:
+        shardingColumn: user_id
+        shardingAlgorithmName: dbModSharding    # user_id % 2 决定库
+    tableStrategy:
+      standard:
+        shardingColumn: user_id
+        shardingAlgorithmName: tableModSharding # user_id % 2 决定表
+```
+
+只修改 `sharding.yaml`，应用代码零改动。
+
+---
+
+### 11.9 关键词卡片（分库分表模块）
+
+| 关键词 | 一句话解释 |
+|--------|-----------|
+| **水平分表** | 同一张表的行数据按规则拆分到多张物理表 |
+| **分片键** | 决定数据路由的列（本项目用 user_id） |
+| **MOD 算法** | user_id % 4 取模，值为 0/1/2/3 对应 4 张物理表 |
+| **逻辑表** | 应用代码看到的表名（order_info），ShardingSphere 管理 |
+| **物理表** | 数据库中真实存在的表（order_info_0 到 order_info_3） |
+| **精准路由** | SQL 包含分片键，ShardingSphere 只查 1 张物理表 |
+| **广播查询** | SQL 不含分片键，查所有物理表后合并结果 |
+| **ShardingSphere Driver** | JDBC 驱动替换，透明拦截所有 SQL 并路由，应用无感知 |
+| **雪花算法** | 分布式唯一 ID 生成，不依赖数据库自增，全局唯一 |
+| **actualDataNodes** | sharding.yaml 中定义物理节点的表达式 |
+
+---
+
+*教程版本：2026-05-28 | 对应代码版本：feat: add ShardingSphere order table sharding*

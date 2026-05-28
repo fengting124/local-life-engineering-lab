@@ -35,40 +35,44 @@ public interface OrderInfoMapper extends BaseMapper<OrderInfo> {
      *   <li>并发下多个更新只有一个成功（数据库原子保证）</li>
      * </ul>
      *
-     * <p>使用方式：
-     * <pre>{@code
-     *   int affected = orderInfoMapper.updateStatusFromWaitPay(orderId, "CANCELLED");
-     *   if (affected == 0) {
-     *       throw new BizException(ErrorCode.ORDER_STATUS_ILLEGAL);
-     *   }
-     * }</pre>
+     * <p><b>ShardingSphere 路由说明：</b>
+     * WHERE 子句包含 {@code user_id = #{userId}}，ShardingSphere 用它计算
+     * {@code user_id % 4} 路由到目标物理表（单分片 UPDATE，无广播开销）。
+     * 如不传 userId，ShardingSphere 将广播到全部 4 个分片，功能正确但效率低。
      *
      * @param orderId       订单 ID
+     * @param userId        分片键（必传），用于 ShardingSphere 路由
      * @param targetStatus  目标状态（"CANCELLED" 或其他从 WAIT_PAY 流转的状态）
      * @return              受影响行数：1 = 更新成功，0 = 状态不符合或记录不存在
      */
     @Update("UPDATE order_info SET order_status = #{targetStatus}, updated_at = NOW() " +
-            "WHERE id = #{orderId} AND order_status = 'WAIT_PAY' AND deleted = 0")
+            "WHERE id = #{orderId} AND user_id = #{userId} " +
+            "AND order_status = 'WAIT_PAY' AND deleted = 0")
     int updateStatusFromWaitPay(@Param("orderId") Long orderId,
+                                @Param("userId") Long userId,
                                 @Param("targetStatus") String targetStatus);
 
     /**
      * 将订单从 WAIT_PAY 状态更新为 PAID，同时写入支付成功时间。
      *
      * <p>支付成功是特殊的状态流转，需要额外写入 pay_at 字段。
-     * 使用渠道时间（非数据库 NOW()），所以用参数传入。
-     * 这样与支付渠道的账单时间保持一致，方便对账。
+     * 使用渠道时间（非数据库 NOW()），所以用参数传入，与支付渠道账单时间保持一致。
      *
      * <p>同样加 WHERE order_status = 'WAIT_PAY'，防止重复回调重复处理：
-     * 第一次回调更新成功（affected=1），第二次回调时状态已是 PAID，affected=0，
-     * 服务层直接返回「已处理」（幂等）。
+     * 第一次回调更新成功（affected=1），第二次时状态已是 PAID，affected=0，幂等返回。
+     *
+     * <p><b>ShardingSphere 路由说明：</b>
+     * WHERE 包含 {@code user_id = #{userId}} 以精准路由到目标分片，避免广播。
      *
      * @param orderId   订单 ID
+     * @param userId    分片键（必传），用于 ShardingSphere 路由
      * @param payAt     支付成功时间（从渠道回调中获取）
      * @return          受影响行数：1 = 成功，0 = 状态不符（已处理或已关闭）
      */
     @Update("UPDATE order_info SET order_status = 'PAID', pay_at = #{payAt}, updated_at = NOW() " +
-            "WHERE id = #{orderId} AND order_status = 'WAIT_PAY' AND deleted = 0")
+            "WHERE id = #{orderId} AND user_id = #{userId} " +
+            "AND order_status = 'WAIT_PAY' AND deleted = 0")
     int markAsPaid(@Param("orderId") Long orderId,
+                   @Param("userId") Long userId,
                    @Param("payAt") java.time.LocalDateTime payAt);
 }

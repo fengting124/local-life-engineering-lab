@@ -2,16 +2,19 @@ spring:
   application:
     name: local-life-server
 
-  # ===== 数据源配置 =====
+  # ===== 数据源配置（ShardingSphere 接管）=====
   datasource:
-    # JDBC URL：
-    #   - serverTimezone=Asia/Shanghai：强制使用东八区，避免 MySQL 和 JVM 时区不一致
-    #   - useUnicode=true&characterEncoding=UTF-8：防止中文乱码
-    #   - allowPublicKeyRetrieval=true：MySQL 8 需要这个参数，否则首次连接可能失败
-    url: jdbc:mysql://localhost:3306/local_life?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=UTF-8&allowPublicKeyRetrieval=true&useSSL=false
-    username: root
-    password: 123456
-    driver-class-name: com.mysql.cj.jdbc.Driver
+    # ShardingSphere Driver 接管 JDBC 层，透明拦截所有 SQL 并按分片规则路由。
+    # 配置格式：jdbc:shardingsphere:classpath:{分片配置文件路径}
+    # 分片规则详见 src/main/resources/sharding.yaml：
+    #   - order_info → order_info_{0..3}（按 user_id % 4 路由）
+    #   - 其他表（user / shop / post 等）→ 直接透传到底层 MySQL，不做分片
+    # 面试说法："数据源层用 ShardingSphere Driver，MyBatis-Plus 和 Spring 无需任何改动，
+    #   分片逻辑对上层完全透明。"
+    url: jdbc:shardingsphere:classpath:sharding.yaml
+    driver-class-name: org.apache.shardingsphere.driver.ShardingSphereDriver
+    # username / password：在 sharding.yaml 的 dataSources.ds0 中配置，此处不再重复。
+    # Spring Boot 自动配置允许只配 url + driver，不强制要求 username/password（ShardingSphere 内部管理连接池）。
 
   # ===== Redis 配置 =====
   data:
