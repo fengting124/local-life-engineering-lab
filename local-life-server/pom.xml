@@ -76,6 +76,27 @@
             <artifactId>caffeine</artifactId>
         </dependency>
 
+        <!-- ===== 搜索引擎 ===== -->
+
+        <!--
+            Spring Data Elasticsearch：封装 Elasticsearch Java Client（High-Level REST Client），
+            提供 ElasticsearchOperations / ElasticsearchRepository 等抽象，
+            以及 @Document / @Field 等注解驱动的索引映射。
+            版本由 Spring Boot BOM 管理（Boot 3.5.x 对应 ES 8.x 客户端）。
+
+            用途：
+              1. 门店全文搜索（搜名称、地址、分类、描述）
+              2. 笔记全文搜索（搜标题、内容）
+              3. 将来扩展 Canal + Binlog → MQ → ES 索引同步（当前直接双写）
+
+            注意：ES 8.x 默认开启 TLS/认证，开发环境 docker-compose 关闭了 xpack.security，
+            需要在 application.yml 中配置 uris 不带 https。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-elasticsearch</artifactId>
+        </dependency>
+
         <!-- ===== 消息队列 ===== -->
 
         <!--

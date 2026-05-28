@@ -19,6 +19,7 @@ import com.personalprojections.locallife.server.module.post.dto.CommentVO;
 import com.personalprojections.locallife.server.module.post.dto.CreateCommentRequest;
 import com.personalprojections.locallife.server.module.post.dto.CreatePostRequest;
 import com.personalprojections.locallife.server.module.post.dto.PostVO;
+import com.personalprojections.locallife.server.module.search.service.PostSearchService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -87,6 +88,12 @@ public class PostService {
     private final ShopMapper shopMapper;
     private final UserMapper userMapper;
     private final CommentMapper commentMapper;
+
+    /**
+     * ES 双写服务：笔记发布/删除后立刻同步更新 ES 索引。
+     * 后续 Canal 方案上线后可移除此依赖。
+     */
+    private final PostSearchService postSearchService;
 
     /**
      * 使用 StringRedisTemplate（Key 和 Value 都是 String）操作点赞计数和限流 Key。
@@ -174,6 +181,11 @@ public class PostService {
         stringRedisTemplate.opsForValue().set(likeCountKey, "0");
 
         log.info("笔记发布成功，userId: {}, postId: {}, shopId: {}", userId, post.getId(), request.getShopId());
+
+        // 双写 ES（笔记发布后立即同步，用户搜索时能找到）
+        // shopName 冗余存入 PostDocument，避免 ES 查询时关联门店表
+        postSearchService.syncPost(post, shop.getShopName());
+
         return toVO(post, user, shop, false);
     }
 
@@ -374,6 +386,10 @@ public class PostService {
         // 3. 清理 Redis 点赞 Key（异步也可以，当前同步删除保持简单）
         stringRedisTemplate.delete(String.format(LIKE_COUNT_KEY, postId));
         stringRedisTemplate.delete(String.format(LIKE_USERS_KEY, postId));
+
+        // 4. 从 ES 索引中删除（MySQL 逻辑删除，ES 物理删除）
+        // ES 无逻辑删除概念，且搜索结果中不应出现已删除笔记
+        postSearchService.removePost(postId);
 
         log.info("笔记删除成功，userId: {}, postId: {}", userId, postId);
     }

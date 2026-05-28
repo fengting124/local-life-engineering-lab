@@ -16,6 +16,10 @@
 8. [关注模块：ZSet 与共同关注](#8-关注模块zset-与共同关注)
 9. [关键词卡片：用自己的话解释这 10 个词](#9-关键词卡片用自己的话解释这-10-个词)
 10. [链路复述练习题：面试前必做](#10-链路复述练习题面试前必做)
+11. [优惠券 & 秒杀模块：Redis 原子操作与异步结果查询](#11-优惠券--秒杀模块redis-原子操作与异步结果查询)
+12. [订单 & 支付模块：状态机与幂等设计](#第-6-章订单--支付模块)
+13. [MQ 可靠消息：Transactional Outbox 模式](#第-7-章消息可靠性transactional-outbox--指数退避--消费者幂等)
+14. [Elasticsearch 全文搜索：门店和笔记怎么搜出来的](#第-8-章elasticsearch-全文搜索门店和笔记怎么搜出来的)
 
 ---
 
@@ -1242,4 +1246,290 @@ RocketMQ 消费者默认重试 **16 次**，每次间隔递增（10s、30s、1mi
 
 ---
 
-*教程版本：2026-05-28 | 对应代码版本：feat: add RocketMQ message reliability*
+---
+
+## 第 8 章：Elasticsearch 全文搜索——门店和笔记怎么搜出来的
+
+### 8.1 为什么 MySQL LIKE 不够用？
+
+面试官常常问：「你的搜索功能是怎么实现的？为什么用 ES？」
+
+先理解 MySQL LIKE 的问题：
+
+```sql
+-- 用户搜索「饺子」，MySQL 的做法：
+SELECT * FROM shop WHERE shop_name LIKE '%饺子%' AND status = 'ONLINE';
+```
+
+这有三个致命问题：
+
+1. **全表扫描**：`%饺子%` 两端都是 `%`，索引失效，数据多了就卡死
+2. **中文分词差**：MySQL 按字符匹配，搜「饺子」不会匹配「小明饺子馆」里的「饺」和「子」两个字
+3. **无相关性排序**：所有结果同等对待，「饺子专卖店」和「偶尔卖过一次饺子的店」排名一样
+
+Elasticsearch 的解法：
+- **倒排索引**：先把文档切成词，建立「词 → 文档 ID 列表」的映射，搜索时直接查词表，O(1) 查找
+- **IK 中文分词**：「小明饺子馆」→「小明」「饺子馆」，搜「饺子」能精准匹配「饺子馆」
+- **相关性评分（_score）**：词频、文档频率等因素综合计算，相关的排前面
+
+---
+
+### 8.2 核心概念：什么是索引、文档、字段映射？
+
+ES 的概念对应 MySQL 的概念：
+
+| ES 概念 | MySQL 对应 | 说明 |
+|---------|-----------|------|
+| Index（索引） | Table（表） | `shop_index` 对应 `shop` 表 |
+| Document（文档） | Row（行） | 一个门店 = 一个文档 |
+| Field（字段） | Column（列） | `shopName`、`location` 等 |
+| Mapping（映射） | Schema（表结构） | 定义每个字段的类型 |
+
+**重要区别**：MySQL 是主数据，ES 是搜索索引（派生数据）。
+
+```
+MySQL shop 表        ←   业务写入主数据
+       ↓
+ES shop_index        ←   双写同步（当前方案）
+                     ←   Canal Binlog 方案（后续增强）
+```
+
+ES 文档里只存**搜索需要的字段**，不是 MySQL 表的全量拷贝。
+
+---
+
+### 8.3 ShopDocument 的字段设计——每个字段用什么类型，为什么？
+
+```java
+@Document(indexName = "shop_index")
+@Setting(settingPath = "es/shop-index-settings.json")
+public class ShopDocument {
+    @Id
+    private String id;  // 雪花 Long → String，ES 的文档 ID 是字符串
+
+    @MultiField(
+        mainField = @Field(type = Text, analyzer = "ik_max_word", searchAnalyzer = "ik_smart"),
+        otherFields = { @InnerField(suffix = "raw", type = Keyword) }
+    )
+    private String shopName;  // 双字段：搜索用 text，聚合用 keyword.raw
+
+    @GeoPointField
+    private String location;  // "纬度,经度" 格式，支持 geo_distance 查询
+
+    @Field(type = Double)
+    private Double score;  // 评分，用于 function_score 排序
+
+    @Field(type = Keyword)
+    private String status;  // 过滤用，不分词，term query
+}
+```
+
+**字段类型选择原则：**
+
+| 类型 | 适用场景 | 示例 |
+|------|---------|------|
+| `Text` + IK分词 | 全文搜索（模糊匹配） | shopName、description、content |
+| `Keyword` | 精确匹配、过滤、聚合 | status、categoryId、userId |
+| `GeoPoint` | 地理位置查询 | location（"lat,lon"） |
+| `Double/Integer` | 数值范围过滤、排序 | score、price、likeCount |
+| `Date` | 时间范围过滤、时间排序 | createdAt、syncAt |
+
+**双字段策略（shopName 为什么要 `@MultiField`）：**
+
+同一字段既要全文搜索，又要聚合统计，两种需求对应不同的存储方式：
+
+```
+shopName        → text（IK 分词后存倒排索引，全文搜索用）
+shopName.raw    → keyword（原始字符串，精确匹配 / 聚合用）
+```
+
+搜索时用 `shopName` 字段，排行榜聚合时用 `shopName.raw` 字段。
+
+---
+
+### 8.4 IK 分词器——中文搜索的核心
+
+**标准分析器（ES 默认）** 对中文一字一切：
+
+```
+「小明饺子馆」→ 「小」「明」「饺」「子」「馆」
+搜「饺子」→ 不能准确匹配
+```
+
+**IK 分词器** 按词语切分：
+
+```
+ik_max_word（索引时，细粒度）：
+「小明饺子馆」→ 「小明」「饺子馆」「饺子」「子馆」（切出所有可能的词）
+
+ik_smart（搜索时，粗粒度）：
+「小明饺子馆」→ 「小明」「饺子馆」（切出最合理的词）
+```
+
+**为什么索引和搜索用不同的 IK 模式？**
+
+- 索引用 `ik_max_word`：切词细，召回率高（能搜到更多相关文档）
+- 搜索用 `ik_smart`：切词准，精确率高（减少误召回）
+
+这是常见的「宽进严出」策略：**索引宽**（存更多词，不遗漏），**搜索严**（精准切词，不误匹配）。
+
+---
+
+### 8.5 门店搜索 Query 构建流程
+
+接口：`GET /api/v1/search/shops?keyword=饺子&lat=30.27&lon=120.15&distanceKm=3`
+
+`ShopSearchService.searchShops()` 内部构建 ES 查询的 5 个步骤：
+
+```
+Step 1  必须：filter status = ONLINE
+        ↓ 只搜上线门店，下线门店永远不出现
+Step 2  可选：filter categoryId = X
+        ↓ 分类过滤（用 filter 不影响相关性评分，结果可缓存）
+Step 3  可选：range filter price in [min, max]
+        ↓ 价格区间过滤
+Step 4  可选：geo_distance filter location within 3km of (30.27, 120.15)
+        ↓ 地理位置过滤（"3km" 字符串格式，Criteria.within(GeoPoint, "3km")）
+Step 5  可选：multi_match keyword on [shopName, description, address]
+        ↓ 关键词全文搜索（OR 语义：有一个字段匹配就算命中）
+```
+
+**filter vs query 的区别：**
+
+- `filter`：不计算相关性分数，结果可以缓存（适合固定条件，如 status=ONLINE）
+- `query`：计算相关性分数（_score），不缓存（适合全文搜索关键词）
+
+CriteriaQuery 会自动把 `.is()`、`.within()` 等条件转为 filter，把 `.matches()` 转为 query。
+
+---
+
+### 8.6 地理位置搜索——附近 3km 的门店
+
+这是 ES 的 `geo_distance` 查询，MySQL 实现起来非常麻烦（需要数学公式），ES 原生支持。
+
+**数据存储**：ShopDocument 的 `location` 字段是 `@GeoPointField`，存储格式：
+
+```
+location = "30.273820,120.153559"  // "纬度,经度"（注意是纬度在前）
+```
+
+**查询方式**：
+
+```java
+GeoPoint center = new GeoPoint(30.27, 120.15);
+criteria.and(new Criteria("location").within(center, "3km"));
+```
+
+ES 内部执行：找出所有 location 字段与 center 点的球面距离 ≤ 3km 的文档。
+
+**距离值返回**：ES 在 sort by geo 时会把距离值放在 hit 的 `sortValues` 里，直接读取，不用应用层重新计算。
+
+**面试常问：GeoPoint 字符串里纬度和经度谁在前？**
+
+答：ES GeoPoint 字符串格式是 `"lat,lon"`（纬度在前，经度在后）。这和地图 API 常见的 `lon,lat` 顺序相反，容易踩坑。我们在 `shopToDocument()` 方法里做了正确处理：`latitude + "," + longitude`。
+
+---
+
+### 8.7 双写架构——MySQL 写完怎么同步到 ES？
+
+**当前实现（双写）：**
+
+```
+用户调用创建/更新/上线/下线门店接口
+         ↓
+ShopService.createShop()    ← 写 MySQL（主数据）
+         ↓
+ShopSearchService.syncShop()   ← 写 ES（搜索索引）
+         ↓
+shopSearchRepository.save(doc) ← Spring Data ES
+```
+
+**双写的问题：**
+- MySQL 写成功、ES 写失败 → 数据不一致（短暂窗口内搜索不到新门店）
+- ES 是搜索系统，短暂不一致是可以接受的（最终一致性）
+- 如果需要强一致，可以将 MySQL 和 ES 写操作放在同一 `@Transactional` 里，但 ES 不支持分布式事务
+
+**后续 Canal 方案（增强项）：**
+
+```
+MySQL binlog
+    ↓ Canal（监听 binlog 变更）
+    ↓ 解析 INSERT/UPDATE/DELETE 事件
+RocketMQ（shop-sync-topic）
+    ↓ ES 同步消费者
+ES shop_index（更新文档）
+```
+
+Canal 方案解耦了 ShopService 和 ES 同步逻辑，ShopService 不再需要知道 ES 的存在。
+
+---
+
+### 8.8 笔记搜索的特殊点——冗余字段与排序策略
+
+**冗余 shopName 字段：**
+
+PostDocument 里存了 `shopName`，这是从 MySQL `shop.shop_name` 冗余过来的字段。
+
+为什么需要冗余？
+
+```
+ES 的文档是非关系型，不支持 JOIN。
+用户搜「小明饺子馆」时，需要在笔记的门店名中也能匹配，
+如果没有冗余字段，搜索结果只能匹配笔记 title 和 content。
+```
+
+冗余的代价：门店改名时，需要同步更新所有关联该门店的笔记文档的 shopName 字段（Canal 方案自动处理）。
+
+**三种排序策略：**
+
+| sortBy | ES 排序方式 | 适用场景 |
+|--------|-----------|---------|
+| `relevance`（默认） | 按 _score 降序（ES 默认） | 搜关键词时，最相关的排前面 |
+| `latest` | 按 createdAt 降序 | 看最新笔记 |
+| `popular` | 按 likeCount 降序 | 看最热笔记 |
+
+---
+
+### 8.9 关键词卡片（Elasticsearch 搜索模块）
+
+| 关键词 | 一句话解释 |
+|--------|-----------|
+| **倒排索引** | ES 的核心数据结构：词 → 文档 ID 列表，搜索时直接查词表而非全表扫描 |
+| **IK 分词器** | 中文分词插件：「小明饺子馆」→「小明」「饺子馆」，搜「饺子」能匹配 |
+| **ik_max_word vs ik_smart** | 索引用 max_word（细分，召回率高），搜索用 smart（粗分，精确率高） |
+| **Text vs Keyword** | Text 分词可全文搜索，Keyword 不分词用于精确匹配/过滤/聚合 |
+| **@MultiField** | 同一字段两种存储：text 供全文搜索，keyword.raw 供聚合排序 |
+| **GeoPoint** | ES 地理坐标类型，支持 geo_distance（附近 X km）查询 |
+| **filter vs query** | filter 不计算评分可缓存（适合固定条件），query 计算评分（适合全文搜索） |
+| **双写** | MySQL 写完立刻写 ES，简单但强一致难保证 |
+| **Canal** | MySQL Binlog 监听工具，实现 MySQL → ES 的异步解耦同步 |
+| **_score** | ES 相关性评分，由词频、文档频率等综合计算，数值越高越相关 |
+
+---
+
+### 8.10 面试复述练习
+
+**题目：用户搜「附近 3 公里内好吃的饺子馆」，你的系统是怎么处理的？**
+
+> 参考答案：
+>
+> 前端发请求：`GET /api/v1/search/shops?keyword=饺子&lat=30.27&lon=120.15&distanceKm=3`
+>
+> SearchController 接收参数，调用 ShopSearchService.searchShops()。
+>
+> Service 层动态构建 ES CriteriaQuery：
+> - filter: status = ONLINE（只搜上线门店）
+> - filter: geo_distance location within "3km" of (30.27, 120.15)（附近 3km）
+> - query: multi_match "饺子" on [shopName, description, address]（关键词搜索）
+>
+> ES 执行查询：先用 filter 缩小范围（GEO + 状态），再用 query 计算相关性评分，
+> 最终按 score（综合评分）排序返回。
+>
+> 之所以用 ES 而不用 MySQL LIKE：
+> - MySQL LIKE '%饺子%' 全表扫描，性能差
+> - MySQL 不支持地理距离查询（需要复杂数学公式）
+> - ES 倒排索引 + IK 分词，搜「饺子」能精准匹配「饺子馆」，且性能好
+
+---
+
+*教程版本：2026-05-28 | 对应代码版本：feat: add Elasticsearch search module*

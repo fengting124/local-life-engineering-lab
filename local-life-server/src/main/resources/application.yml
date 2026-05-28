@@ -41,6 +41,14 @@ spring:
     # 如有特殊需求，在具体 VO 上用 @JsonInclude(JsonInclude.Include.ALWAYS) 覆盖
     default-property-inclusion: non_null
 
+# ===== Elasticsearch 配置 =====
+spring.elasticsearch:
+  # ES 节点地址（docker-compose 中 xpack.security.enabled=false，直接 http）
+  uris: http://localhost:9200
+  # 连接/读取超时时间（毫秒），ES 单次查询一般 < 100ms，给 3s 余量
+  connection-timeout: 3000ms
+  socket-timeout: 3000ms
+
 # ===== RocketMQ 配置 =====
 rocketmq:
   # Name Server 地址，对应 docker-compose rocketmq-namesrv:9876

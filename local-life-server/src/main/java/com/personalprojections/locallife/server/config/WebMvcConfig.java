@@ -71,6 +71,10 @@ public class WebMvcConfig implements WebMvcConfigurer {
                         // Mock 支付触发（仅测试用，模拟支付宝通知；生产环境通过 @Profile 关闭）
                         "/api/v1/payments/mock-pay",
 
+                        // 全文搜索接口（游客可搜索，无需登录）
+                        "/api/v1/search/shops",
+                        "/api/v1/search/posts",
+
                         // Spring Boot Actuator 运维端点（健康检查）
                         "/actuator/**",
 

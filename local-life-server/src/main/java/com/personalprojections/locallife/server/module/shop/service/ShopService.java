@@ -7,6 +7,7 @@ import com.personalprojections.locallife.server.domain.entity.Merchant;
 import com.personalprojections.locallife.server.domain.entity.Shop;
 import com.personalprojections.locallife.server.domain.mapper.ShopMapper;
 import com.personalprojections.locallife.server.module.merchant.service.MerchantService;
+import com.personalprojections.locallife.server.module.search.service.ShopSearchService;
 import com.personalprojections.locallife.server.module.shop.dto.CreateShopRequest;
 import com.personalprojections.locallife.server.module.shop.dto.ShopVO;
 import com.personalprojections.locallife.server.module.shop.dto.UpdateShopRequest;
@@ -59,6 +60,12 @@ public class ShopService {
      * 这里 ShopService → MerchantService，单向依赖，没有循环。
      */
     private final MerchantService merchantService;
+
+    /**
+     * ES 双写服务：MySQL 写成功后立刻同步更新 ES 索引。
+     * 后续 Canal 方案上线后可移除此依赖，改由 Binlog 事件驱动。
+     */
+    private final ShopSearchService shopSearchService;
 
     // =========================================================
     // 查询（公开，C 端）
@@ -148,6 +155,11 @@ public class ShopService {
         shopMapper.insert(shop);
         log.info("门店创建成功，merchantId: {}, shopId: {}, shopName: {}",
                 merchant.getId(), shop.getId(), shop.getShopName());
+
+        // 双写 ES（DRAFT 状态也写入索引，方便后续上线时无需再次同步）
+        // DRAFT 门店不会出现在搜索结果中，因为搜索时 filter status=ONLINE
+        shopSearchService.syncShop(shop);
+
         return toVO(shop);
     }
 
@@ -187,6 +199,10 @@ public class ShopService {
 
         shopMapper.updateById(shop);
         log.info("门店更新成功，shopId: {}", shopId);
+
+        // 双写 ES — 名称/地址/描述变了，搜索索引也要同步更新
+        shopSearchService.syncShop(shop);
+
         return toVO(shop);
     }
 
@@ -212,6 +228,10 @@ public class ShopService {
         shop.setStatus("ONLINE");
         shopMapper.updateById(shop);
         log.info("门店上线，shopId: {}", shopId);
+
+        // 上线后同步 ES，status 变为 ONLINE，搜索结果中开始出现此门店
+        shopSearchService.syncShop(shop);
+
         return toVO(shop);
     }
 
@@ -234,6 +254,11 @@ public class ShopService {
         shop.setStatus("OFFLINE");
         shopMapper.updateById(shop);
         log.info("门店下线，shopId: {}", shopId);
+
+        // 下线后同步 ES — status 变为 OFFLINE，搜索 filter status=ONLINE 会自动过滤掉此门店
+        // 不调用 removeShop 是因为门店可以恢复上线（OFFLINE → ONLINE），保留 ES 文档避免重建
+        shopSearchService.syncShop(shop);
+
         return toVO(shop);
     }
 
