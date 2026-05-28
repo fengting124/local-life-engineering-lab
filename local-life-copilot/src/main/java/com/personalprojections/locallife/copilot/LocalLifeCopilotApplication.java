@@ -36,7 +36,10 @@ import org.springframework.scheduling.annotation.EnableAsync;
  * </pre>
  */
 @EnableAsync               // 启用异步（ToolAuditService 异步写审计日志）
-@MapperScan("com.personalprojections.locallife.copilot.audit")  // 扫描审计 Mapper
+@MapperScan({
+        "com.personalprojections.locallife.copilot.audit",          // 工具审计 Mapper
+        "com.personalprojections.locallife.copilot.domain.mapper"   // 业务只读 Mapper
+})
 @SpringBootApplication
 public class LocalLifeCopilotApplication {
 

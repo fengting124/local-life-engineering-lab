@@ -175,33 +175,117 @@ async def resume(
     x_user_role: str = Header(..., alias="X-User-Role"),
 ):
     """
-    审批通过后恢复挂起的 Agent。
+    HITL 审批通过后恢复挂起的 Agent。
 
-    流程：
-    1. 验证 approval_id 有效且 approved=True
-    2. 从 MySQL 读取对应的 checkpoint_id
-    3. 调用 LangGraph resume（从 checkpoint 恢复 thread）
-    4. Agent 继续执行挂起前的下一步动作
-    5. 以 SSE 流式返回后续执行过程
+    完整流程：
+      1. 查询 hitl_approval 记录，验证合法性（PENDING 且未过期）
+      2. 按审批结果更新状态（APPROVED / REJECTED）
+      3. 若通过：向 LangGraph thread 注入 approval_id，从 checkpoint 恢复 Agent
+      4. 以 SSE 流式返回 Agent 恢复执行后的过程
+      5. 若拒绝：向前端返回拒绝通知，不恢复 Agent
+
+    LangGraph 恢复原理：
+      LangGraph 的 checkpointer 在每个节点结束后保存状态快照。
+      hitl_node 结束时快照已保存（pending_hitl=True，包含 pending_action）。
+      调用 graph.ainvoke(None, config={"configurable": {"thread_id": ...}})
+      LangGraph 从最新快照恢复，继续执行 hitl_node → END 之后的逻辑。
+      这里我们需要额外注入 approval_id 到状态，工具调用时需要它做凭证。
     """
+    from session.hitl import hitl_service
+
+    approver_id = int(x_user_id)
+
+    # ---- Step 1：审批拒绝 ----
     if not request.approved:
-        # 审批拒绝：通知 Agent 终止
-        # 实际实现：更新 hitl_approval.status = REJECTED，发送拒绝通知
-        return {"status": "rejected", "message": "审批已拒绝，Agent 任务终止"}
+        success = await hitl_service.reject(
+            approval_id=int(request.approval_id),
+            approver_id=approver_id,
+        )
+        if not success:
+            raise HTTPException(status_code=404, detail="审批记录不存在或状态非 PENDING")
 
-    # 实际实现：
-    # 1. approval = await db.get_hitl_approval(request.approval_id)
-    # 2. assert approval.status == "PENDING"
-    # 3. await db.update_hitl_approval(approval.id, status="APPROVED", approver_id=user_id)
-    # 4. config = {"configurable": {"thread_id": request.thread_id}}
-    # 5. resume_input = {"approved": True, "approval_id": request.approval_id}
-    # 6. return StreamingResponse(agent_graph.astream(resume_input, config), ...)
+        # 向前端推送拒绝通知（单次 SSE，不恢复 Agent）
+        async def reject_stream():
+            yield _sse("final_answer", {
+                "content":    "运营已拒绝此操作，任务终止。如需其他帮助请重新发起会话。",
+                "stop_reason": "hitl_rejected",
+                "thread_id":   request.thread_id,
+            })
 
-    return {
-        "status": "resumed",
-        "thread_id": request.thread_id,
-        "message": "审批通过，Agent 继续执行（SSE 恢复功能开发中）",
+        return StreamingResponse(reject_stream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    # ---- Step 2：查询并通过审批 ----
+    approval = await hitl_service.get_approval(int(request.approval_id))
+    if not approval:
+        raise HTTPException(status_code=404, detail="审批记录不存在")
+    if approval.status != "PENDING":
+        raise HTTPException(status_code=400, detail=f"审批记录状态为 {approval.status}，无法通过")
+
+    ok = await hitl_service.approve(int(request.approval_id), approver_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="审批操作失败，请重试")
+
+    # ---- Step 3：恢复 LangGraph Agent ----
+    # 向 Agent state 注入审批结果，Agent 继续执行时可以从 state 获取 approval_id
+    config = {"configurable": {"thread_id": request.thread_id}}
+
+    # LangGraph resume：传入 None 输入（继续执行被 interrupt 挂起的节点）
+    # pending_action 中注入 approval_id（工具调用时作为凭证传入）
+    resume_input = {
+        "pending_hitl":  False,      # 解除挂起
+        "pending_action": {
+            **(approval.action_payload or {}),
+            "approval_id": str(request.approval_id),
+        },
     }
+
+    async def resume_stream():
+        """从 checkpoint 恢复 Agent，继续执行，以 SSE 推送后续过程。"""
+        yield _sse("agent_step", {
+            "type":    "hitl_resumed",
+            "message": f"审批通过（approver={approver_id}），Agent 继续执行",
+        })
+        try:
+            async for event in agent_graph.astream_events(
+                resume_input, config=config, version="v2"
+            ):
+                event_type = event["event"]
+                event_name = event.get("name", "")
+                event_data = event.get("data", {})
+
+                if event_type == "on_chat_model_stream":
+                    chunk = event_data.get("chunk", {})
+                    content = getattr(chunk, "content", "")
+                    if content:
+                        yield _sse("stream", {"content": content})
+
+                elif event_type == "on_tool_start":
+                    yield _sse("tool_call", {"tool": event_name, "args": event_data.get("input", {})})
+
+                elif event_type == "on_tool_end":
+                    yield _sse("tool_result", {
+                        "tool": event_name, "result": str(event_data.get("output", ""))[:500]
+                    })
+
+                elif event_type == "on_chain_end":
+                    output = event_data.get("output", {})
+                    if isinstance(output, dict) and output.get("final_answer"):
+                        yield _sse("final_answer", {
+                            "content":    output["final_answer"],
+                            "stop_reason": output.get("stop_reason", "completed"),
+                            "thread_id":   request.thread_id,
+                        })
+
+        except Exception as e:
+            log.error("resume_stream_error", error=str(e), exc_info=True)
+            yield _sse("error", {"message": str(e)})
+
+    return StreamingResponse(
+        resume_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 def _sse(event: str, data: dict) -> str:

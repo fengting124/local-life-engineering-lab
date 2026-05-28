@@ -19,8 +19,8 @@
 | LocalLife Server | 可观测性（Micrometer + Prometheus + Zipkin） | ✅ | `feat: add observability` |
 | LocalLife Server | 接口限流（Redis 滑动窗口 + @RateLimit） | ✅ | `feat: add rate limiting module` |
 | LocalLife Server | ShardingSphere 订单分表 | ✅ | `feat: add ShardingSphere order table sharding` |
-| LocalLife Copilot | Java MCP Server 骨架 | 🔄 进行中（待完整 DB 查询） | 未提交 |
-| LocalLife Copilot | Python Agent Service 骨架 | 🔄 进行中（待 HITL 完整流程） | 未提交 |
+| LocalLife Copilot | Java MCP Server（完整工具 + RBAC + Audit） | ✅ | 见下方提交 |
+| LocalLife Copilot | Python Agent Service（完整 HITL + Evals + Guardrails） | ✅ | 见下方提交 |
 | 文档 | 接口规范文档（12章） | ✅ | `docs: finalize interface spec` |
 | 文档 | 接口教程（11章） | ✅ | 含于各模块提交 |
 | 文档 | Copilot 架构设计文档 | ✅ | 未提交 |

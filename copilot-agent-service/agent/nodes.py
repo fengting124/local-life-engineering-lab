@@ -100,12 +100,33 @@ async def llm_node(state: AgentState) -> dict:
     )
 
     try:
-        tools = await mcp.list_tools()
+        all_tools = await mcp.list_tools()
     except Exception as e:
         log.error("mcp_list_tools_failed", error=str(e))
-        tools = []  # 工具获取失败时降级为纯 LLM 回答
+        all_tools = []  # 工具获取失败时降级为纯 LLM 回答
 
-    # 将 MCP 工具定义转换为 LangChain tool 格式
+    # ---- Tool Router：按角色和任务类型过滤工具 ----
+    # 不把所有工具都传给 LLM：减少 token 消耗 + 降低决策噪音 + 权限边界清晰
+    from agent.tool_router import ToolRouter
+    messages = state.get("messages", [])
+    last_user_msg = ""
+    for msg in reversed(messages):
+        if hasattr(msg, "type") and msg.type == "human":
+            last_user_msg = msg.content if isinstance(msg.content, str) else ""
+            break
+    # 将历史消息文本拼接作为上下文（供 context_filter 使用）
+    context_text = " ".join([
+        m.content for m in messages[-10:]  # 只取最近 10 条
+        if isinstance(getattr(m, "content", ""), str)
+    ])
+    router = ToolRouter(
+        user_role=state.get("user_role", "merchant"),
+        user_message=last_user_msg,
+        conversation_context=context_text,
+    )
+    tools = router.route(all_tools)
+
+    # 将过滤后的工具转换为 LangChain tool 格式
     lc_tools = _convert_to_lc_tools(tools)
 
     # 绑定工具到 LLM
@@ -248,49 +269,72 @@ async def hitl_node(state: AgentState) -> dict:
     """
     HITL 节点：处理高风险动作的人工审批请求。
 
-    当 Agent 决定执行高风险动作（退款/补券）时：
-    1. 写 hitl_approval 记录（PENDING）
-    2. LangGraph interrupt（通过返回 pending_hitl=True）
-    3. Agent 挂起，等待外部审批系统恢复
+    当 Agent 决定执行高风险动作（退款/补券）时，完整流程：
+    1. 从 pending_action 中读取动作类型和参数
+    2. 写 hitl_approval 记录到 MySQL（status=PENDING）
+    3. 生成挂起通知消息（含 approval_id，前端展示审批状态）
+    4. 返回 pending_hitl=True → 路由到 END → LangGraph thread 挂起
+    5. 外部审批系统审批通过后，POST /chat/resume 恢复 thread
 
-    注：实际的 interrupt 由 LangGraph 在 hitl_node 后的 END 边实现。
-    审批通过后，外部系统恢复 thread，Agent 从 checkpoint 继续执行。
+    Checkpoint 说明：
+    LangGraph 在每个节点执行后自动写 checkpoint（由 checkpointer 配置）。
+    hitl_node 执行完毕 → checkpoint 写入 → thread 挂起。
+    恢复时：agent_graph.ainvoke(resume_input, config={"configurable": {"thread_id": ...}})
+    LangGraph 从最新 checkpoint 恢复，Agent 继续执行。
     """
-    pending = state.get("pending_action", {})
-    action_type = pending.get("action_type", "unknown")
+    pending      = state.get("pending_action") or {}
+    action_type  = pending.get("action_type", "unknown")
     action_payload = pending.get("payload", {})
-    agent_reason = pending.get("reason", "Agent 认为需要执行高风险动作")
+    agent_reason = pending.get("reason", "Agent 认为需要执行此高风险动作")
+    session_id   = state.get("session_id")
+    thread_id    = state.get("thread_id", "")
 
     log.info(
         "hitl_requested",
         action_type=action_type,
-        session_id=state.get("session_id"),
-        thread_id=state.get("thread_id"),
+        session_id=session_id,
+        thread_id=thread_id,
     )
 
-    # 实际实现：写 hitl_approval 到 MySQL
-    # approval = HitlApproval(
-    #     session_id=state["session_id"],
-    #     thread_id=state["thread_id"],
-    #     checkpoint_id=<current_checkpoint_id>,
-    #     action_type=action_type,
-    #     action_payload=action_payload,
-    #     agent_reason=agent_reason,
-    #     expire_at=datetime.now() + timedelta(hours=24),
-    # )
-    # await db.insert(approval)
+    # ---- 写 hitl_approval 到 MySQL ----
+    # LangGraph 的 checkpoint_id 在此时已由 checkpointer 生成，
+    # 但 Python API 中无法直接从节点内获取当前 checkpoint_id。
+    # 折中方案：用 thread_id 作为恢复标识符（从最新 checkpoint 恢复）。
+    # 生产升级：langgraph 提供了 get_state() 可以获取当前 checkpoint_id。
+    approval_id = None
+    try:
+        from session.hitl import hitl_service
+        approval_id = await hitl_service.create_approval(
+            session_id=session_id or 0,
+            thread_id=thread_id,
+            checkpoint_id=thread_id,   # 简化：用 thread_id 标识恢复点
+            action_type=action_type,
+            action_payload=action_payload,
+            agent_reason=agent_reason,
+        )
+        log.info("hitl_approval_written", approval_id=approval_id)
+    except Exception as e:
+        # 写 DB 失败时不能阻塞主流程，记录错误后继续挂起
+        log.error("hitl_approval_write_failed", error=str(e))
 
-    # 生成挂起通知消息（返回给用户）
+    # ---- 生成挂起通知消息 ----
     hitl_message = AIMessage(content=(
-        f"此操作（{action_type}）需要人工审批。\n"
-        f"申请原因：{agent_reason}\n"
-        f"已提交审批申请，请等待运营人员审核。审批通过后将继续执行。"
+        f"此操作（**{action_type}**）涉及高风险，需要人工审批后才能执行。\n\n"
+        f"**申请原因**：{agent_reason}\n\n"
+        f"**审批记录 ID**：{approval_id or '写入失败，请联系技术支持'}\n\n"
+        f"已提交审批申请，请运营人员在审批工作台处理。"
+        f"审批通过后系统将继续执行，拒绝则任务终止。"
     ))
 
     return {
-        "messages": [hitl_message],
-        "pending_hitl": True,
-        "stop_reason": "pending_approval",
+        "messages":      [hitl_message],
+        "pending_hitl":  True,
+        "stop_reason":   "pending_approval",
+        # 将 approval_id 存入 state，恢复时传给工具作为凭证
+        "pending_action": {
+            **pending,
+            "approval_id": approval_id,
+        },
     }
 
 
