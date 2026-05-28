@@ -10,6 +10,7 @@ import com.personalprojections.locallife.server.domain.entity.UserCoupon;
 import com.personalprojections.locallife.server.domain.mapper.CouponTemplateMapper;
 import com.personalprojections.locallife.server.domain.mapper.SeckillSessionMapper;
 import com.personalprojections.locallife.server.domain.mapper.UserCouponMapper;
+import com.personalprojections.locallife.server.common.metrics.BusinessMetrics;
 import com.personalprojections.locallife.server.module.seckill.dto.SeckillRequest;
 import com.personalprojections.locallife.server.module.seckill.dto.SeckillResultVO;
 import lombok.RequiredArgsConstructor;
@@ -83,6 +84,7 @@ public class SeckillService {
     private final SeckillSessionMapper seckillSessionMapper;
     private final UserCouponMapper userCouponMapper;
     private final StringRedisTemplate stringRedisTemplate;
+    private final BusinessMetrics businessMetrics;
 
     /** Redis Key 模板 */
     private static final String STOCK_KEY = "seckill:stock:%d:%d";   // sessionId:templateId
@@ -134,6 +136,10 @@ public class SeckillService {
         // 1. 校验场次（存在性 + 状态 + 时间窗）
         SeckillSession session = validateSession(sessionId, couponTemplateId);
 
+        // Metrics：记录一次秒杀尝试（无论成功与否，帮助分析热度）
+        // Metrics：使用 couponTemplateId 区分不同秒杀活动（SeckillSession 无 shopId 字段）
+        businessMetrics.recordSeckillAttempt(couponTemplateId);
+
         // 2. 执行 Lua 脚本（关键：原子性防超卖 + 防重复）
         String stockKey = String.format(STOCK_KEY, sessionId, couponTemplateId);
         String userSetKey = String.format(USER_SET_KEY, sessionId, couponTemplateId);
@@ -149,11 +155,13 @@ public class SeckillService {
         if (result == null || result == 1L) {
             // 库存不足（返回 1）
             log.info("秒杀失败：库存不足，userId: {}, sessionId: {}", userId, sessionId);
+            businessMetrics.recordSeckillFailure(couponTemplateId, "COUPON_STOCK_EXHAUSTED");
             throw new BizException(ErrorCode.COUPON_STOCK_EXHAUSTED);
         }
         if (result == 2L) {
             // 已领取过（返回 2）
             log.info("秒杀失败：重复领取，userId: {}, sessionId: {}", userId, sessionId);
+            businessMetrics.recordSeckillFailure(couponTemplateId, "COUPON_ALREADY_RECEIVED");
             throw new BizException(ErrorCode.COUPON_ALREADY_RECEIVED);
         }
 
@@ -162,6 +170,9 @@ public class SeckillService {
         // 改法：stringRedisTemplate 存一个 result Key 标记「等待处理」，
         //       MQ 消费成功后更新为「已完成」，「查询结果」接口读这个 Key
         createUserCoupon(userId, couponTemplateId, sessionId, session);
+
+        // Metrics：记录秒杀成功（用于计算成功率：success / attempts）
+        businessMetrics.recordSeckillSuccess(couponTemplateId);
 
         log.info("秒杀成功，userId: {}, sessionId: {}, couponTemplateId: {}",
                 userId, sessionId, couponTemplateId);

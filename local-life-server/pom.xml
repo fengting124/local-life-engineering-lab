@@ -143,6 +143,55 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- ===== 可观测性（Observability）===== -->
+
+        <!--
+            Micrometer Prometheus Registry：将 Spring Boot Actuator 收集的 Metrics
+            暴露为 Prometheus 可抓取的 /actuator/prometheus 端点。
+            工作原理：
+              Micrometer（门面层）收集 JVM、HTTP 请求、数据库连接池等指标
+              → Prometheus Registry（实现层）将指标格式化为 Prometheus text format
+              → Prometheus Server 定期 scrape /actuator/prometheus
+              → Grafana 查询 Prometheus 绘制仪表盘
+            版本由 Spring Boot BOM 管理，无需显式指定。
+        -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!--
+            Micrometer Tracing Bridge for Brave：提供分布式链路追踪能力。
+            工作原理：
+              Micrometer Tracing（门面）← 适配层（Bridge）← Brave（Zipkin 实现）
+              每个请求生成 traceId + spanId，传播到下游服务（HTTP Header / MQ Message）
+            为什么选 Brave 而不是 OTel（OpenTelemetry）：
+              Brave 是 Spring Boot 官方推荐的轻量实现，生产验证充分
+              OTel 更标准化，后续迁移也简单（同一套 Micrometer Tracing 门面）
+        -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-brave</artifactId>
+        </dependency>
+
+        <!--
+            Zipkin Reporter Brave：将 Span 数据上报到 Zipkin Server。
+            Zipkin 是分布式追踪系统，可视化请求链路（哪个接口慢、哪里出错）。
+            开发环境运行本地 Zipkin（docker-compose 中配置）。
+            上报策略：
+              采样率 = 1.0 表示所有请求都上报（开发阶段）
+              生产环境通常设 0.1（10% 采样），减少性能开销
+        -->
+        <dependency>
+            <groupId>io.zipkin.reporter2</groupId>
+            <artifactId>zipkin-reporter-brave</artifactId>
+        </dependency>
+
+        <!--
+            Feign Micrometer：让 Feign HTTP 客户端调用自动生成 Span（当前项目暂无 Feign，预留）。
+            不引入，避免不必要的依赖。
+        -->
+
         <!-- ===== 测试 ===== -->
 
         <!-- Spring Boot Test：包含 JUnit 5 / Mockito / Spring Test，测试范围依赖 -->

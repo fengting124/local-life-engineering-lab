@@ -99,14 +99,53 @@ management:
   endpoints:
     web:
       exposure:
-        # 暴露 health 和 info 端点，用于健康检查和服务信息
+        # 暴露 health、info、prometheus 端点
+        # prometheus：暴露 /actuator/prometheus，Prometheus Server 定期抓取此端点收集指标
         # 生产环境需要配合安全认证，防止端点被外部访问
-        include: health,info
+        include: health,info,prometheus
   endpoint:
     health:
       # always：无论是否健康都返回详情，方便开发调试
       # 生产环境建议改为 when-authorized
       show-details: always
+    prometheus:
+      # 暴露 Prometheus 格式的 metrics 数据
+      # 访问：GET /actuator/prometheus
+      # Spring Boot 3.4+ 用 access: unrestricted 替代已废弃的 enabled: true
+      access: unrestricted
+
+  # ===== Micrometer Metrics 配置 =====
+  metrics:
+    tags:
+      # 为所有 metrics 添加 application 标签，Prometheus 多服务时用于区分
+      # 示例：http_server_requests_seconds_count{application="local-life-server", ...}
+      application: ${spring.application.name}
+    distribution:
+      # HTTP 请求时间分布（用于 P99 延迟分析）
+      # 开启 SLO 百分位数直方图：记录 50ms/100ms/200ms/500ms/1s/2s/5s 的请求分布
+      # Prometheus 中使用 histogram_quantile(0.99, ...) 计算 P99 延迟
+      # 键名含点号，用 [] 包裹避免 YAML 解析歧义
+      percentiles-histogram:
+        "[http.server.requests]": true
+      # 预定义 SLO 边界（Service Level Objective）：用于检查接口是否满足响应时间要求
+      # 示例：99% 的请求 < 500ms 为达标（通过 Grafana 面板展示）
+      slo:
+        "[http.server.requests]": 50ms, 100ms, 200ms, 500ms, 1s, 2s, 5s
+
+  # ===== 分布式链路追踪（Micrometer Tracing + Brave + Zipkin）=====
+  tracing:
+    # 采样率：1.0 = 100% 采样（所有请求都生成 Trace）
+    # 开发环境用 1.0，方便排查问题
+    # 生产环境建议 0.1（10% 采样），减少 Zipkin 存储和网络开销
+    sampling:
+      probability: 1.0
+
+  # ===== Zipkin 上报配置（与 management 同级，合并在此块内）=====
+  # Spring Boot 3.x Zipkin 配置路径：management.zipkin.tracing（原 spring.zipkin 已废弃）
+  # ZipkinReporter 将 Span 数据 POST 到：http://localhost:9411/api/v2/spans
+  zipkin:
+    tracing:
+      endpoint: http://localhost:9411/api/v2/spans
 
 # ===== 日志配置 =====
 logging:
@@ -119,5 +158,7 @@ logging:
     org.springframework: INFO
   pattern:
     # 日志格式：时间 + 级别 + 线程 + 类名 + 消息
-    # %X{requestId} 是 MDC 中存放的请求 ID，拦截器会在请求进来时写入
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%level] [%thread] [%X{requestId}] %logger{36} - %msg%n"
+    # %X{traceId} 和 %X{spanId}：Micrometer Tracing 自动写入 MDC，
+    # 同一请求链路的所有日志行都有相同 traceId，方便日志聚合和问题定位
+    # 示例：grep traceId=abc123 application.log  → 找出该请求的完整链路日志
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%level] [%thread] [%X{traceId}/%X{spanId}] %logger{36} - %msg%n"

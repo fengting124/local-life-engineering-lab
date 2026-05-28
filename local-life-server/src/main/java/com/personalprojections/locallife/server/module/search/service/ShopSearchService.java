@@ -1,5 +1,6 @@
 package com.personalprojections.locallife.server.module.search.service;
 
+import com.personalprojections.locallife.server.common.metrics.BusinessMetrics;
 import com.personalprojections.locallife.server.common.result.PageResult;
 import com.personalprojections.locallife.server.domain.entity.Shop;
 import com.personalprojections.locallife.server.module.search.document.ShopDocument;
@@ -73,6 +74,7 @@ public class ShopSearchService {
 
     private final ElasticsearchOperations elasticsearchOperations;
     private final ShopSearchRepository shopSearchRepository;
+    private final BusinessMetrics businessMetrics;
 
     // ===== 双写同步方法 =====
 
@@ -124,6 +126,11 @@ public class ShopSearchService {
      * @return 分页结果，含总数和当前页数据
      */
     public PageResult<ShopSearchVO> searchShops(ShopSearchRequest req) {
+        // Metrics：记录搜索请求（区分关键词搜索 vs 纯地理位置搜索）
+        boolean hasKeyword = req.getKeyword() != null && !req.getKeyword().isBlank();
+        boolean hasGeo = req.getLat() != null && req.getLon() != null;
+        businessMetrics.recordShopSearch(hasKeyword, hasGeo);
+
         // Step 1: 构建 Criteria（条件对象，可以链式拼装）
         // 所有搜索都强制过滤 status = ONLINE，下线门店不出现在结果中
         Criteria criteria = new Criteria("status").is("ONLINE");
@@ -146,8 +153,7 @@ public class ShopSearchService {
         }
 
         // Step 4: 地理位置过滤（geo_distance query）
-        // 只有 lat 和 lon 同时提供时才启用地理过滤
-        boolean hasGeo = req.getLat() != null && req.getLon() != null;
+        // 只有 lat 和 lon 同时提供时才启用地理过滤（hasGeo 已在方法顶部定义）
         if (hasGeo) {
             GeoPoint center = new GeoPoint(req.getLat(), req.getLon());
             // within(GeoPoint, String) — String 格式为 "5km"、"500m" 等

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.personalprojections.locallife.server.common.context.UserContext;
 import com.personalprojections.locallife.server.common.exception.BizException;
+import com.personalprojections.locallife.server.common.metrics.BusinessMetrics;
 import com.personalprojections.locallife.server.common.result.ErrorCode;
 import com.personalprojections.locallife.server.domain.entity.CouponTemplate;
 import com.personalprojections.locallife.server.domain.entity.OrderInfo;
@@ -83,6 +84,7 @@ public class OrderService {
     private final UserCouponMapper userCouponMapper;
     private final CouponTemplateMapper couponTemplateMapper;
     private final StringRedisTemplate stringRedisTemplate;
+    private final BusinessMetrics businessMetrics;
 
     // =========================================================
     // Redis Key 常量
@@ -264,6 +266,9 @@ public class OrderService {
 
         log.info("[Order] 创建订单成功, userId={}, orderId={}, orderNo={}, orderAmount={}分",
                 userId, order.getId(), orderNo, orderAmount);
+
+        // Metrics：记录订单创建成功（按门店统计下单量）
+        businessMetrics.recordOrderCreated(shop.getId());
 
         return toVO(order, shop.getShopName());
     }

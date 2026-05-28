@@ -3,6 +3,7 @@ package com.personalprojections.locallife.server.module.order.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.personalprojections.locallife.server.common.context.UserContext;
 import com.personalprojections.locallife.server.common.exception.BizException;
+import com.personalprojections.locallife.server.common.metrics.BusinessMetrics;
 import com.personalprojections.locallife.server.common.result.ErrorCode;
 import com.personalprojections.locallife.server.domain.entity.OrderInfo;
 import com.personalprojections.locallife.server.domain.entity.PaymentOrder;
@@ -72,6 +73,7 @@ public class PaymentService {
     private final PaymentOrderMapper paymentOrderMapper;
     private final OrderService orderService;
     private final OutboxService outboxService;
+    private final BusinessMetrics businessMetrics;
 
     // =========================================================
     // 发起支付
@@ -223,6 +225,7 @@ public class PaymentService {
      */
     @Transactional(rollbackFor = Exception.class)
     public void handleCallback(PaymentCallbackRequest callback) {
+        long startMs = System.currentTimeMillis();
         log.info("[Payment] 收到支付回调, paymentNo={}, channel={}, tradeNo={}",
                 callback.getPaymentNo(), callback.getChannel(), callback.getTradeNo());
 
@@ -302,6 +305,11 @@ public class PaymentService {
 
         log.info("[Payment] 支付成功处理完毕（含 Outbox 写入）, paymentNo={}, orderId={}, paidAmount={}分",
                 callback.getPaymentNo(), paymentOrder.getOrderId(), callback.getPaidAmount());
+
+        // Metrics：记录回调处理耗时和成功次数（用于监控支付渠道稳定性和 P99 延迟）
+        long costMs = System.currentTimeMillis() - startMs;
+        businessMetrics.recordPaymentCallback(costMs, callback.getChannel(), true);
+        businessMetrics.recordPaymentSuccess(callback.getChannel());
     }
 
     // =========================================================
