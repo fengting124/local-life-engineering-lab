@@ -1,0 +1,45 @@
+# ================================================================
+# LocalLife Copilot Agent Service 依赖
+# ================================================================
+
+# ===== Web 框架（SSE 流式输出）=====
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+
+# ===== LangGraph Agent 编排 =====
+# LangGraph：状态图 + checkpoint + interrupt（HITL 核心）
+langgraph==0.2.45
+langchain==0.3.7
+langchain-anthropic==0.3.0   # Claude API
+langchain-openai==0.2.6      # 备选 OpenAI
+
+# ===== LLM =====
+anthropic==0.40.0
+
+# ===== RAG（Milvus 向量检索）=====
+pymilvus==2.4.9
+langchain-milvus==0.1.6
+
+# ===== 数据库（会话 + 消息 + checkpoint 持久化）=====
+sqlalchemy==2.0.36
+aiomysql==0.2.0              # 异步 MySQL 驱动
+alembic==1.14.0              # DB 迁移
+
+# ===== Redis（限流 + 缓存）=====
+redis==5.2.0
+
+# ===== HTTP 客户端（调用 Java MCP Server）=====
+httpx==0.28.0                # 异步 HTTP，比 requests 更适合 FastAPI
+
+# ===== 数据校验 =====
+pydantic==2.10.1
+pydantic-settings==2.6.1
+
+# ===== 异步工具 =====
+anyio==4.7.0
+
+# ===== 日志 =====
+structlog==24.4.0
+
+# ===== 开发工具 =====
+python-dotenv==1.0.1

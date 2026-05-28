@@ -1,6 +1,74 @@
 spring:
   application:
-    name: local-life-copilot
+    name: local-life-copilot-mcp-server
 
+  # ===== 数据源（与 LocalLife Server 共享同一 MySQL 实例）=====
+  # MCP Server 工具实现直接查询业务表（order_info / shop / payment_order 等）
+  # 生产形态：改为通过内部 HTTP API 调用 LocalLife Server，当前阶段共享 DB 更简单直接
+  datasource:
+    url: jdbc:mysql://localhost:3306/local_life?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=UTF-8&allowPublicKeyRetrieval=true&useSSL=false
+    username: root
+    password: 123456
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  # ===== Redis（工具限流、RBAC 缓存）=====
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      database: 1         # 使用 DB 1，与 LocalLife Server（DB 0）隔离
+      timeout: 3000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 4
+          min-idle: 1
+
+  # ===== Jackson =====
+  jackson:
+    date-format: "yyyy-MM-dd'T'HH:mm:ssXXX"
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+    default-property-inclusion: non_null
+
+# ===== MyBatis-Plus =====
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.personalprojections.locallife.copilot.domain.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: assign_id
+
+# ===== MCP Server 端口（与 LocalLife Server 8080 隔离）=====
 server:
   port: 8081
+
+# ===== Actuator =====
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+# ===== MCP Server 业务配置 =====
+mcp:
+  server:
+    name: "locallife-mcp-server"
+    version: "1.0.0"
+    # 工具限流：每分钟每个工具最多调用 100 次（防 Agent 失控循环）
+    tool-rate-limit-per-minute: 100
+
+# ===== 日志 =====
+logging:
+  level:
+    com.personalprojections.locallife.copilot: DEBUG
+    org.springframework: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%level] [%thread] %logger{36} - %msg%n"
