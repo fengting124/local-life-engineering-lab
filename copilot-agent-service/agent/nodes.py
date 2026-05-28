@@ -163,6 +163,30 @@ async def llm_node(state: AgentState) -> dict:
     if not getattr(response, "tool_calls", None):
         final_answer = response.content
 
+    # ---- 持久化 assistant 消息 ----
+    # 不论是工具调用决策还是 Final Answer，都写入 agent_message 表
+    # 用途：1) 会话回放 2) Evals 评测重放 3) 审计追溯
+    try:
+        from session.manager import session_manager
+        session_id = state.get("session_id")
+        if session_id:
+            tool_calls_payload = None
+            if getattr(response, "tool_calls", None):
+                tool_calls_payload = [
+                    {"id": tc.get("id"), "name": tc.get("name"), "args": tc.get("args", {})}
+                    for tc in response.tool_calls
+                ]
+            await session_manager.save_message(
+                session_id=session_id,
+                role="assistant",
+                content=str(response.content) if response.content else None,
+                step_index=state["step_count"] + 1,
+                tool_calls=tool_calls_payload,
+                tokens=new_tokens,
+            )
+    except Exception as e:
+        log.warning("save_assistant_message_failed", error=str(e))
+
     return {
         "messages": [response],
         "step_count": state["step_count"] + 1,
@@ -197,12 +221,16 @@ async def tool_node(state: AgentState) -> dict:
     any_failed = False
     last_error = None
 
+    import time as _time
+    from agent.metrics import record_tool_call
+
     for tool_call in tool_calls:
         tool_name = tool_call["name"]
         tool_args = tool_call.get("args", {})
         call_id   = tool_call.get("id", "")
 
         log.info("tool_calling", tool=tool_name, args=tool_args, step=state["step_count"])
+        tool_start = _time.time()
 
         try:
             # ---- Python 原生工具分发（不经 MCP）----
@@ -226,6 +254,7 @@ async def tool_node(state: AgentState) -> dict:
                 name=tool_name,
             ))
             log.info("tool_success", tool=tool_name)
+            record_tool_call(tool_name, "success", _time.time() - tool_start)
 
         except McpToolError as e:
             any_failed = True
@@ -237,6 +266,30 @@ async def tool_node(state: AgentState) -> dict:
                 name=tool_name,
             ))
             log.warning("tool_failed", tool=tool_name, reason=e.reason, detail=e.detail)
+            record_tool_call(tool_name, e.reason, _time.time() - tool_start)
+
+    # ---- 持久化所有工具消息 ----
+    try:
+        from session.manager import session_manager
+        session_id = state.get("session_id")
+        if session_id and tool_messages:
+            tool_results_payload = [
+                {
+                    "call_id": getattr(tm, "tool_call_id", ""),
+                    "name":    getattr(tm, "name", ""),
+                    "content": str(tm.content)[:5000],  # 截断超长内容
+                }
+                for tm in tool_messages
+            ]
+            await session_manager.save_message(
+                session_id=session_id,
+                role="tool",
+                content=None,
+                step_index=state["step_count"] + 1,
+                tool_results=tool_results_payload,
+            )
+    except Exception as e:
+        log.warning("save_tool_message_failed", error=str(e))
 
     return {
         "messages": tool_messages,
@@ -389,6 +442,40 @@ async def final_node(state: AgentState) -> dict:
         steps=step_count,
         tokens=token_count,
     )
+
+    # ---- Prometheus 业务指标 ----
+    try:
+        from agent.metrics import record_session_end
+        record_session_end(
+            status=stop_reason,
+            role=state.get("user_role", "unknown"),
+            step_count=step_count,
+        )
+    except Exception as e:
+        log.warning("metrics_record_failed", error=str(e))
+
+    # ---- 持久化 final answer + 更新会话状态 ----
+    try:
+        from session.manager import session_manager
+        session_id = state.get("session_id")
+        if session_id:
+            # 写入最终回答消息
+            await session_manager.save_message(
+                session_id=session_id,
+                role="assistant",
+                content=final_answer or "任务处理完成。",
+                step_index=step_count + 1,
+                tokens=0,
+            )
+            # 更新会话状态
+            final_status = "COMPLETED" if stop_reason == "completed" else "ABORTED"
+            await session_manager.update_session_status(
+                session_id=session_id,
+                status=final_status,
+                total_tokens=token_count,
+            )
+    except Exception as e:
+        log.warning("save_final_message_failed", error=str(e))
 
     final_msg = AIMessage(content=final_answer or "任务处理完成。")
 

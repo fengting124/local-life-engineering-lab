@@ -205,6 +205,17 @@
 - ✅ Locust 性能测试（LocalLifeServer + Copilot 两套场景）
 - ✅ 性能基准 + 瓶颈定位 + 调优指南
 
+**端到端打通（最后一轮 5 个关键缺口补完）**：
+- ✅ Session 自动创建：POST /sessions API + /chat 接受 session_id=0 自动创建
+- ✅ 所有消息持久化：llm_node 写 assistant 消息（含 tool_calls）、
+  tool_node 写 tool 消息、final_node 写最终回答并 mark session COMPLETED
+- ✅ RAG 知识库入库脚本（`python -m rag.ingest`）+ 2 篇示例文档
+  （平台规则 + 故障复盘案例）
+- ✅ Python /metrics 端点（prometheus-fastapi-instrumentator）
+  + 业务指标模块（10+ Counter/Histogram，覆盖 session/llm/tool/rag/hitl/guardrails）
+- ✅ EvalRunner 接真实 Agent：`python -m evals.metrics --real`
+  通过 HTTP SSE 消费真实 Agent 输出，端到端跑通 50 条评测集
+
 ---
 
 ## 文档目录

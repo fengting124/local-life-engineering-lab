@@ -268,8 +268,8 @@ class EvalRunner:
 
     async def _mock_invoke(self, message: str, role: str, merchant_id: int | None) -> dict:
         """
-        Mock Agent 调用（用于测试评测框架逻辑，不调用真实 Agent）。
-        生产使用时替换为真实的 Agent 调用。
+        Mock Agent 调用（用于测试评测框架本身的逻辑，不调用真实 Agent）。
+        正式评测时通过 --real 参数切换到 real_agent_client.invoke_real_agent。
         """
         await asyncio.sleep(0.01)  # 模拟延迟
         return {"tools_called": [], "final_answer": "Mock 回答", "tokens": 100}
@@ -307,12 +307,34 @@ class EvalRunner:
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Run LocalLife Copilot Evals")
+    parser = argparse.ArgumentParser(
+        description="LocalLife Copilot Evals 评测运行器",
+        epilog="示例：\n"
+               "  python -m evals.metrics                  # Mock 模式（测评测框架本身）\n"
+               "  python -m evals.metrics --real           # 真实模式（需启动 Agent 服务）\n"
+               "  python -m evals.metrics --real --category diagnosis  # 只跑订单异常排查",
+    )
     parser.add_argument("--category", choices=["query", "diagnosis", "knowledge", "boundary", "all"],
-                        default="all")
+                        default="all", help="只运行某个分类的用例")
+    parser.add_argument("--real", action="store_true",
+                        help="使用真实 Agent（通过 HTTP SSE 调用本地 8000 端口）")
+    parser.add_argument("--agent-url", default=None,
+                        help="覆盖 Agent 服务地址（默认 http://localhost:8000）")
     args = parser.parse_args()
 
-    runner = EvalRunner()   # 使用 mock invoke，测试框架本身
-    cat    = None if args.category == "all" else args.category
+    # 选择 Mock 还是真实 Agent
+    if args.real:
+        from evals.real_agent_client import invoke_real_agent
+
+        async def real_invoke(message, role, merchant_id):
+            return await invoke_real_agent(message, role, merchant_id, agent_url=args.agent_url)
+
+        runner = EvalRunner(agent_invoke_fn=real_invoke)
+        print(f"📡 真实 Agent 模式：{args.agent_url or 'http://localhost:8000'}")
+    else:
+        runner = EvalRunner()
+        print("🤖 Mock 模式：仅验证评测框架本身（不调用真实 Agent）")
+
+    cat = None if args.category == "all" else args.category
     report = asyncio.run(runner.run(category=cat))
     runner.print_report(report)

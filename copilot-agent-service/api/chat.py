@@ -34,7 +34,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 class ChatRequest(BaseModel):
     """发起新对话的请求体。"""
     message: str                    # 用户输入
-    session_id: int                 # 会话 ID（由前端或 session API 创建）
+    session_id: int = 0             # 会话 ID（0 = 自动创建新会话）
     thread_id: str | None = None    # LangGraph thread ID（不传则自动生成）
 
 
@@ -82,12 +82,24 @@ async def chat(
             },
         )
 
+    # ---- Session 自动创建（session_id=0 表示新对话）----
+    # 前端可以直接调 /chat 而不必先调 /sessions，更友好
+    from session.manager import session_manager
+    actual_session_id = request.session_id
+    if actual_session_id == 0:
+        actual_session_id = await session_manager.create_session(
+            user_id=user_id,
+            user_role=user_role,
+            merchant_id=merchant_id,
+            first_message=request.message,
+        )
+        log.info("session_auto_created", session_id=actual_session_id)
+
     # ---- Session 持久化：保存用户输入消息（异步，不阻塞 SSE 启动）----
     # 写 agent_message 表（role=user, step_index=0），方便后续会话回放和评测
     try:
-        from session.manager import session_manager
         await session_manager.save_message(
-            session_id=request.session_id,
+            session_id=actual_session_id,
             role="user",
             content=request.message,
             step_index=0,
@@ -104,7 +116,7 @@ async def chat(
         "messages":       [HumanMessage(content=request.message)],
         "step_count":     0,
         "token_count":    0,
-        "session_id":     request.session_id,
+        "session_id":     actual_session_id,
         "thread_id":      thread_id,
         "user_id":        user_id,
         "user_role":      user_role,
@@ -122,6 +134,11 @@ async def chat(
 
     async def event_stream():
         """LangGraph astream_events 转换为 SSE 格式。"""
+        # 立即推送 session_id 和 thread_id（前端记录，方便后续 /chat/resume）
+        yield _sse("session_started", {
+            "session_id": str(actual_session_id),
+            "thread_id":  thread_id,
+        })
         try:
             # astream_events 以事件流形式输出每个节点的执行过程
             async for event in agent_graph.astream_events(

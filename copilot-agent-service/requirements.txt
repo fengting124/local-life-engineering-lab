@@ -45,6 +45,11 @@ pydantic-settings==2.6.1
 # ===== 异步工具 =====
 anyio==4.7.0
 
+# ===== 可观测性 =====
+# Prometheus 指标暴露（/metrics 端点）+ HTTP 请求自动埋点
+prometheus-fastapi-instrumentator==7.0.0
+prometheus-client==0.21.1
+
 # ===== 日志 =====
 structlog==24.4.0
 

@@ -26,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.chat import router as chat_router
 from api.hitl import router as hitl_router
+from api.session import router as session_router
 from config.settings import settings
 
 log = structlog.get_logger(__name__)
@@ -119,8 +120,27 @@ app.add_middleware(
 )
 
 # ---- 路由注册 ----
+app.include_router(session_router)
 app.include_router(chat_router)
 app.include_router(hitl_router)
+
+# ---- Prometheus /metrics 端点 ----
+# 自动埋点：HTTP 请求 count / latency 等基础指标
+# 业务指标通过 agent/metrics.py 中的 Counter/Histogram 显式上报
+try:
+    from prometheus_fastapi_instrumentator import Instrumentator
+    # 必须导入指标模块才能注册到默认 registry
+    import agent.metrics  # noqa: F401
+    Instrumentator(
+        should_group_status_codes=False,
+        excluded_handlers=["/health", "/metrics"],
+    ).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+    log.info("prometheus_metrics_enabled", endpoint="/metrics")
+except ImportError:
+    log.warning(
+        "prometheus_instrumentator_missing",
+        hint="pip install prometheus-fastapi-instrumentator prometheus-client",
+    )
 
 
 @app.get("/health", tags=["system"])
