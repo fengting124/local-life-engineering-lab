@@ -1532,4 +1532,134 @@ ES 的文档是非关系型，不支持 JOIN。
 
 ---
 
-*教程版本：2026-05-28 | 对应代码版本：feat: add Elasticsearch search module*
+---
+
+## 第 9 章：可观测性——Micrometer、Prometheus、Zipkin 是怎么配合的
+
+### 9.1 为什么需要可观测性？
+
+一个系统上了生产，你不能靠「感觉」判断健不健康。可观测性（Observability）的核心是三件事：
+
+| 维度 | 工具 | 能回答的问题 |
+|------|------|------------|
+| **Metrics（指标）** | Micrometer + Prometheus + Grafana | 接口 QPS 多少？P99 延迟多少？秒杀成功率多少？ |
+| **Tracing（链路追踪）** | Micrometer Tracing + Brave + Zipkin | 这个请求经过了哪些方法？慢在哪里？ |
+| **Logging（日志）** | SLF4J + MDC（traceId） | 出问题时能把同一请求的所有日志串起来 |
+
+三者缺一不可：有 Metrics 知道「有问题」，有 Tracing 知道「哪慢」，有 Logging 知道「为什么」。
+
+---
+
+### 9.2 Micrometer 是什么？它和 Prometheus 是什么关系？
+
+**类比**：Micrometer 之于监控 = SLF4J 之于日志。
+
+- SLF4J 是日志门面，背后可以接 Logback / Log4j2
+- Micrometer 是 Metrics 门面，背后可以接 Prometheus / Grafana / DataDog
+
+**工作流程**：
+
+```
+业务代码（Counter / Timer / Gauge）
+         ↓ Micrometer API
+Prometheus Registry（把指标格式化为 Prometheus text）
+         ↓ /actuator/prometheus 端点
+Prometheus Server（每 15 秒 scrape 一次）
+         ↓ PromQL 查询
+Grafana（可视化仪表盘 + 告警）
+```
+
+Spring Boot Actuator 自动注册了 JVM、HTTP、数据库连接池等指标，我们只需要：
+1. 在 `pom.xml` 加 `micrometer-registry-prometheus`
+2. 在 `application.yml` 暴露 `/actuator/prometheus` 端点
+3. 业务关键点手动埋点（BusinessMetrics）
+
+---
+
+### 9.3 BusinessMetrics——自定义业务指标
+
+框架 Metrics 只能告诉你「HTTP 请求量」，业务 Metrics 告诉你「秒杀成功率」：
+
+```java
+// 秒杀尝试次数（Counter）
+meterRegistry.counter("seckill.attempts", "templateId", "123").increment();
+
+// 支付回调耗时（Timer）
+meterRegistry.timer("payment.callback.duration", "channel", "MOCK")
+    .record(Duration.ofMillis(costMs));
+```
+
+**Prometheus 查询示例**：
+
+```promql
+# 最近 5 分钟秒杀成功率
+rate(seckill_success_total[5m]) / rate(seckill_attempts_total[5m])
+
+# 支付回调 P99 延迟
+histogram_quantile(0.99, rate(payment_callback_duration_seconds_bucket[5m]))
+```
+
+---
+
+### 9.4 分布式链路追踪——一个请求经过多少方法？
+
+当一个请求触发了「Controller → Service → Mapper → Redis → ES」多层调用，需要知道每层耗时。
+
+**核心概念**：
+- **Trace**：一个完整请求的全链路，有唯一 traceId
+- **Span**：链路中的一个操作单元（如一次 SQL 查询），有 spanId
+- **Parent Span**：调用方的 Span，子操作的 Span 的 parentSpanId 指向它
+
+**我们的技术栈**：
+```
+Micrometer Tracing（门面）
+    ↕ Bridge
+Brave（Zipkin 生态的追踪库）
+    ↕ Reporter
+Zipkin Server（本地 9411 端口）
+```
+
+**TraceIdFilter 的作用**：
+
+```java
+@Order(1)  // 最先执行的 Filter
+public class TraceIdFilter implements Filter {
+    public void doFilter(...) {
+        String traceId = tracer.currentSpan().context().traceId();
+        MDC.put("traceId", traceId);          // 写入日志 MDC
+        response.setHeader("X-Trace-Id", traceId);  // 写入响应头
+        chain.doFilter(request, response);
+        MDC.remove("traceId");                // 必须清理，线程池复用！
+    }
+}
+```
+
+**日志效果**：
+
+```
+2026-05-28 20:00:01 [INFO] [http-nio-8080-3] [abc123/span001] OrderService - 创建订单 orderId=999
+2026-05-28 20:00:01 [INFO] [http-nio-8080-3] [abc123/span002] PaymentService - 发起支付 orderId=999
+```
+
+同一请求所有日志都有相同的 `abc123`，`grep traceId=abc123` 即可找出完整链路。
+
+---
+
+### 9.5 关键词卡片（可观测性模块）
+
+| 关键词 | 一句话解释 |
+|--------|-----------|
+| **Micrometer** | JVM Metrics 门面，一套 API 对接 Prometheus / DataDog 等多种后端 |
+| **Counter** | 只增不减的计数器，统计「发生了多少次」（请求数、秒杀次数） |
+| **Timer** | 记录耗时分布，内置 count/sum/P99（支付回调耗时） |
+| **Gauge** | 瞬时值，随时升降（队列深度、活跃连接数） |
+| **Prometheus** | 时序数据库，定期 scrape /actuator/prometheus 拉指标 |
+| **Grafana** | 查询 Prometheus 数据的可视化面板 |
+| **Trace / Span** | Trace=全链路唯一 ID；Span=链路中一个操作单元 |
+| **Brave** | Zipkin 生态的追踪库，负责生成和传播 traceId/spanId |
+| **MDC** | SLF4J 的线程本地存储，日志格式里 %X{traceId} 从这里读 |
+| **X-Trace-Id** | 响应头，前端错误上报时带上，运维可按此快速定位 |
+
+---
+
+*教程版本：2026-05-28 | 对应代码版本：feat: add observability*
