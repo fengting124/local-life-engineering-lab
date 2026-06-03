@@ -49,9 +49,12 @@ dataSources:
   ds0:
     dataSourceClassName: com.zaxxer.hikari.HikariDataSource
     driverClassName: com.mysql.cj.jdbc.Driver
-    jdbcUrl: jdbc:mysql://localhost:3306/local_life?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=UTF-8&allowPublicKeyRetrieval=true&useSSL=false
-    username: root
-    password: 123456
+    # ShardingSphere 5.x 支持 ${VARIABLE:-default} 系统属性替换。
+    # 开发环境：使用默认值（localhost:3306/root/123456）
+    # Docker 环境：通过 JAVA_OPTS 传入 -DMYSQL_HOST=mysql 等参数覆盖
+    jdbcUrl: jdbc:mysql://${MYSQL_HOST:-localhost}:${MYSQL_PORT:-3306}/local_life?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=UTF-8&allowPublicKeyRetrieval=true&useSSL=false
+    username: ${MYSQL_USER:-root}
+    password: ${MYSQL_PASSWORD:-123456}
     # HikariCP 连接池参数（与 application.yml 中原配置保持一致）
     connectionTimeout: 3000
     maximumPoolSize: 16

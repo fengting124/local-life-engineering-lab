@@ -54,6 +54,56 @@ async def lifespan(app: FastAPI):
         db=settings.db_url.split("@")[-1],   # 只打印 host/db，不打印密码
     )
 
+    # ---- 自动创建 Copilot 数据库表（幂等，CREATE TABLE IF NOT EXISTS）----
+    # 包含：agent_session / agent_message / langgraph_checkpoint /
+    #        tool_audit_log / hitl_approval
+    try:
+        from session.manager import engine
+        from session.models import Base as SessionBase
+        from session.hitl import Base as HitlBase
+        import sqlalchemy
+        async with engine.begin() as conn:
+            await conn.run_sync(SessionBase.metadata.create_all)
+            await conn.run_sync(HitlBase.metadata.create_all)
+            # langgraph_checkpoint 表（checkpointer 需要）
+            await conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS `langgraph_checkpoint` (
+                  `thread_id` VARCHAR(64) NOT NULL,
+                  `checkpoint_id` VARCHAR(64) NOT NULL,
+                  `parent_checkpoint_id` VARCHAR(64),
+                  `state` LONGTEXT NOT NULL,
+                  `metadata` JSON,
+                  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (`thread_id`, `checkpoint_id`),
+                  KEY `idx_ckpt_thread_time` (`thread_id`, `created_at`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """))
+            # tool_audit_log 表
+            await conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS `tool_audit_log` (
+                  `id` BIGINT UNSIGNED NOT NULL,
+                  `session_id` BIGINT UNSIGNED,
+                  `thread_id` VARCHAR(64),
+                  `trace_id` VARCHAR(64),
+                  `tool_name` VARCHAR(100) NOT NULL,
+                  `tool_input` JSON NOT NULL,
+                  `tool_output` JSON,
+                  `duration_ms` INT UNSIGNED,
+                  `status` VARCHAR(20) NOT NULL,
+                  `error_msg` TEXT,
+                  `user_id` BIGINT UNSIGNED,
+                  `user_role` VARCHAR(20),
+                  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (`id`),
+                  KEY `idx_audit_session_time` (`session_id`, `created_at`),
+                  KEY `idx_audit_tool_time` (`tool_name`, `created_at`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """))
+        log.info("copilot_db_tables_ready")
+    except Exception as e:
+        log.warning("copilot_db_init_failed", error=str(e),
+                    hint="MySQL 可能未就绪，重启服务后会重试")
+
     # 验证 MCP Server 是否可达（不阻塞启动）
     try:
         import httpx
@@ -66,6 +116,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.warning("mcp_server_unreachable", error=str(e),
                     hint="确认 local-life-copilot 已在端口 8081 启动")
+
+    # ---- 自动入库知识库（RAG 必须有数据才能检索）----
+    # 扫描 rag/knowledge_base/ 目录，将所有 Markdown 文档向量化写入 Milvus + BM25
+    # 使用幂等 upsert：重复运行只更新变更文档，不重复写入
+    try:
+        from rag.ingest import ingest_all
+        kb_result = await ingest_all()
+        if kb_result["chunks"] > 0:
+            log.info("knowledge_base_ingested",
+                     files=kb_result["files"], chunks=kb_result["chunks"])
+        else:
+            log.warning("knowledge_base_empty",
+                        hint="Milvus 可能未启动，或 rag/knowledge_base/ 目录为空")
+    except Exception as e:
+        # 知识库入库失败不阻止服务启动（Milvus 可能未启动）
+        log.warning("knowledge_base_ingest_failed", error=str(e),
+                    hint="knowledge_search 工具将降级为空结果，其他功能不受影响")
 
     yield
 

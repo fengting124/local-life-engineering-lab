@@ -1,0 +1,125 @@
+#!/bin/bash
+# ================================================================
+# init-db.sh — 数据库初始化脚本（幂等，可重复执行）
+#
+# 功能：
+#   1. 等待 MySQL 就绪
+#   2. 创建数据库（若不存在）
+#   3. 按版本顺序执行所有 SQL 迁移（V1~V9 + Copilot V1）
+#   4. 使用迁移记录表（schema_migrations）防止重复执行
+#
+# 使用方式：
+#   # 本地开发（MySQL 在 localhost）
+#   bash infra/scripts/init-db.sh
+#
+#   # 指定 MySQL 主机
+#   MYSQL_HOST=mysql MYSQL_PORT=3306 bash infra/scripts/init-db.sh
+#
+#   # Docker 容器内
+#   docker exec local-life-mysql bash /scripts/init-db.sh
+# ================================================================
+set -e
+
+MYSQL_HOST="${MYSQL_HOST:-localhost}"
+MYSQL_PORT="${MYSQL_PORT:-3306}"
+MYSQL_USER="${MYSQL_USER:-root}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-123456}"
+MYSQL_DATABASE="${MYSQL_DATABASE:-local_life}"
+
+# 项目根目录（脚本位于 infra/scripts/，根目录向上两级）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+SERVER_MIGRATION_DIR="${PROJECT_ROOT}/local-life-server/src/main/resources/db/migration"
+COPILOT_MIGRATION_DIR="${PROJECT_ROOT}/local-life-copilot/src/main/resources/db/migration"
+
+# MySQL 命令（带通用参数）
+MYSQL_CMD="mysql -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} --protocol=tcp"
+
+echo "================================================"
+echo "  LocalLife 数据库初始化"
+echo "  Host: ${MYSQL_HOST}:${MYSQL_PORT}"
+echo "  Database: ${MYSQL_DATABASE}"
+echo "================================================"
+
+# ---- Step 1：等待 MySQL 就绪 ----
+echo ""
+echo "⏳ 等待 MySQL 就绪..."
+MAX_WAIT=60
+WAITED=0
+until ${MYSQL_CMD} -e "SELECT 1" >/dev/null 2>&1; do
+  if [ ${WAITED} -ge ${MAX_WAIT} ]; then
+    echo "❌ MySQL ${MAX_WAIT}s 内未就绪，退出"
+    exit 1
+  fi
+  echo "   还未就绪，等待 2s... (${WAITED}/${MAX_WAIT}s)"
+  sleep 2
+  WAITED=$((WAITED + 2))
+done
+echo "✅ MySQL 已就绪"
+
+# ---- Step 2：创建数据库 ----
+echo ""
+echo "📦 创建数据库 ${MYSQL_DATABASE}（若不存在）..."
+${MYSQL_CMD} -e "CREATE DATABASE IF NOT EXISTS \`${MYSQL_DATABASE}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+echo "✅ 数据库就绪"
+
+# ---- Step 3：创建迁移记录表 ----
+${MYSQL_CMD} ${MYSQL_DATABASE} -e "
+CREATE TABLE IF NOT EXISTS \`schema_migrations\` (
+  \`version\` VARCHAR(20) NOT NULL COMMENT '迁移版本，如 V1',
+  \`description\` VARCHAR(200) NOT NULL COMMENT '迁移描述',
+  \`applied_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '执行时间',
+  PRIMARY KEY (\`version\`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据库迁移记录（防止重复执行）';
+"
+
+# ---- Step 4：执行迁移 ----
+run_migration() {
+  local sql_file="$1"
+  local filename=$(basename "${sql_file}")
+  # 提取版本号：V1__xxx.sql → V1
+  local version=$(echo "${filename}" | sed 's/^\(V[0-9]*\)__.*/\1/')
+  local description=$(echo "${filename}" | sed 's/^V[0-9]*__\(.*\)\.sql$/\1/')
+
+  # 检查是否已执行
+  local already_applied=$(${MYSQL_CMD} ${MYSQL_DATABASE} -sN -e \
+    "SELECT COUNT(*) FROM schema_migrations WHERE version='${version}'" 2>/dev/null || echo "0")
+
+  if [ "${already_applied}" = "1" ]; then
+    echo "   ⏭  ${filename} (${version} 已执行，跳过)"
+    return 0
+  fi
+
+  echo "   🔄 执行 ${filename}..."
+  if ${MYSQL_CMD} ${MYSQL_DATABASE} < "${sql_file}"; then
+    ${MYSQL_CMD} ${MYSQL_DATABASE} -e \
+      "INSERT INTO schema_migrations(version, description) VALUES('${version}', '${description}');"
+    echo "   ✅ ${filename} 完成"
+  else
+    echo "   ❌ ${filename} 执行失败！"
+    exit 1
+  fi
+}
+
+echo ""
+echo "📝 执行 LocalLife Server 迁移..."
+# 按版本顺序执行
+for f in $(ls "${SERVER_MIGRATION_DIR}"/V*.sql 2>/dev/null | sort -V); do
+  run_migration "${f}"
+done
+
+echo ""
+echo "📝 执行 Copilot 迁移..."
+for f in $(ls "${COPILOT_MIGRATION_DIR}"/V*.sql 2>/dev/null | sort -V); do
+  run_migration "${f}"
+done
+
+echo ""
+echo "================================================"
+echo "✅ 数据库初始化完成！"
+echo ""
+echo "   已执行的版本："
+${MYSQL_CMD} ${MYSQL_DATABASE} -e \
+  "SELECT version, description, applied_at FROM schema_migrations ORDER BY version;" 2>/dev/null || true
+echo "================================================"

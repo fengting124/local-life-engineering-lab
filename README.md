@@ -38,19 +38,28 @@
 
 ```bash
 cd infra
-cp .env.example .env     # 填写 ANTHROPIC_API_KEY
-# 执行数据库迁移（需要 MySQL 已经启动）
-# 然后：
+cp .env.example .env          # 填写 ANTHROPIC_API_KEY（唯一必填项）
 
-# 启动全部基础中间件
-docker compose -f docker-compose.dev.yml up -d
+# Linux/macOS
+bash scripts/start.sh         # 自动完成：启动中间件→DB迁移→构建→等待就绪→打印地址
 
-# 构建并启动三个应用服务（首次需要编译，约 3-5 分钟）
-docker compose -f docker-compose.dev.yml --profile app up -d --build
+# Windows PowerShell
+.\scripts\start.ps1           # 效果相同
+```
 
-# 访问 Chat UI：http://localhost:8000/
-# 访问 HITL 审批工作台：http://localhost:8000/approval
-# 访问 Grafana 监控：http://localhost:3000（默认账密 admin/admin）
+**启动后访问：**
+- 💬 Chat UI（商家/客服）：`http://localhost:8000/`
+- ⚠️ HITL 审批工作台：`http://localhost:8000/approval`
+- 📖 API 文档：`http://localhost:8000/docs`
+- 📊 Grafana 监控：`http://localhost:3000`（admin/admin）
+
+**可选中间件（按需启动）：**
+```bash
+docker compose -f infra/docker-compose.dev.yml --profile search up -d        # ES 搜索
+docker compose -f infra/docker-compose.dev.yml --profile mq up -d            # RocketMQ
+docker compose -f infra/docker-compose.dev.yml --profile observability up -d # Prometheus+Grafana+Zipkin
+docker compose -f infra/docker-compose.dev.yml --profile rag up -d           # Milvus（知识库搜索）
+docker compose -f infra/docker-compose.dev.yml --profile nginx up -d         # Nginx反向代理(:80)
 ```
 
 ---
