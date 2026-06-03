@@ -52,4 +52,29 @@ public interface OutboxMessageMapper extends BaseMapper<OutboxMessage> {
     int markAsRetry(@Param("id") Long id,
                     @Param("newStatus") String newStatus,
                     @Param("nextRetryAt") java.time.LocalDateTime nextRetryAt);
+
+    /**
+     * 将 FAILED 消息重置为 PENDING，用于死信自动恢复。
+     *
+     * <p>操作语义：
+     * <ul>
+     *   <li>status = 'PENDING'：让 Relay 任务重新投递</li>
+     *   <li>retry_count = 0：归零，让消息再次享有 3 次 Relay 重试机会</li>
+     *   <li>auto_retry_count = currentAutoRetryCount + 1：记录自动恢复次数</li>
+     *   <li>next_retry_at = NOW()：立即可投递</li>
+     * </ul>
+     *
+     * <p>WHERE status = 'FAILED'：防止并发场景下重复重置（幂等保护）。
+     *
+     * @param id                   消息 ID
+     * @param currentAutoRetryCount 当前自动恢复次数（自增前的值）
+     * @return 受影响行数：1=成功，0=消息已不是 FAILED 状态（幂等跳过）
+     */
+    @Update("UPDATE outbox_message " +
+            "SET status = 'PENDING', retry_count = 0, " +
+            "auto_retry_count = #{currentAutoRetryCount} + 1, " +
+            "next_retry_at = NOW(), updated_at = NOW() " +
+            "WHERE id = #{id} AND status = 'FAILED'")
+    int resetFailedMessageForAutoRecovery(@Param("id") Long id,
+                                          @Param("currentAutoRetryCount") int currentAutoRetryCount);
 }

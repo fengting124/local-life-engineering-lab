@@ -24,6 +24,7 @@ langchain-milvus==0.1.6
 # multilingual-e5-base：768 维，中英双语
 # cross-encoder/ms-marco-MiniLM-L-6-v2：本地 Reranker
 sentence-transformers==3.3.1
+rank-bm25==0.2.2              # BM25 关键词检索（与 Milvus 向量搜索混合，提升专有名词召回）
 torch>=2.0.0                  # sentence-transformers 依赖（PyTorch）
 numpy>=1.26.0                 # 向量运算
 

@@ -68,6 +68,11 @@ class EvalResult:
     keyword_coverage:  float = 0.0         # 关键词覆盖率（0~1）
     factually_consistent: bool = True      # 事实一致性（有工具支撑）
     error_msg:         str | None = None
+    # LLM-as-Judge 评测结果（需要 --judge 参数才填充）
+    faithfulness_score:     float = -1.0   # -1 = 未评测；0~1 = 忠实度分数
+    relevance_score:        float = -1.0   # -1 = 未评测；0~1 = 相关性分数
+    hallucination_detected: bool  = False  # LLM judge 是否检测到幻觉
+    tool_results:           list[str] = None  # 工具原始返回（用于 judge）
 
 
 @dataclass
@@ -82,6 +87,10 @@ class EvalReport:
     p50_latency_ms:         float = 0.0
     p99_latency_ms:         float = 0.0
     avg_tokens:             float = 0.0
+    # LLM-as-Judge 指标（仅 --judge 模式下有效）
+    avg_faithfulness:       float = -1.0   # -1 = 未评测
+    avg_relevance:          float = -1.0
+    hallucination_rate:     float = -1.0   # 幻觉率（有幻觉的用例数 / 总评测用例数）
 
 
 # =========================================================
@@ -142,18 +151,20 @@ class EvalRunner:
       runner.print_report(report)
     """
 
-    def __init__(self, agent_invoke_fn: Callable | None = None):
+    def __init__(
+        self,
+        agent_invoke_fn: Callable | None = None,
+        judge: bool = False,
+        judge_api_key: str | None = None,
+    ):
         """
-        :param agent_invoke_fn: 调用 Agent 的函数，签名：
-            async (message: str, role: str, merchant_id: int | None) → dict
-            返回：{
-              "tools_called": [...],
-              "final_answer": "...",
-              "tokens": 1234
-            }
-            如果为 None，使用 mock 函数（用于测试评测框架本身）
+        :param agent_invoke_fn: 调用 Agent 的函数
+        :param judge:           是否启用 LLM-as-Judge 评测（需要 API Key，有费用）
+        :param judge_api_key:   Anthropic API Key（judge=True 时必填）
         """
         self._invoke = agent_invoke_fn or self._mock_invoke
+        self._judge = judge
+        self._judge_api_key = judge_api_key
 
     async def run(
         self,
@@ -198,7 +209,10 @@ class EvalRunner:
             # 任务完成 = 工具匹配度 >= 0.6 且 关键词覆盖 >= 0.5
             task_done    = tool_match >= 0.6 and kw_coverage >= 0.5
 
-            return EvalResult(
+            # 工具原始返回（供 LLM-as-Judge 使用）
+            raw_tool_results = response.get("tool_results", [])
+
+            result = EvalResult(
                 case_id=case.id,
                 category=case.category,
                 success=True,
@@ -209,7 +223,23 @@ class EvalRunner:
                 tool_seq_match=tool_match,
                 task_completed=task_done,
                 keyword_coverage=kw_coverage,
+                tool_results=raw_tool_results,
             )
+
+            # ---- LLM-as-Judge（可选，需要 --judge 参数）----
+            if self._judge and self._judge_api_key and final_answer:
+                from evals.judge import judge_response
+                judge_result = await judge_response(
+                    question=case.input,
+                    agent_answer=final_answer,
+                    tool_results=raw_tool_results,
+                    api_key=self._judge_api_key,
+                )
+                result.faithfulness_score     = judge_result.faithfulness_score
+                result.relevance_score        = judge_result.relevance_score
+                result.hallucination_detected = judge_result.hallucination_detected
+
+            return result
 
         except Exception as e:
             latency_ms = (time.time() - start) * 1000
@@ -254,6 +284,15 @@ class EvalRunner:
         # 指标 6：Token 成本
         avg_tokens = statistics.mean(r.total_tokens for r in results if r.success) if results else 0.0
 
+        # LLM-as-Judge 指标（只对有 judge 结果的用例计算）
+        judged = [r for r in results if r.faithfulness_score >= 0]
+        avg_faithfulness = statistics.mean(r.faithfulness_score for r in judged) if judged else -1.0
+        avg_relevance    = statistics.mean(r.relevance_score    for r in judged) if judged else -1.0
+        hallucination_rate = (
+            sum(1 for r in judged if r.hallucination_detected) / len(judged)
+            if judged else -1.0
+        )
+
         return EvalReport(
             total=len(results),
             results=results,
@@ -264,6 +303,9 @@ class EvalRunner:
             p50_latency_ms=p50,
             p99_latency_ms=p99,
             avg_tokens=avg_tokens,
+            avg_faithfulness=avg_faithfulness,
+            avg_relevance=avg_relevance,
+            hallucination_rate=hallucination_rate,
         )
 
     async def _mock_invoke(self, message: str, role: str, merchant_id: int | None) -> dict:
@@ -299,6 +341,18 @@ class EvalRunner:
         print(f"Metric 5 | Latency P50/P99:       {report.p50_latency_ms:.0f}ms / {report.p99_latency_ms:.0f}ms")
         print(f"Metric 6 | Avg Tokens/Session:    {report.avg_tokens:.0f}")
 
+        # LLM-as-Judge 指标（只在 --judge 模式下显示）
+        if report.avg_faithfulness >= 0:
+            print()
+            print("── LLM-as-Judge 评测结果 ──────────────────────────")
+            print(f"Metric 7 | Faithfulness (忠实度):  {report.avg_faithfulness:.3f}")
+            print(f"Metric 8 | Relevance   (相关性):   {report.avg_relevance:.3f}")
+            judged_count = sum(1 for r in report.results if r.faithfulness_score >= 0)
+            halluc_count = sum(1 for r in report.results if r.hallucination_detected)
+            print(f"Metric 9 | Hallucination Rate:     {report.hallucination_rate:.1%}"
+                  f"  ({halluc_count}/{judged_count} cases)")
+            print(f"           Judge Model: claude-haiku (temperature=0, deterministic)")
+
         # 估算成本（Claude Sonnet 4.6 约 $3/M input tokens, $15/M output tokens）
         est_cost = report.avg_tokens * 0.000006  # 简化估算
         print(f"           Estimated Cost:         ${est_cost:.4f}/session")
@@ -320,20 +374,40 @@ if __name__ == "__main__":
                         help="使用真实 Agent（通过 HTTP SSE 调用本地 8000 端口）")
     parser.add_argument("--agent-url", default=None,
                         help="覆盖 Agent 服务地址（默认 http://localhost:8000）")
+    parser.add_argument("--judge", action="store_true",
+                        help="启用 LLM-as-Judge 评测（需要 ANTHROPIC_API_KEY，会产生 API 费用）")
     args = parser.parse_args()
 
-    # 选择 Mock 还是真实 Agent
+    # ---- 选择 Mock 还是真实 Agent ----
     if args.real:
         from evals.real_agent_client import invoke_real_agent
 
         async def real_invoke(message, role, merchant_id):
             return await invoke_real_agent(message, role, merchant_id, agent_url=args.agent_url)
 
-        runner = EvalRunner(agent_invoke_fn=real_invoke)
+        invoke_fn = real_invoke
         print(f"📡 真实 Agent 模式：{args.agent_url or 'http://localhost:8000'}")
     else:
-        runner = EvalRunner()
+        invoke_fn = None
         print("🤖 Mock 模式：仅验证评测框架本身（不调用真实 Agent）")
+
+    # ---- 选择是否启用 LLM-as-Judge ----
+    judge_api_key = None
+    if args.judge:
+        import os
+        judge_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not judge_api_key:
+            print("⚠ 警告：--judge 需要设置 ANTHROPIC_API_KEY 环境变量，LLM-as-Judge 将被跳过")
+            args.judge = False
+        else:
+            print(f"⚖  LLM-as-Judge 已启用（模型: claude-haiku，temperature=0）")
+            print("   预计每条用例额外消耗约 $0.0006（2 次 Haiku 调用）")
+
+    runner = EvalRunner(
+        agent_invoke_fn=invoke_fn,
+        judge=args.judge,
+        judge_api_key=judge_api_key,
+    )
 
     cat = None if args.category == "all" else args.category
     report = asyncio.run(runner.run(category=cat))

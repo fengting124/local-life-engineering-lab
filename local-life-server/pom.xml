@@ -67,6 +67,12 @@
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson-spring-boot-starter</artifactId>
+            <version>3.27.2</version>
+        </dependency>
+
         <!--
             Caffeine：JVM 内本地缓存库，W-TinyLFU 淘汰策略，性能优于 Guava Cache。
             用于 L1 本地缓存（热点门店、热点券），减少 Redis 请求次数。

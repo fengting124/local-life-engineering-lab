@@ -3,6 +3,7 @@ package com.personalprojections.locallife.server;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
@@ -45,7 +46,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * </pre>
  */
 @SpringBootApplication
-@EnableScheduling   // 开启 @Scheduled 定时任务扫描，OrderService.closeExpiredOrders() 依赖此注解
+@EnableAsync
+@EnableScheduling
 @MapperScan("com.personalprojections.locallife.server.domain.mapper")
 public class LocalLifeServerApplication {
 

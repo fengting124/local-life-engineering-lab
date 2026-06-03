@@ -29,3 +29,10 @@
 - Maven Wrapper 已生成，项目 `mvnw.cmd test` 构建通过
 - `docker compose config` 对开发环境编排校验通过
 - 当前 Docker 阻塞不在 compose 文件，而在 daemon 未正常启动，`com.docker.service` 处于停止状态
+## Nowcoder Research Addendum 2026-06-03
+- Combined usable Nowcoder data: `data/nowcoder_posts.jsonl` 11 rows / 6 long valid, `data/nowcoder_research_posts.jsonl` 11 rows / 9 long valid, `data/nowcoder_resume_posts.jsonl` 12 rows / 9 short but usable resume-help posts.
+- Resume-help posts repeatedly expose the same weaknesses: course-project homogeneity (`苍穹外卖`, `黑马点评`, simple RAG/Agent demo), unclear Java-backend-vs-Agent positioning, missing metrics, and inability to explain project details under follow-up.
+- RAG interview posts focus on architecture, chunk count/size, domain-specific chunk boundaries, recall errors, missed recall, hybrid retrieval, reranking, and evaluation metrics.
+- Agent interview posts focus on Agent components, ReAct, Plan-Execute, tool-calling flow, MCP vs Function Calling, context growth, dead loops, security, HITL, and how metrics are measured.
+- Java backend posts still heavily probe cache/database consistency, Redis/MQ, seckill projects, distributed locks, MySQL locks, JVM, threads, NIO, and basic concurrency.
+- Planning correction: keep the 11 implementation items, but prioritize them as interview evidence chains: RAG/Agent metrics first, Agent latency/cost/reliability second, Java backend reliability third.

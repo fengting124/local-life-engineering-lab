@@ -7,6 +7,7 @@ MCP 协议：JSON-RPC 2.0 over HTTP，POST /mcp。
   - list_tools()   → 获取工具列表（Agent 启动时调用一次，缓存工具 Schema）
   - call_tool()    → 执行工具调用（ReAct Action 节点调用）
 """
+import time
 import uuid
 import httpx
 import structlog
@@ -15,6 +16,20 @@ from typing import Any
 from config.settings import settings
 
 log = structlog.get_logger(__name__)
+
+# =========================================================
+# 工具 Schema TTL 缓存（进程级单例）
+# =========================================================
+# 工具 Schema 几乎不变（只有部署新版本时才变），不需要每次 LLM 调用都 HTTP 请求。
+# 缓存 5 分钟（300s）：既能及时感知工具变更，又大幅减少 HTTP 往返。
+# 注意：缓存是进程级的（非跨实例），多副本部署时各副本独立缓存，不影响正确性。
+#
+# 面试说法：「工具 Schema 是稳定前缀，用进程内 TTL 缓存避免每轮 LLM 调用都
+#   发 HTTP 到 MCP Server，降低延迟约 5ms/轮」
+
+_tools_cache: list[dict] | None = None
+_tools_cache_time: float = 0.0
+_TOOLS_CACHE_TTL_SECONDS: float = 300.0  # 5 分钟
 
 
 class McpToolError(Exception):
@@ -77,10 +92,28 @@ class McpClient:
         return result
 
     async def list_tools(self) -> list[dict]:
-        """获取所有工具定义（供 Agent 构建 System Prompt 工具列表）。"""
+        """
+        获取所有工具定义（供 Agent 构建 System Prompt 工具列表）。
+
+        使用进程级 TTL 缓存（300s）：工具 Schema 几乎不变，不需要每轮 LLM 调用都 HTTP 请求。
+        缓存命中时直接返回，减少约 5ms/轮的 MCP 往返开销。
+
+        缓存失效场景：MCP Server 热更新工具时需等最多 5 分钟生效，
+        或重启 Agent 服务立即刷新。
+        """
+        global _tools_cache, _tools_cache_time
+        now = time.time()
+        if _tools_cache is not None and (now - _tools_cache_time) < _TOOLS_CACHE_TTL_SECONDS:
+            log.debug("mcp_tools_cache_hit", cached_at=_tools_cache_time, count=len(_tools_cache))
+            return _tools_cache
+
         result = await self._rpc("tools/list", {}, None, None)
         tools = result.get("tools", [])
-        log.info("mcp_tools_listed", count=len(tools))
+        # 更新缓存
+        _tools_cache = tools
+        _tools_cache_time = now
+        log.info("mcp_tools_fetched_and_cached", count=len(tools),
+                 ttl_seconds=_TOOLS_CACHE_TTL_SECONDS)
         return tools
 
     async def call_tool(

@@ -113,6 +113,24 @@ public class OutboxMessage {
     private Integer retryCount;
 
     /**
+     * 系统自动恢复次数，初始为 0。
+     *
+     * <p>与 {@code retryCount} 的区别：
+     * <ul>
+     *   <li>{@code retryCount}：Relay 任务一次性故障的重试计数（临时网络抖动）</li>
+     *   <li>{@code autoRetryCount}：系统定时任务「从 FAILED 状态重置为 PENDING」的次数（MQ 长期不可用后的恢复）</li>
+     * </ul>
+     *
+     * <p>当 {@code autoRetryCount >= 3} 时，停止自动恢复，需要人工介入。
+     * 这防止了在 MQ 持续故障时无限循环重试（区分临时抖动和持久性故障）。
+     *
+     * <p>面试追问：「MQ 长时间挂了 10 万条消息怎么恢复？」
+     * → MQ 恢复后，定时任务自动扫描 FAILED 且 autoRetryCount &lt; 3 的消息重置为 PENDING；
+     * 如果超过 3 次仍 FAILED，说明有持久性问题，触发告警要求人工排查。
+     */
+    private Integer autoRetryCount;
+
+    /**
      * 下次重试时间，支持指数退避策略。
      * 初始值 = 当前时间（立即可投递）。
      * 每次失败后按指数延长：10s → 30s → 60s → FAILED。

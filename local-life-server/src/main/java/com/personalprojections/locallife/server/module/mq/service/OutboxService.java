@@ -184,6 +184,81 @@ public class OutboxService {
     }
 
     // =========================================================
+    // 死信自动恢复（定时任务）
+    // =========================================================
+
+    /**
+     * 自动恢复死信消息（每小时执行一次）。
+     *
+     * <h2>解决的问题</h2>
+     * <p>RocketMQ Broker 短暂不可用（重启/网络抖动）时，Relay 任务会因为
+     * 发送失败而把消息标记为 FAILED（重试 3 次后放弃）。
+     * Broker 恢复后，这些消息无法自动重新投递，只能人工干预。
+     * 对于运维来说，凌晨 3 点 MQ 抖动导致的 FAILED 消息是常见场景，
+     * 自动恢复可以大幅降低人工 on-call 频率。
+     *
+     * <h2>恢复逻辑</h2>
+     * <ol>
+     *   <li>扫描 status=FAILED AND autoRetryCount &lt; MAX_AUTO_RETRY_COUNT 的消息</li>
+     *   <li>重置为 status=PENDING，retryCount 归零（让消息再次享有 3 次重试机会）</li>
+     *   <li>autoRetryCount +1（记录已自动恢复次数）</li>
+     *   <li>next_retry_at = NOW()（立即投递，不等待）</li>
+     *   <li>超过 MAX_AUTO_RETRY_COUNT 次仍 FAILED → 需人工介入（说明是持久性故障）</li>
+     * </ol>
+     *
+     * <h2>告警建议（面试加分）</h2>
+     * <p>生产中应监控 outbox_message WHERE status='FAILED' AND auto_retry_count >= 3 的数量。
+     * 超过阈值（如 > 10）时触发 PagerDuty/飞书告警，通知 on-call 人工排查 MQ 状态。
+     *
+     * <h2>Tradeoff</h2>
+     * <ul>
+     *   <li>消费者幂等保证：消息被重新投递，消费者必须幂等（eventId + Redis SETNX 已保证）</li>
+     *   <li>自动恢复上限 3 次：防止 MQ 持久故障时无限循环，超过 3 次需人工判断</li>
+     *   <li>批量处理 100 条：防止一次锁太多行；分批可以降低对 DB 的冲击</li>
+     * </ul>
+     */
+    @Scheduled(fixedDelay = 3_600_000) // 每小时执行一次（上次完成后计时）
+    public void autoRecoverFailedMessages() {
+        // MAX_AUTO_RETRY_COUNT = 3：最多自动恢复 3 次，超过说明是持久故障
+        final int MAX_AUTO_RETRY_COUNT = 3;
+        final int RECOVER_BATCH_SIZE = 100;
+
+        // 扫描 FAILED 且 autoRetryCount < 3 的消息（可以自动恢复的）
+        List<OutboxMessage> failedMessages = outboxMessageMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<OutboxMessage>()
+                        .eq(OutboxMessage::getStatus, "FAILED")
+                        .lt(OutboxMessage::getAutoRetryCount, MAX_AUTO_RETRY_COUNT)
+                        .orderByAsc(OutboxMessage::getCreatedAt)
+                        .last("LIMIT " + RECOVER_BATCH_SIZE)
+        );
+
+        if (failedMessages.isEmpty()) {
+            return;
+        }
+
+        log.info("[Outbox] 死信自动恢复：发现 {} 条 FAILED 消息，开始恢复", failedMessages.size());
+        int recoveredCount = 0;
+
+        for (OutboxMessage msg : failedMessages) {
+            try {
+                // 重置为 PENDING：retryCount 归零 + autoRetryCount +1 + next_retry_at = NOW()
+                outboxMessageMapper.resetFailedMessageForAutoRecovery(
+                        msg.getId(),
+                        msg.getAutoRetryCount() == null ? 0 : msg.getAutoRetryCount()
+                );
+                recoveredCount++;
+                log.info("[Outbox] 死信消息已重置为 PENDING（第 {} 次自动恢复）: eventId={}",
+                        (msg.getAutoRetryCount() == null ? 0 : msg.getAutoRetryCount()) + 1,
+                        msg.getEventId());
+            } catch (Exception e) {
+                log.error("[Outbox] 死信消息重置失败: eventId={}, error={}", msg.getEventId(), e.getMessage());
+            }
+        }
+
+        log.info("[Outbox] 死信自动恢复完成：成功 {}/{} 条", recoveredCount, failedMessages.size());
+    }
+
+    // =========================================================
     // 私有工具方法
     // =========================================================
 

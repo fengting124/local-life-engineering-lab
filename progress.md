@@ -247,3 +247,15 @@
 | Redis ZSet 同一毫秒两个请求计数只有 1 | ZADD member=时间戳会覆盖 | 加随机后缀或 UUID |
 | Spring Boot 3.4+ Prometheus `enabled` deprecated | API 变更 | 改为 `access: unrestricted` |
 | `management.zipkin` unknown property | `spring.zipkin` 已废弃 | 用 `management.zipkin.tracing.endpoint` |
+## 2026-06-03 Nowcoder research correction
+- Read `docs/04-notes/交接提示词_继续工作.md` and confirmed the intended order: read Nowcoder data, update research/optimization planning, then implement code, then write the interview guide.
+- Fetched and analyzed additional Nowcoder posts into `data/nowcoder_research_posts.jsonl` and `data/nowcoder_resume_posts.jsonl`.
+- Added a new section to `docs/04-notes/调研记录与优化规划.md`: `七、牛客求助帖/面经补充调研：简历缺陷、八股与项目深挖（2026-06-03 第三轮）`.
+- Corrected implementation priority from a plain 11-item checklist to interview-evidence chains: RAG/Agent metrics, Agent latency/cost/reliability, Java backend reliability.
+- Errors: initial broad Nowcoder search timed out; PowerShell rejected Bash-style `<<` heredoc; Chinese path literals in PowerShell script converted to `?`, resolved by using Unicode escapes and Python path enumeration.
+
+## 2026-06-03 Planning audit after core directive
+- Read `docs/04-notes/核心目标与工作指令.md` and re-audited the research plan against the project's real boundary: interview depth plus real deployability.
+- Updated `docs/04-notes/调研记录与优化规划.md` with sections `八、基于核心目标的调研审计与最终规划（2026-06-03 纠偏版）` and `九、给下一个实施者的简短结论`.
+- Key correction: previous research direction is useful, but unverified numbers and external article claims must be treated as hypotheses or references, not project results.
+- Final route now prioritizes baseline measurement, LocalLife Server reliability, Agent tool governance, RAG evaluation, and then the interview guide with only real measured data.
