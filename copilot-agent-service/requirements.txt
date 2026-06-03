@@ -7,37 +7,38 @@ fastapi==0.115.5
 uvicorn[standard]==0.32.1
 
 # ===== LangGraph Agent 编排 =====
-# LangGraph：状态图 + checkpoint + interrupt（HITL 核心）
 langgraph==0.2.45
 langchain==0.3.7
-langchain-anthropic==0.3.0   # Claude API
-langchain-openai==0.2.6      # 备选 OpenAI
+langchain-anthropic==0.3.0
+langchain-openai==0.2.6
 
 # ===== LLM =====
 anthropic==0.40.0
 
 # ===== RAG 完整流水线 =====
-# Milvus 向量库（pymilvus 2.4.x 对应 Milvus 2.4.x）
 pymilvus==2.4.9
 langchain-milvus==0.1.6
-# Embedding 模型 + Cross-Encoder Reranker（本地推理，无 API 费用）
-# multilingual-e5-base：768 维，中英双语
-# cross-encoder/ms-marco-MiniLM-L-6-v2：本地 Reranker
+rank-bm25==0.2.2
+numpy>=1.26.0
+
+# sentence-transformers + torch（本地 Embedding + Reranker）
+# 注意：torch CPU 版约 700MB，首次安装较慢
+# 如果只用 Milvus 远程服务而不需要本地 embedding，可以注释掉这两行
 sentence-transformers==3.3.1
-rank-bm25==0.2.2              # BM25 关键词检索（与 Milvus 向量搜索混合，提升专有名词召回）
-torch>=2.0.0                  # sentence-transformers 依赖（PyTorch）
-numpy>=1.26.0                 # 向量运算
+# torch 使用 CPU 轻量版（无 GPU 时 ~700MB，比 CUDA 版 ~2.5GB 小很多）
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0
 
 # ===== 数据库（会话 + 消息 + checkpoint 持久化）=====
 sqlalchemy==2.0.36
-aiomysql==0.2.0              # 异步 MySQL 驱动
-alembic==1.14.0              # DB 迁移
+aiomysql==0.2.0
+alembic==1.14.0
 
 # ===== Redis（限流 + 缓存）=====
 redis==5.2.0
 
 # ===== HTTP 客户端（调用 Java MCP Server）=====
-httpx==0.28.0                # 异步 HTTP，比 requests 更适合 FastAPI
+httpx==0.28.0
 
 # ===== 数据校验 =====
 pydantic==2.10.1
@@ -47,7 +48,6 @@ pydantic-settings==2.6.1
 anyio==4.7.0
 
 # ===== 可观测性 =====
-# Prometheus 指标暴露（/metrics 端点）+ HTTP 请求自动埋点
 prometheus-fastapi-instrumentator==7.0.0
 prometheus-client==0.21.1
 

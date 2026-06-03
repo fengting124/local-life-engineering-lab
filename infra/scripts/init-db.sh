@@ -26,12 +26,21 @@ MYSQL_USER="${MYSQL_USER:-root}"
 MYSQL_PASSWORD="${MYSQL_PASSWORD:-123456}"
 MYSQL_DATABASE="${MYSQL_DATABASE:-local_life}"
 
-# 项目根目录（脚本位于 infra/scripts/，根目录向上两级）
+# 迁移文件路径：
+# - 直接在宿主机执行时，从项目根目录计算
+# - 在 Docker 容器内执行时，使用挂载路径 /migrations/
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-SERVER_MIGRATION_DIR="${PROJECT_ROOT}/local-life-server/src/main/resources/db/migration"
-COPILOT_MIGRATION_DIR="${PROJECT_ROOT}/local-life-copilot/src/main/resources/db/migration"
+if [ -d "/migrations/server" ]; then
+  # Docker 容器内：文件挂载在 /migrations/
+  SERVER_MIGRATION_DIR="/migrations/server"
+  COPILOT_MIGRATION_DIR="/migrations/copilot"
+else
+  # 宿主机执行：从脚本位置推算项目根目录
+  PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+  SERVER_MIGRATION_DIR="${PROJECT_ROOT}/local-life-server/src/main/resources/db/migration"
+  COPILOT_MIGRATION_DIR="${PROJECT_ROOT}/local-life-copilot/src/main/resources/db/migration"
+fi
 
 # MySQL 命令（带通用参数）
 MYSQL_CMD="mysql -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} --protocol=tcp"

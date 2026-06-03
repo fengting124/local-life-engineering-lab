@@ -14,7 +14,10 @@ WORKDIR /app
 
 # ───── 依赖层（变化最少，最先复制）─────
 COPY requirements.txt .
-# 安装依赖（不含 sentence-transformers 重量级包，生产可选注释掉以减小镜像）
+# CPU-only torch 镜像源已在 requirements.txt 里通过 --extra-index-url 声明
+# 如需完全跳过 torch/sentence-transformers（镜像更小，Milvus 仍可用），
+# 取消注释下一行替换掉 pip install 命令：
+# RUN grep -v "sentence-transformers\|torch" requirements.txt | pip install --no-cache-dir -r /dev/stdin
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ───── 代码层 ─────
