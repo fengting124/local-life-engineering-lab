@@ -28,9 +28,14 @@ __pycache__/
 .env
 .env.local
 
+# Local browser automation and scraper outputs
+.browser_profiles/
+data/nowcoder_*.jsonl
+data/nowcoder_*urls*.txt
+data/search_*.html
+
 # Docker
 docker-data/
 
 # Obsidian 编辑器配置（本地个人设置，不提交仓库）
 docs/.obsidian/
-
