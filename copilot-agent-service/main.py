@@ -21,8 +21,11 @@ LocalLife Copilot Agent Service 入口。
 """
 import structlog
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from api.chat import router as chat_router
 from api.hitl import router as hitl_router
@@ -151,3 +154,20 @@ async def health():
         "service": "copilot-agent-service",
         "version": "1.0.0",
     }
+
+
+# ---- 静态文件服务（Chat UI + Approval UI）----
+# 挂载在 /static/，前端页面可直接通过 http://localhost:8000/ 访问
+_static_dir = Path(__file__).parent / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+    @app.get("/", include_in_schema=False)
+    async def serve_index():
+        """根路径返回 Chat UI 主页。"""
+        return FileResponse(str(_static_dir / "index.html"))
+
+    @app.get("/approval", include_in_schema=False)
+    async def serve_approval():
+        """HITL 审批工作台。"""
+        return FileResponse(str(_static_dir / "approval.html"))

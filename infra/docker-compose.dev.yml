@@ -1,4 +1,105 @@
 services:
+
+  # =========================================================
+  # 应用服务（需要先 build image）
+  # 启动方式：docker compose --profile app up -d
+  # =========================================================
+
+  locallife-server:
+    build:
+      context: ..
+      dockerfile: local-life-server/Dockerfile
+    image: locallife-server:latest
+    container_name: local-life-server
+    profiles: ["app"]
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    environment:
+      # 使用 Docker 网络内部地址访问 MySQL/Redis
+      SPRING_DATASOURCE_URL: "jdbc:shardingsphere:classpath:sharding.yaml"
+      # ShardingSphere 内的 jdbcUrl 需要指向 Docker 网络中的 MySQL
+      # 通过 JAVA_OPTS 传入，覆盖 sharding.yaml 的默认 localhost
+      JAVA_OPTS: >-
+        -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0
+        -Dspring.data.redis.host=redis
+        -Dspring.elasticsearch.uris=http://elasticsearch:9200
+        -Drocketmq.name-server=rocketmq-namesrv:9876
+        -Dmanagement.zipkin.tracing.endpoint=http://zipkin:9411/api/v2/spans
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - local-life-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  locallife-copilot:
+    build:
+      context: ..
+      dockerfile: local-life-copilot/Dockerfile
+    image: locallife-copilot:latest
+    container_name: local-life-copilot
+    profiles: ["app"]
+    ports:
+      - "${COPILOT_PORT:-8081}:8081"
+    environment:
+      JAVA_OPTS: >-
+        -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0
+        -Dspring.datasource.url=jdbc:mysql://mysql:3306/local_life?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=UTF-8&allowPublicKeyRetrieval=true&useSSL=false
+        -Dspring.datasource.username=root
+        -Dspring.datasource.password=${MYSQL_ROOT_PASSWORD:-123456}
+        -Dspring.data.redis.host=redis
+        -Dspring.data.redis.database=1
+        -Dlocallife.server.url=http://locallife-server:8080
+    depends_on:
+      locallife-server:
+        condition: service_healthy
+    networks:
+      - local-life-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  copilot-agent:
+    build:
+      context: ../copilot-agent-service
+      dockerfile: Dockerfile
+    image: copilot-agent:latest
+    container_name: copilot-agent-service
+    profiles: ["app"]
+    ports:
+      - "${AGENT_PORT:-8000}:8000"
+    environment:
+      MCP_SERVER_URL: "http://locallife-copilot:8081"
+      DB_URL: "mysql+aiomysql://root:${MYSQL_ROOT_PASSWORD:-123456}@mysql:3306/local_life"
+      REDIS_URL: "redis://redis:6379/2"
+      MILVUS_URI: "http://milvus:19530"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+      LLM_MODEL: "${LLM_MODEL:-claude-sonnet-4-6}"
+      DEBUG: "false"
+    depends_on:
+      locallife-copilot:
+        condition: service_healthy
+    networks:
+      - local-life-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
   mysql:
     image: mysql:8.4
     container_name: local-life-mysql

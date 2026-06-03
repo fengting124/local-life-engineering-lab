@@ -34,7 +34,28 @@
 
 ---
 
-## 5 分钟快速启动
+## 一键部署（Docker Compose，推荐）
+
+```bash
+cd infra
+cp .env.example .env     # 填写 ANTHROPIC_API_KEY
+# 执行数据库迁移（需要 MySQL 已经启动）
+# 然后：
+
+# 启动全部基础中间件
+docker compose -f docker-compose.dev.yml up -d
+
+# 构建并启动三个应用服务（首次需要编译，约 3-5 分钟）
+docker compose -f docker-compose.dev.yml --profile app up -d --build
+
+# 访问 Chat UI：http://localhost:8000/
+# 访问 HITL 审批工作台：http://localhost:8000/approval
+# 访问 Grafana 监控：http://localhost:3000（默认账密 admin/admin）
+```
+
+---
+
+## 手动启动（开发调试）
 
 ### 第一步：启动基础中间件
 

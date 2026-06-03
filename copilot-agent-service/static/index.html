@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LocalLife Copilot</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --primary: #4f46e5;
+    --primary-light: #eef2ff;
+    --success: #059669;
+    --warning: #d97706;
+    --danger: #dc2626;
+    --gray-50: #f9fafb;
+    --gray-100: #f3f4f6;
+    --gray-200: #e5e7eb;
+    --gray-300: #d1d5db;
+    --gray-400: #9ca3af;
+    --gray-600: #4b5563;
+    --gray-700: #374151;
+    --gray-900: #111827;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  body { font-family: var(--font); background: var(--gray-50); color: var(--gray-900); height: 100vh; display: flex; flex-direction: column; }
+
+  /* ── Header ── */
+  header {
+    background: white;
+    border-bottom: 1px solid var(--gray-200);
+    padding: 12px 24px;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo-icon { width: 32px; height: 32px; background: var(--primary); border-radius: 8px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 14px; }
+  .logo-text { font-size: 16px; font-weight: 600; color: var(--gray-900); }
+  .logo-sub { font-size: 12px; color: var(--gray-400); }
+  .header-right { display: flex; align-items: center; gap: 12px; }
+  .role-select { padding: 6px 12px; border: 1px solid var(--gray-200); border-radius: 8px; font-size: 13px; background: white; cursor: pointer; }
+  .nav-link { font-size: 13px; color: var(--primary); text-decoration: none; display: flex; align-items: center; gap: 4px; }
+  .nav-link:hover { text-decoration: underline; }
+
+  /* ── Layout ── */
+  .container { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    width: 260px; flex-shrink: 0;
+    background: white; border-right: 1px solid var(--gray-200);
+    display: flex; flex-direction: column; padding: 16px 0;
+  }
+  .sidebar-title { font-size: 11px; font-weight: 600; color: var(--gray-400); text-transform: uppercase; letter-spacing: 0.05em; padding: 0 16px 8px; }
+  .new-chat-btn {
+    margin: 0 12px 16px;
+    padding: 10px;
+    background: var(--primary);
+    color: white; border: none; border-radius: 8px;
+    font-size: 13px; font-weight: 500; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .new-chat-btn:hover { background: #4338ca; }
+  .session-list { flex: 1; overflow-y: auto; padding: 0 8px; }
+  .session-item {
+    padding: 10px; border-radius: 8px; cursor: pointer;
+    font-size: 13px; color: var(--gray-700);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    margin-bottom: 2px;
+  }
+  .session-item:hover { background: var(--gray-100); }
+  .session-item.active { background: var(--primary-light); color: var(--primary); }
+
+  /* ── Chat Area ── */
+  .chat-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .messages { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+
+  /* ── Message Bubbles ── */
+  .msg { display: flex; gap: 12px; max-width: 80%; }
+  .msg.user { align-self: flex-end; flex-direction: row-reverse; }
+  .msg.assistant, .msg.system { align-self: flex-start; }
+  .avatar {
+    width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 600;
+  }
+  .avatar.user { background: var(--primary); color: white; }
+  .avatar.bot { background: #7c3aed; color: white; }
+  .bubble {
+    background: white; border: 1px solid var(--gray-200);
+    border-radius: 12px; padding: 12px 16px;
+    font-size: 14px; line-height: 1.6;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  }
+  .bubble.user { background: var(--primary); color: white; border-color: var(--primary); }
+  .bubble strong { font-weight: 600; }
+
+  /* ── Agent Step Cards ── */
+  .step-card {
+    border: 1px solid var(--gray-200); border-radius: 10px;
+    background: white; overflow: hidden; font-size: 13px;
+    max-width: 520px;
+  }
+  .step-header {
+    padding: 8px 12px; background: var(--gray-50);
+    border-bottom: 1px solid var(--gray-200);
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--gray-600); font-weight: 500;
+  }
+  .step-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .step-dot.thinking { background: #6366f1; animation: pulse 1.2s infinite; }
+  .step-dot.tool { background: #f59e0b; }
+  .step-dot.result { background: #10b981; }
+  .step-dot.error { background: #ef4444; }
+  .step-dot.hitl { background: #ec4899; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .step-body { padding: 10px 12px; }
+  .step-body pre { font-size: 11px; color: var(--gray-600); white-space: pre-wrap; word-break: break-all; margin: 0; font-family: 'Courier New', monospace; }
+  .tool-name { font-weight: 600; color: var(--gray-900); }
+  .tool-args { color: var(--gray-400); font-size: 11px; }
+
+  /* ── HITL Banner ── */
+  .hitl-banner {
+    border: 2px solid #ec4899; border-radius: 10px; padding: 16px;
+    background: #fdf2f8; max-width: 520px;
+  }
+  .hitl-banner h4 { color: #be185d; margin-bottom: 6px; font-size: 14px; }
+  .hitl-banner p { font-size: 13px; color: var(--gray-700); margin-bottom: 12px; }
+  .hitl-actions { display: flex; gap: 8px; }
+  .btn-approve, .btn-reject {
+    padding: 7px 16px; border: none; border-radius: 8px;
+    font-size: 13px; font-weight: 500; cursor: pointer;
+  }
+  .btn-approve { background: #10b981; color: white; }
+  .btn-approve:hover { background: #059669; }
+  .btn-reject { background: var(--gray-200); color: var(--gray-700); }
+  .btn-reject:hover { background: var(--gray-300); }
+
+  /* ── Streaming cursor ── */
+  .streaming::after { content: '▋'; animation: blink .7s step-end infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+  /* ── Input Area ── */
+  .input-area {
+    padding: 16px 24px;
+    background: white; border-top: 1px solid var(--gray-200);
+    flex-shrink: 0;
+  }
+  .input-box {
+    display: flex; align-items: flex-end; gap: 10px;
+    border: 1.5px solid var(--gray-200); border-radius: 12px;
+    padding: 10px 14px; background: white;
+    transition: border-color .15s;
+  }
+  .input-box:focus-within { border-color: var(--primary); }
+  textarea {
+    flex: 1; resize: none; border: none; outline: none;
+    font-family: var(--font); font-size: 14px; line-height: 1.5;
+    color: var(--gray-900); background: transparent;
+    max-height: 120px; min-height: 24px;
+  }
+  .send-btn {
+    width: 34px; height: 34px; border: none; border-radius: 8px;
+    background: var(--primary); color: white; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; transition: background .15s;
+  }
+  .send-btn:hover:not(:disabled) { background: #4338ca; }
+  .send-btn:disabled { background: var(--gray-300); cursor: not-allowed; }
+  .send-btn svg { width: 16px; height: 16px; }
+  .hint { font-size: 11px; color: var(--gray-400); margin-top: 6px; text-align: center; }
+
+  /* ── Empty state ── */
+  .empty-state {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 20px; color: var(--gray-400); padding: 40px;
+  }
+  .empty-state .icon { font-size: 48px; }
+  .empty-state h2 { font-size: 20px; color: var(--gray-700); }
+  .empty-state p { font-size: 14px; text-align: center; max-width: 360px; line-height: 1.6; }
+  .suggest-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-width: 480px; width: 100%; }
+  .suggest-card {
+    border: 1px solid var(--gray-200); border-radius: 10px;
+    padding: 14px; cursor: pointer; text-align: left;
+    background: white; font-size: 13px; color: var(--gray-700);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .suggest-card:hover { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+  .suggest-card .emoji { font-size: 20px; margin-bottom: 6px; display: block; }
+
+  /* ── Merchant info chip ── */
+  .merchant-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--primary-light); color: var(--primary);
+    padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 500;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">LC</div>
+    <div>
+      <div class="logo-text">LocalLife Copilot</div>
+      <div class="logo-sub">企业级 AI 商家助手</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="merchant-chip" id="merchantChip">🏪 商家 #20001</div>
+    <select class="role-select" id="roleSelect" onchange="onRoleChange()">
+      <option value="merchant" data-merchant="20001">商家视角</option>
+      <option value="cs">客服视角</option>
+      <option value="admin">管理员视角</option>
+    </select>
+    <a href="approval.html" class="nav-link">⚠️ 审批工作台</a>
+  </div>
+</header>
+
+<div class="container">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <button class="new-chat-btn" onclick="newChat()">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      新建对话
+    </button>
+    <div class="sidebar-title">历史对话</div>
+    <div class="session-list" id="sessionList"></div>
+  </aside>
+
+  <!-- Chat -->
+  <main class="chat-area">
+    <div class="messages" id="messages">
+      <div class="empty-state" id="emptyState">
+        <div class="icon">🤝</div>
+        <h2>你好，有什么可以帮你的？</h2>
+        <p>我可以帮你查询订单、分析经营数据、解释平台规则、生成活动草稿。</p>
+        <div class="suggest-grid">
+          <div class="suggest-card" onclick="suggest('我昨天的销售额是多少？')">
+            <span class="emoji">📊</span>查询昨日销售数据
+          </div>
+          <div class="suggest-card" onclick="suggest('双十一活动券的使用规则是什么？')">
+            <span class="emoji">📋</span>了解券使用规则
+          </div>
+          <div class="suggest-card" onclick="suggest('ORDER_12345 用户说支付了但没收到券')">
+            <span class="emoji">🔍</span>排查订单异常
+          </div>
+          <div class="suggest-card" onclick="suggest('帮我做一个国庆5折活动，限1000张')">
+            <span class="emoji">🎯</span>生成活动草稿
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="input-area">
+      <div class="input-box">
+        <textarea id="msgInput" rows="1" placeholder="输入问题，Shift+Enter 换行，Enter 发送…"
+          onkeydown="onKey(event)" oninput="autoResize(this)"></textarea>
+        <button class="send-btn" id="sendBtn" onclick="sendMessage()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+          </svg>
+        </button>
+      </div>
+      <div class="hint">回答基于真实业务数据，高风险操作需要人工审批</div>
+    </div>
+  </main>
+</div>
+
+<script>
+// ── Config ──
+const API_BASE = 'http://localhost:8000';
+let userId = 10001, role = 'merchant', merchantId = 20001;
+let currentSessionId = 0, currentThreadId = null;
+let isStreaming = false;
+let pendingHitl = null;
+
+// ── Init ──
+onRoleChange();
+loadSessions();
+
+function onRoleChange() {
+  const sel = document.getElementById('roleSelect');
+  const opt = sel.selectedOptions[0];
+  role = sel.value;
+  merchantId = role === 'merchant' ? parseInt(opt.dataset.merchant || '20001') : null;
+  userId = role === 'merchant' ? 10001 : role === 'cs' ? 99999 : 88888;
+  const chip = document.getElementById('merchantChip');
+  chip.style.display = role === 'merchant' ? '' : 'none';
+}
+
+function headers(extra = {}) {
+  const h = {
+    'Content-Type': 'application/json',
+    'X-User-Id': String(userId),
+    'X-User-Role': role,
+    ...extra
+  };
+  if (merchantId) h['X-Merchant-Id'] = String(merchantId);
+  return h;
+}
+
+// ── Session Management ──
+async function loadSessions() {
+  try {
+    const res = await fetch(`${API_BASE}/sessions`, { headers: headers() });
+    if (!res.ok) return;
+    const data = await res.json();
+    renderSessions(data.sessions || []);
+  } catch(e) { /* backend not running */ }
+}
+
+function renderSessions(sessions) {
+  const list = document.getElementById('sessionList');
+  list.innerHTML = sessions.slice(0, 20).map(s => `
+    <div class="session-item ${s.session_id == currentSessionId ? 'active' : ''}"
+         onclick="loadSession(${s.session_id})">
+      ${s.title || '新对话'}
+    </div>
+  `).join('');
+}
+
+function loadSession(id) {
+  currentSessionId = id;
+  clearMessages();
+  document.getElementById('messages').innerHTML = '<div style="text-align:center;color:#9ca3af;font-size:13px;padding:24px">加载历史对话中…</div>';
+  loadSessions();
+}
+
+function newChat() {
+  currentSessionId = 0;
+  currentThreadId = null;
+  clearMessages();
+  pendingHitl = null;
+}
+
+function clearMessages() {
+  const m = document.getElementById('messages');
+  m.innerHTML = `<div class="empty-state" id="emptyState">
+    <div class="icon">🤝</div>
+    <h2>你好，有什么可以帮你的？</h2>
+    <p>我可以帮你查询订单、分析经营数据、解释平台规则、生成活动草稿。</p>
+    <div class="suggest-grid">
+      <div class="suggest-card" onclick="suggest('我昨天的销售额是多少？')"><span class="emoji">📊</span>查询昨日销售数据</div>
+      <div class="suggest-card" onclick="suggest('双十一活动券的使用规则是什么？')"><span class="emoji">📋</span>了解券使用规则</div>
+      <div class="suggest-card" onclick="suggest('ORDER_12345 用户说支付了但没收到券')"><span class="emoji">🔍</span>排查订单异常</div>
+      <div class="suggest-card" onclick="suggest('帮我做一个国庆5折活动，限1000张')"><span class="emoji">🎯</span>生成活动草稿</div>
+    </div>
+  </div>`;
+}
+
+// ── Message Rendering ──
+function appendMsg(html, id) {
+  const m = document.getElementById('messages');
+  const empty = document.getElementById('emptyState');
+  if (empty) empty.remove();
+  m.insertAdjacentHTML('beforeend', html);
+  if (id) return document.getElementById(id);
+  m.scrollTop = m.scrollHeight;
+}
+
+function scrollBottom() {
+  const m = document.getElementById('messages');
+  m.scrollTop = m.scrollHeight;
+}
+
+function addUserMsg(text) {
+  appendMsg(`<div class="msg user">
+    <div class="avatar user">我</div>
+    <div class="bubble user">${escHtml(text)}</div>
+  </div>`);
+}
+
+function addStepCard(id, dotClass, title, body) {
+  const el = appendMsg(`
+    <div class="step-card" id="${id}">
+      <div class="step-header">
+        <span class="step-dot ${dotClass}"></span>
+        <span>${title}</span>
+      </div>
+      <div class="step-body">${body}</div>
+    </div>
+  `, id);
+  scrollBottom();
+  return el;
+}
+
+function updateStepCard(id, dotClass, title, body) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.querySelector('.step-dot').className = 'step-dot ' + dotClass;
+  el.querySelector('.step-header span:last-child').textContent = title;
+  el.querySelector('.step-body').innerHTML = body;
+  scrollBottom();
+}
+
+function addAnswerBubble() {
+  const id = 'answer-' + Date.now();
+  appendMsg(`<div class="msg assistant" id="wrap-${id}">
+    <div class="avatar bot">AI</div>
+    <div class="bubble" id="${id}"><span class="streaming"></span></div>
+  </div>`, `wrap-${id}`);
+  scrollBottom();
+  return id;
+}
+
+function addHitlBanner(approvalId, threadId, action, reason) {
+  appendMsg(`<div class="hitl-banner" id="hitl-${approvalId}">
+    <h4>⚠️ 需要人工审批</h4>
+    <p><strong>操作：</strong>${action}<br>
+    <strong>原因：</strong>${escHtml(reason)}</p>
+    <div class="hitl-actions">
+      <button class="btn-approve" onclick="approveHitl('${approvalId}','${threadId}')">✓ 通过</button>
+      <button class="btn-reject" onclick="rejectHitl('${approvalId}','${threadId}')">✗ 拒绝</button>
+    </div>
+  </div>`);
+  scrollBottom();
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── HITL Actions ──
+async function approveHitl(approvalId, threadId) {
+  const el = document.getElementById('hitl-' + approvalId);
+  if (el) el.innerHTML = '<p style="color:#059669;font-size:13px">✓ 已通过，继续执行中…</p>';
+  try {
+    const res = await fetch(`${API_BASE}/hitl/${approvalId}/approve`, {
+      method: 'POST', headers: headers(), body: JSON.stringify({ comment: '审批通过' }),
+    });
+    if (!res.ok) { console.error('approve failed'); return; }
+    // Resume Agent
+    await resumeAgent(threadId, approvalId, true);
+  } catch(e) { console.error(e); }
+}
+
+async function rejectHitl(approvalId, threadId) {
+  const el = document.getElementById('hitl-' + approvalId);
+  if (el) el.innerHTML = '<p style="color:#dc2626;font-size:13px">✗ 已拒绝</p>';
+  try {
+    await fetch(`${API_BASE}/hitl/${approvalId}/reject`, {
+      method: 'POST', headers: headers(), body: JSON.stringify({ comment: '拒绝' }),
+    });
+    await resumeAgent(threadId, approvalId, false);
+  } catch(e) { console.error(e); }
+}
+
+async function resumeAgent(threadId, approvalId, approved) {
+  const res = await fetch(`${API_BASE}/chat/resume`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ thread_id: threadId, approval_id: approvalId, approved }),
+  });
+  if (!res.ok || !res.body) return;
+  await consumeSseStream(res);
+}
+
+// ── Send Message ──
+async function sendMessage() {
+  const input = document.getElementById('msgInput');
+  const text = input.value.trim();
+  if (!text || isStreaming) return;
+
+  input.value = '';
+  autoResize(input);
+  isStreaming = true;
+  document.getElementById('sendBtn').disabled = true;
+
+  addUserMsg(text);
+
+  const body = { message: text, session_id: currentSessionId };
+  if (currentThreadId) body.thread_id = currentThreadId;
+
+  try {
+    const res = await fetch(`${API_BASE}/chat`, {
+      method: 'POST',
+      headers: { ...headers(), 'Accept': 'text/event-stream' },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      appendMsg(`<div class="msg assistant"><div class="avatar bot">AI</div>
+        <div class="bubble" style="color:#dc2626">请求失败：${err.detail?.message || res.statusText}</div></div>`);
+      return;
+    }
+
+    await consumeSseStream(res);
+
+  } catch(e) {
+    appendMsg(`<div class="msg assistant"><div class="avatar bot">AI</div>
+      <div class="bubble" style="color:#dc2626">连接失败，请确认 Agent Service 已启动（端口 8000）。</div></div>`);
+  } finally {
+    isStreaming = false;
+    document.getElementById('sendBtn').disabled = false;
+    loadSessions();
+  }
+}
+
+// ── SSE Stream Consumer ──
+async function consumeSseStream(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  let answerId = null;
+  let answerEl = null;
+  let currentEvent = null;
+  let buffer = '';
+  let stepCards = {};
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop(); // keep incomplete line
+
+    for (const line of lines) {
+      if (line.startsWith('event:')) {
+        currentEvent = line.slice(6).trim();
+      } else if (line.startsWith('data:')) {
+        const data = line.slice(5).trim();
+        try {
+          const payload = JSON.parse(data);
+          handleSseEvent(currentEvent, payload, { answerId, answerEl, stepCards },
+            (updates) => { answerId = updates.answerId ?? answerId; answerEl = updates.answerEl ?? answerEl; });
+        } catch(e) { /* not json */ }
+        currentEvent = null;
+      }
+    }
+  }
+
+  // clean up streaming cursor
+  if (answerEl) {
+    const cur = answerEl.querySelector('.streaming');
+    if (cur) { cur.classList.remove('streaming'); }
+  }
+}
+
+function handleSseEvent(event, payload, state, update) {
+  const { stepCards } = state;
+  let { answerId, answerEl } = state;
+
+  switch(event) {
+    case 'session_started':
+      currentSessionId = parseInt(payload.session_id) || currentSessionId;
+      currentThreadId = payload.thread_id;
+      break;
+
+    case 'agent_step':
+      // Show thinking indicator
+      const stepId = 'step-' + Date.now();
+      stepCards['thinking'] = stepId;
+      addStepCard(stepId, 'thinking', '正在思考…', '');
+      break;
+
+    case 'tool_call':
+      const toolId = 'tool-' + payload.tool + '-' + Date.now();
+      stepCards[payload.tool] = toolId;
+      addStepCard(toolId, 'tool', `调用工具 <span class="tool-name">${payload.tool}</span>`,
+        `<pre>${JSON.stringify(payload.args || {}, null, 2)}</pre>`);
+      break;
+
+    case 'tool_result':
+      const tid = stepCards[payload.tool];
+      if (tid) {
+        const preview = typeof payload.result === 'string'
+          ? payload.result.slice(0, 200) + (payload.result.length > 200 ? '…' : '')
+          : JSON.stringify(payload.result || {}).slice(0, 200);
+        updateStepCard(tid, 'result', `✓ ${payload.tool} 返回`, `<pre>${escHtml(preview)}</pre>`);
+      }
+      break;
+
+    case 'stream':
+      if (!answerId) {
+        answerId = addAnswerBubble();
+        const el = document.getElementById(answerId);
+        if (el) { el.innerHTML = ''; answerEl = el; }
+        update({ answerId, answerEl });
+      }
+      if (answerEl) {
+        // streaming text append
+        let cur = answerEl.querySelector('.streaming');
+        if (!cur) {
+          answerEl.insertAdjacentHTML('beforeend', '<span class="streaming"></span>');
+          cur = answerEl.querySelector('.streaming');
+        }
+        const txt = document.createTextNode(payload.content || '');
+        answerEl.insertBefore(txt, cur);
+        scrollBottom();
+      }
+      break;
+
+    case 'final_answer':
+      // Clean up step cards
+      Object.values(stepCards).forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+      });
+      if (answerId && !answerEl) {
+        answerId = addAnswerBubble();
+        answerEl = document.getElementById(answerId);
+        update({ answerId, answerEl });
+      }
+      if (answerEl) {
+        const cur = answerEl.querySelector('.streaming');
+        if (cur) cur.classList.remove('streaming');
+        if (payload.stop_reason === 'fast_path') {
+          answerEl.insertAdjacentHTML('afterbegin', '<span style="font-size:11px;color:#9ca3af;display:block;margin-bottom:4px">⚡ 快速响应</span>');
+        }
+        if (!answerEl.textContent.trim()) {
+          answerEl.innerHTML = formatMarkdown(payload.content || '');
+        }
+        scrollBottom();
+      } else if (!answerId) {
+        // No stream events, just final answer
+        appendMsg(`<div class="msg assistant">
+          <div class="avatar bot">AI</div>
+          <div class="bubble">${formatMarkdown(payload.content || '')}</div>
+        </div>`);
+      }
+      break;
+
+    case 'hitl_request':
+      addHitlBanner(
+        payload.approval_id || payload.thread_id,
+        payload.thread_id,
+        payload.action?.action_type || '高风险操作',
+        payload.message || '需要人工审批后才能继续'
+      );
+      break;
+
+    case 'error':
+      appendMsg(`<div class="msg assistant">
+        <div class="avatar bot">AI</div>
+        <div class="bubble" style="color:#dc2626">⚠ ${escHtml(payload.message || '发生错误')}</div>
+      </div>`);
+      break;
+  }
+}
+
+function formatMarkdown(text) {
+  // Very simple markdown: **bold**, *italic*, newlines, lists
+  return escHtml(text)
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/`(.*?)`/g, '<code style="background:#f3f4f6;padding:1px 4px;border-radius:3px;font-size:12px">$1</code>')
+    .replace(/\n- /g, '\n• ')
+    .replace(/\n/g, '<br>');
+}
+
+function suggest(text) {
+  document.getElementById('msgInput').value = text;
+  sendMessage();
+}
+
+function onKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HITL 审批工作台 - LocalLife Copilot</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --primary: #4f46e5; --primary-light: #eef2ff;
+    --success: #059669; --warning: #d97706; --danger: #dc2626;
+    --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb;
+    --gray-300: #d1d5db; --gray-400: #9ca3af; --gray-600: #4b5563;
+    --gray-700: #374151; --gray-900: #111827;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  body { font-family: var(--font); background: var(--gray-50); color: var(--gray-900); min-height: 100vh; }
+
+  header {
+    background: white; border-bottom: 1px solid var(--gray-200);
+    padding: 14px 24px; display: flex; align-items: center; justify-content: space-between;
+  }
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo-icon { width: 32px; height: 32px; background: var(--primary); border-radius: 8px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 14px; }
+  .page-title { font-size: 16px; font-weight: 600; }
+  .badge { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; background: #ef4444; color: white; border-radius: 10px; font-size: 11px; font-weight: 700; padding: 0 5px; margin-left: 8px; }
+  .back-link { font-size: 13px; color: var(--primary); text-decoration: none; }
+  .back-link:hover { text-decoration: underline; }
+  .refresh-btn { padding: 7px 14px; background: white; border: 1px solid var(--gray-200); border-radius: 8px; font-size: 13px; cursor: pointer; }
+  .refresh-btn:hover { background: var(--gray-50); }
+
+  .main { max-width: 960px; margin: 0 auto; padding: 28px 24px; }
+
+  /* Stats */
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+  .stat-card { background: white; border: 1px solid var(--gray-200); border-radius: 12px; padding: 18px 20px; }
+  .stat-label { font-size: 12px; color: var(--gray-400); font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
+  .stat-value { font-size: 28px; font-weight: 700; color: var(--gray-900); }
+  .stat-value.pending { color: #f59e0b; }
+  .stat-value.approved { color: var(--success); }
+  .stat-value.rejected { color: var(--danger); }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 4px; background: var(--gray-100); border-radius: 10px; padding: 4px; margin-bottom: 20px; width: fit-content; }
+  .tab { padding: 8px 20px; border: none; background: transparent; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; color: var(--gray-600); }
+  .tab.active { background: white; color: var(--gray-900); box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+
+  /* Approval cards */
+  .approval-list { display: flex; flex-direction: column; gap: 16px; }
+  .approval-card {
+    background: white; border: 1px solid var(--gray-200); border-radius: 12px;
+    overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .card-header {
+    padding: 14px 20px; border-bottom: 1px solid var(--gray-100);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .card-title { display: flex; align-items: center; gap: 10px; }
+  .action-badge {
+    padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600;
+  }
+  .action-badge.refund { background: #fef3c7; color: #92400e; }
+  .action-badge.coupon { background: #ede9fe; color: #5b21b6; }
+  .action-badge.campaign { background: #d1fae5; color: #065f46; }
+  .session-id { font-size: 12px; color: var(--gray-400); }
+  .status-badge {
+    padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+  }
+  .status-badge.PENDING { background: #fef3c7; color: #92400e; }
+  .status-badge.APPROVED { background: #d1fae5; color: #065f46; }
+  .status-badge.REJECTED { background: #fee2e2; color: #991b1b; }
+  .status-badge.EXPIRED { background: var(--gray-100); color: var(--gray-600); }
+
+  .card-body { padding: 18px 20px; }
+  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+  .info-item label { font-size: 11px; color: var(--gray-400); font-weight: 600; text-transform: uppercase; display: block; margin-bottom: 4px; }
+  .info-item value { font-size: 14px; color: var(--gray-900); }
+  .reason-box {
+    background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 12px;
+    font-size: 13px; color: #78350f; line-height: 1.6; margin-bottom: 16px;
+  }
+  .payload-box {
+    background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 8px; padding: 12px;
+    font-size: 12px; color: var(--gray-700); font-family: 'Courier New', monospace;
+    white-space: pre-wrap; word-break: break-all; margin-bottom: 16px;
+    max-height: 100px; overflow-y: auto;
+  }
+  .expire-info { font-size: 12px; color: var(--gray-400); margin-bottom: 14px; }
+  .expire-info.urgent { color: #dc2626; font-weight: 500; }
+
+  .card-actions { display: flex; gap: 10px; align-items: center; }
+  .comment-input {
+    flex: 1; padding: 8px 12px; border: 1px solid var(--gray-200); border-radius: 8px;
+    font-size: 13px; color: var(--gray-900);
+  }
+  .comment-input:focus { outline: none; border-color: var(--primary); }
+  .btn { padding: 9px 20px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all .15s; }
+  .btn-approve { background: #10b981; color: white; }
+  .btn-approve:hover { background: #059669; }
+  .btn-reject { background: white; border: 1px solid var(--gray-300); color: var(--gray-700); }
+  .btn-reject:hover { background: var(--gray-100); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  .approved-msg { font-size: 13px; color: var(--success); font-weight: 500; padding: 8px 0; }
+  .rejected-msg { font-size: 13px; color: var(--danger); font-weight: 500; padding: 8px 0; }
+
+  .empty-approvals { text-align: center; padding: 60px 40px; color: var(--gray-400); }
+  .empty-approvals .icon { font-size: 48px; margin-bottom: 12px; }
+  .empty-approvals p { font-size: 14px; }
+
+  .loading { text-align: center; padding: 40px; color: var(--gray-400); font-size: 14px; }
+  .error-msg { text-align: center; padding: 40px; color: var(--danger); font-size: 14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">LC</div>
+    <div>
+      <div class="page-title">
+        审批工作台
+        <span class="badge" id="pendingBadge" style="display:none">0</span>
+      </div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <button class="refresh-btn" onclick="loadData()">🔄 刷新</button>
+    <a href="index.html" class="back-link">← 返回对话</a>
+  </div>
+</header>
+
+<div class="main">
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-label">待审批</div>
+      <div class="stat-value pending" id="statPending">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">今日已通过</div>
+      <div class="stat-value approved" id="statApproved">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">今日已拒绝</div>
+      <div class="stat-value rejected" id="statRejected">-</div>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('pending', this)">待审批</button>
+    <button class="tab" onclick="switchTab('all', this)">全部记录</button>
+  </div>
+
+  <!-- List -->
+  <div class="approval-list" id="approvalList">
+    <div class="loading">正在加载…</div>
+  </div>
+</div>
+
+<script>
+const API_BASE = 'http://localhost:8000';
+const USER_ID = '88888';
+const USER_ROLE = 'admin';
+
+let allApprovals = [];
+let currentTab = 'pending';
+
+async function loadData() {
+  const list = document.getElementById('approvalList');
+  try {
+    const res = await fetch(`${API_BASE}/hitl/pending`, {
+      headers: { 'X-User-Id': USER_ID, 'X-User-Role': USER_ROLE }
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    allApprovals = data.approvals || [];
+    updateStats();
+    renderList();
+  } catch(e) {
+    list.innerHTML = `<div class="error-msg">
+      ⚠️ 无法连接到 Agent Service（${e.message}）<br>
+      <small style="color:#9ca3af;margin-top:6px;display:block">请确认 copilot-agent-service 已在端口 8000 启动</small>
+    </div>`;
+  }
+}
+
+function updateStats() {
+  const pending = allApprovals.filter(a => a.status === 'PENDING').length;
+  document.getElementById('statPending').textContent = pending;
+  document.getElementById('statApproved').textContent = '-';  // would need history API
+  document.getElementById('statRejected').textContent = '-';
+  const badge = document.getElementById('pendingBadge');
+  if (pending > 0) { badge.style.display = ''; badge.textContent = pending; }
+  else { badge.style.display = 'none'; }
+}
+
+function switchTab(tab, el) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  renderList();
+}
+
+function renderList() {
+  const list = document.getElementById('approvalList');
+  const items = currentTab === 'pending'
+    ? allApprovals.filter(a => a.status === 'PENDING')
+    : allApprovals;
+
+  if (items.length === 0) {
+    list.innerHTML = `<div class="empty-approvals">
+      <div class="icon">✅</div>
+      <p>${currentTab === 'pending' ? '没有待审批的申请' : '暂无记录'}</p>
+    </div>`;
+    return;
+  }
+
+  list.innerHTML = items.map(a => renderCard(a)).join('');
+}
+
+function renderCard(a) {
+  const isPending = a.status === 'PENDING';
+  const actionClass = a.action_type?.includes('refund') ? 'refund'
+    : a.action_type?.includes('coupon') ? 'coupon' : 'campaign';
+  const actionLabel = a.action_type === 'execute_refund' ? '退款'
+    : a.action_type === 'issue_compensation_coupon' ? '补偿券'
+    : a.action_type || '操作';
+
+  const expiresAt = a.expire_at ? new Date(a.expire_at) : null;
+  const now = new Date();
+  const isUrgent = expiresAt && (expiresAt - now) < 3600000; // < 1h
+  const expireText = expiresAt ? formatTime(expiresAt) : '-';
+
+  const payloadStr = JSON.stringify(a.action_payload || {}, null, 2);
+
+  const cardId = 'card-' + a.id;
+
+  return `<div class="approval-card" id="${cardId}">
+    <div class="card-header">
+      <div class="card-title">
+        <span class="action-badge ${actionClass}">${actionLabel}</span>
+        <span class="session-id">会话 #${a.session_id} · 申请 #${a.id}</span>
+      </div>
+      <span class="status-badge ${a.status}">${statusLabel(a.status)}</span>
+    </div>
+    <div class="card-body">
+      <div class="info-grid">
+        <div class="info-item">
+          <label>操作类型</label>
+          <value>${a.action_type || '-'}</value>
+        </div>
+        <div class="info-item">
+          <label>Thread ID</label>
+          <value style="font-size:12px;font-family:monospace">${a.thread_id?.slice(0,20) || '-'}…</value>
+        </div>
+      </div>
+      <div class="reason-box">
+        <strong>🤖 Agent 申请理由：</strong><br>${escHtml(a.agent_reason || '未提供原因')}
+      </div>
+      <div class="payload-box">${escHtml(payloadStr)}</div>
+      <div class="expire-info ${isUrgent ? 'urgent' : ''}">
+        ${isUrgent ? '⏰ 紧急！' : '⏱'} 过期时间：${expireText}
+        ${a.approved_at ? `· 处理时间：${formatTime(new Date(a.approved_at))}` : ''}
+      </div>
+      ${isPending ? `
+        <div class="card-actions">
+          <input class="comment-input" id="comment-${a.id}" type="text" placeholder="审批备注（可选）">
+          <button class="btn btn-approve" onclick="approve('${a.id}', '${a.thread_id}')">✓ 通过</button>
+          <button class="btn btn-reject" onclick="reject('${a.id}', '${a.thread_id}')">✗ 拒绝</button>
+        </div>
+      ` : `
+        <div class="${a.status === 'APPROVED' ? 'approved-msg' : 'rejected-msg'}">
+          ${a.status === 'APPROVED' ? '✓ 已通过' : '✗ 已拒绝'}
+          ${a.approver_comment ? `· ${a.approver_comment}` : ''}
+        </div>
+      `}
+    </div>
+  </div>`;
+}
+
+async function approve(approvalId, threadId) {
+  const comment = document.getElementById('comment-' + approvalId)?.value || '';
+  await doAction(approvalId, threadId, true, comment);
+}
+
+async function reject(approvalId, threadId) {
+  const comment = document.getElementById('comment-' + approvalId)?.value || '';
+  await doAction(approvalId, threadId, false, comment);
+}
+
+async function doAction(approvalId, threadId, approved, comment) {
+  const card = document.getElementById('card-' + approvalId);
+  const btn = card.querySelectorAll('.btn');
+  btn.forEach(b => b.disabled = true);
+
+  try {
+    // 1. 更新 DB 状态
+    const endpoint = approved ? 'approve' : 'reject';
+    const res = await fetch(`${API_BASE}/hitl/${approvalId}/${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-User-Id': USER_ID, 'X-User-Role': USER_ROLE },
+      body: JSON.stringify({ comment: comment || (approved ? '审批通过' : '审批拒绝') }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(`操作失败：${err.detail || res.statusText}`);
+      btn.forEach(b => b.disabled = false);
+      return;
+    }
+
+    const data = await res.json();
+    const actualThreadId = data.thread_id || threadId;
+
+    // 2. 通知 Agent 恢复（POST /chat/resume）
+    if (actualThreadId) {
+      fetch(`${API_BASE}/chat/resume`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-User-Id': USER_ID, 'X-User-Role': USER_ROLE },
+        body: JSON.stringify({
+          thread_id: actualThreadId,
+          approval_id: String(approvalId),
+          approved: approved,
+        }),
+      }).catch(e => console.warn('resume failed', e));
+    }
+
+    // 3. 更新 UI
+    const actionsEl = card.querySelector('.card-actions');
+    if (actionsEl) {
+      actionsEl.outerHTML = `<div class="${approved ? 'approved-msg' : 'rejected-msg'}">
+        ${approved ? '✓ 已通过' : '✗ 已拒绝'}${comment ? ' · ' + escHtml(comment) : ''}
+      </div>`;
+    }
+    card.querySelector('.status-badge').className = `status-badge ${approved ? 'APPROVED' : 'REJECTED'}`;
+    card.querySelector('.status-badge').textContent = statusLabel(approved ? 'APPROVED' : 'REJECTED');
+
+    updateStats();
+
+  } catch(e) {
+    alert('网络错误：' + e.message);
+    btn.forEach(b => b.disabled = false);
+  }
+}
+
+function statusLabel(s) {
+  return { PENDING: '待审批', APPROVED: '已通过', REJECTED: '已拒绝', EXPIRED: '已过期' }[s] || s;
+}
+
+function formatTime(d) {
+  return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Auto-refresh every 30s
+loadData();
+setInterval(loadData, 30000);
+</script>
+</body>
+</html>
