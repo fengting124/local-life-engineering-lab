@@ -1,29 +1,88 @@
 # 项目进度与任务追踪
 
 > 此文件记录所有已完成模块、当前任务和待办事项，方便跨会话继续工作。
-> 最后更新：2026-05-28
+> 最后更新：2026-06-04
 
 ---
 
-## 快速状态总览
+## 快速状态总览（2026-06-04 最新）
 
-| 线 | 模块 | 状态 | 对应提交 |
-|----|------|------|---------|
-| LocalLife Server | 鉴权（登录/Token/AuthInterceptor） | ✅ | `feat: add project foundation and auth module` |
-| LocalLife Server | 门店（CRUD/状态机/Geo） | ✅ | `feat: add merchant & shop module` |
-| LocalLife Server | 内容（笔记/评论/点赞/Feed流） | ✅ | `feat: add post, comment & follow module` |
-| LocalLife Server | 优惠券 & 秒杀（Redis Lua 预扣） | ✅ | `feat: add coupon & seckill module` |
-| LocalLife Server | 订单 & 支付（状态机/幂等/延迟关单） | ✅ | `feat: add order & payment module` |
-| LocalLife Server | RocketMQ（Transactional Outbox） | ✅ | `feat: add RocketMQ message reliability` |
-| LocalLife Server | Elasticsearch 全文搜索 | ✅ | `feat: add Elasticsearch search module` |
-| LocalLife Server | 可观测性（Micrometer + Prometheus + Zipkin） | ✅ | `feat: add observability` |
-| LocalLife Server | 接口限流（Redis 滑动窗口 + @RateLimit） | ✅ | `feat: add rate limiting module` |
-| LocalLife Server | ShardingSphere 订单分表 | ✅ | `feat: add ShardingSphere order table sharding` |
-| LocalLife Copilot | Java MCP Server（完整工具 + RBAC + Audit） | ✅ | 见下方提交 |
-| LocalLife Copilot | Python Agent Service（完整 HITL + Evals + Guardrails） | ✅ | 见下方提交 |
-| 文档 | 接口规范文档（12章） | ✅ | `docs: finalize interface spec` |
-| 文档 | 接口教程（11章） | ✅ | 含于各模块提交 |
-| 文档 | Copilot 架构设计文档 | ✅ | 未提交 |
+### LocalLife Server
+| 模块 | 状态 | 备注 |
+|------|------|------|
+| 鉴权 / Token / AuthInterceptor | ✅ | Redis Token（非 JWT），布隆过滤器防穿透，延迟双删 |
+| 门店 / 商家 / 状态机 / Geo | ✅ | Cache-Aside + ShopCacheService |
+| 内容笔记 / 评论 / 点赞 / Feed 流 | ✅ | Redis 点赞计数，ZSet 共同关注 |
+| 优惠券 & 秒杀（Redis Lua） | ✅ | SISMEMBER+DECRBY 原子操作，至多一次设计 |
+| 订单 & 支付（状态机 + 幂等） | ✅ | CAS UPDATE，uk_payment_channel_trade_no 幂等 |
+| RocketMQ Transactional Outbox | ✅ | Propagation.MANDATORY，指数退避，死信自动恢复 |
+| Elasticsearch 全文搜索 | ✅ | IK 分词，Geo 距离，双写同步 |
+| 可观测性（Micrometer + Prometheus + Zipkin）| ✅ | 12 个业务指标，traceId 全链路 |
+| 接口限流（Redis ZSet 滑动窗口）| ✅ | 8 个接口，Lua 原子 |
+| ShardingSphere 订单分表 | ✅ | user_id % 4，Docker 支持 ${MYSQL_HOST} |
+| 布隆过滤器（防缓存穿透）| ✅ | Redisson RBloomFilter，@PostConstruct 预加载 |
+| 延迟双删（缓存一致性）| ✅ | @Async 500ms 再删，ShopCacheService |
+| Outbox 死信自动恢复 | ✅ | V9 Migration + auto_retry_count 字段 |
+| 内部 API（/internal/*）| ✅ | X-Internal-Key 验证，供 Copilot 调用 |
+
+### LocalLife Copilot（Java MCP Server）
+| 模块 | 状态 |
+|------|------|
+| MCP JSON-RPC 2.0 协议层 | ✅ |
+| RBAC（三角色 merchant/cs/admin）| ✅ |
+| ToolRegistry 自动注册 | ✅ |
+| 10 个生产级工具（L1-L4 分级）| ✅ |
+| 工具限流（Redis 计数）| ✅ |
+| LocalLifeInternalClient | ✅ |
+| ToolAuditService（@Async）| ✅ |
+| RestTemplate Bean 配置 | ✅ |
+
+### Copilot Agent Service（Python）
+| 模块 | 状态 |
+|------|------|
+| LangGraph StateGraph + 5 节点 | ✅ |
+| AsyncMySQLCheckpointer | ✅ |
+| 并行工具执行（asyncio.gather）| ✅ |
+| 循环检测（同工具同参数 ≥3 次）| ✅ |
+| Prompt Caching（cache_control）| ✅ |
+| 工具 Schema TTL 缓存（5min）| ✅ |
+| Fast Path 路由（简单查询）| ✅ |
+| Tool Router（三层过滤）| ✅ |
+| HITL 完整流程 + 审批工作台 | ✅ |
+| Hybrid RAG（BM25+Milvus+RRF）| ✅ |
+| LLM-as-Judge 评测 | ✅ |
+| Guardrails（输入 12+ 规则 + 输出脱敏）| ✅ |
+| Session/Message 全量持久化 | ✅ |
+| Prometheus 12 个业务指标 | ✅ |
+| Evals 50 条用例 + 6 项指标 | ✅ |
+| **多 LLM Provider（Claude/DeepSeek/Qwen/Ollama）**| ✅ 新增 |
+
+### 前端 & 部署
+| 模块 | 状态 |
+|------|------|
+| Chat UI（SSE 流式，工具可视化）| ✅ |
+| HITL 审批工作台 | ✅ |
+| FastAPI 静态文件服务 | ✅ |
+| 三个 Dockerfile（多阶段构建）| ✅ |
+| Docker Compose 完整环境（全 profile）| ✅ |
+| Nginx 反向代理（含 SSE 优化）| ✅ |
+| DB 自动迁移（init-db.sh + db-init 容器）| ✅ |
+| 一键启动脚本（start.sh + start.ps1）| ✅ |
+| RAG 知识库自动入库（lifespan 启动）| ✅ |
+| Copilot DB 表自动创建（lifespan）| ✅ |
+| .env 多 Provider 配置示例 | ✅ |
+
+### 文档
+| 文档 | 状态 |
+|------|------|
+| 接口规范文档（12章）| ✅ |
+| LocalLife 接口教程（11章）| ✅ |
+| Copilot 全链路教程（12章）| ✅ |
+| 深度拷打与面试指南（9章+3附录）| ✅ |
+| 3 个子项目 README | ✅ |
+| 根 README（一键部署说明）| ✅ |
+| 调研记录与优化规划 | ✅ |
+| 交接提示词 | ✅ |
 
 ---
 
@@ -237,6 +296,18 @@
 
 ---
 
+## 启动前唯一必填项
+
+1. 填写 `.env`（从 `copilot-agent-service/.env.example` 复制）
+2. 填写任意一个 LLM API Key：
+   - Claude：`LLM_PROVIDER=anthropic` + `LLM_API_KEY=sk-ant-...`
+   - DeepSeek（推荐，便宜）：`LLM_PROVIDER=deepseek` + `LLM_API_KEY=sk-...`
+   - 本地 Ollama（离线）：`LLM_PROVIDER=local` + `LLM_MODEL=qwen2.5:7b`
+3. 确认 Docker Desktop 已运行
+4. 运行 `cd infra && bash scripts/start.sh`（Linux）或 `.\scripts\start.ps1`（Windows）
+
+---
+
 ## 常见 Bug 备忘
 
 | Bug | 原因 | 修复方式 |
@@ -247,7 +318,14 @@
 | Redis ZSet 同一毫秒两个请求计数只有 1 | ZADD member=时间戳会覆盖 | 加随机后缀或 UUID |
 | Spring Boot 3.4+ Prometheus `enabled` deprecated | API 变更 | 改为 `access: unrestricted` |
 | `management.zipkin` unknown property | `spring.zipkin` 已废弃 | 用 `management.zipkin.tracing.endpoint` |
-## 2026-06-03 Nowcoder research correction
+| `shardingsphere-test-util` 在 Docker 内找不到 MySQL | sharding.yaml 硬编码 localhost | 改为 `${MYSQL_HOST:-localhost}`，Docker 传 `-DMYSQL_HOST=mysql` |
+| init-db.sh 在容器内找不到 SQL 文件 | 脚本用宿主机路径 | 检测 `/migrations/` 挂载，容器内用 `/migrations/server/` |
+| torch 下载 2.5GB 太慢 | 默认 CUDA 版 | 在 requirements.txt 加 `--extra-index-url` 用 CPU 轻量版 |
+| nodes.py 硬编码 ChatAnthropic | 多 Provider 未实现 | 用 `_create_llm()` 工厂，settings.llm_provider 控制 |
+
+---
+
+## 历史调研记录（2026-06-03）
 - Read `docs/04-notes/交接提示词_继续工作.md` and confirmed the intended order: read Nowcoder data, update research/optimization planning, then implement code, then write the interview guide.
 - Fetched and analyzed additional Nowcoder posts into `data/nowcoder_research_posts.jsonl` and `data/nowcoder_resume_posts.jsonl`.
 - Added a new section to `docs/04-notes/调研记录与优化规划.md`: `七、牛客求助帖/面经补充调研：简历缺陷、八股与项目深挖（2026-06-03 第三轮）`.
