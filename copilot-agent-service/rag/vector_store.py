@@ -1,55 +1,57 @@
 """
-Milvus 向量库封装。
+Milvus 向量库封装（含维度保护）。
 
-功能：
-  1. 建表（如不存在）
-  2. 插入文档（upsert）
-  3. 向量搜索 Top K（带 metadata 过滤）
-  4. 权限过滤：scope=public OR (scope=merchant_private AND merchant_id=X)
+Milvus Collection Schema（local_life_kb）：
+  chunk_id      VARCHAR(64)        — 分块主键
+  doc_id        VARCHAR(64)        — 文档 ID
+  content       VARCHAR(2048)      — 原始文本
+  embedding     FLOAT_VECTOR(dim)  — 向量（dim 来自 EMBEDDING_DIMENSION）
+  scope         VARCHAR(20)        — public / merchant_private
+  merchant_id   INT64              — 商家 ID（public 时为 0）
+  source        VARCHAR(50)        — 来源类型
+  title         VARCHAR(200)       — 文档标题
 
-Milvus Collection Schema（locallife_knowledge）：
-  doc_id      VARCHAR(64)   — 文档唯一 ID（主键）
-  chunk_id    VARCHAR(64)   — 分块 ID（一个文档多个分块）
-  content     VARCHAR(2048) — 原始文本内容
-  embedding   FLOAT_VECTOR(768) — 向量
-  scope       VARCHAR(20)   — 权限范围：public / merchant_private
-  merchant_id INT64         — 商家 ID（scope=public 时为 0）
-  source      VARCHAR(50)   — 来源：platform_rule / merchant_manual / faq / announcement
-  title       VARCHAR(200)  — 文档标题
-
-开发模式（Milvus 不可用时）：
-  使用内存 Mock 向量库，仅做关键词匹配（不做真实向量搜索）。
-  设置 MILVUS_URI="" 触发 Mock 模式。
+维度保护：
+  collection 创建时在 description 字段记录 embedding_model 和 embedding_dimension。
+  写入时检查当前配置维度与 collection 实际维度是否一致，不一致则拒绝并提示。
 """
+import os
+import json
+import datetime
 import structlog
 from typing import Any
 
+from rag.config import rag_config
+
 log = structlog.get_logger(__name__)
 
-# Milvus Collection 名称与 Schema 常量
-COLLECTION_NAME     = "locallife_knowledge"
-EMBEDDING_DIM       = 768
-INDEX_TYPE          = "IVF_FLAT"      # 生产推荐 HNSW（速度快），IVF_FLAT 更简单
-METRIC_TYPE         = "IP"            # Inner Product（与 normalize 配合 = cosine similarity）
-TOP_K_FETCH         = 20              # 先拉 20 条，再用 reranker 裁剪到 Top 5
+# Milvus 走 gRPC，会读取 ALL_PROXY/http_proxy 环境变量。
+# 把 Milvus 主机加入 no_proxy，避免 WSL 代理拦截内部 gRPC 连接。
+_milvus_host = rag_config.milvus_host
+for _key in ("no_proxy", "NO_PROXY"):
+    _existing = os.environ.get(_key, "")
+    _entries = {e.strip() for e in _existing.split(",") if e.strip()}
+    _entries.update({_milvus_host, "localhost", "127.0.0.1"})
+    os.environ[_key] = ",".join(sorted(_entries))
+
+INDEX_TYPE  = "IVF_FLAT"
+METRIC_TYPE = "IP"
+
+
+class DimensionMismatchError(Exception):
+    """向量维度与 Milvus collection 不匹配时抛出。"""
+    pass
 
 
 class MilvusVectorStore:
-    """
-    Milvus 向量库封装（异步友好的同步接口）。
-
-    Milvus Python SDK 目前是同步的，通过线程池转异步。
-    真正异步版本参考：pymilvus >= 2.5 的 AsyncMilvusClient（experimental）。
-    """
-
-    def __init__(self, uri: str, collection_name: str = COLLECTION_NAME):
+    def __init__(self, uri: str, collection_name: str):
         self.uri             = uri
         self.collection_name = collection_name
         self._client         = None
         self._available      = False
+        self._actual_dim: int | None = None
 
     def _get_client(self):
-        """懒加载 Milvus 连接（连接失败时降级为 Mock）。"""
         if self._client is not None:
             return self._client
         if not self.uri:
@@ -62,21 +64,50 @@ class MilvusVectorStore:
             self._ensure_collection()
             return self._client
         except Exception as e:
-            log.warning("milvus_unavailable", error=str(e), hint="Milvus 未启动，使用 Mock 模式")
+            log.warning("milvus_unavailable", error=str(e))
             return None
 
+    # ──────────────────────────────────────────
+    # 维度保护：核心逻辑
+    # ──────────────────────────────────────────
+
     def _ensure_collection(self):
-        """确保 Collection 存在，不存在则创建（含索引）。"""
-        from pymilvus import MilvusClient, DataType
-        client = self._client
+        """确保 collection 存在，不存在时创建，存在时验证维度一致性。"""
+        from pymilvus import DataType
+        client   = self._client
+        cfg_dim  = rag_config.embedding_dimension
+        cfg_model = rag_config.embedding_model_name
+
         if client.has_collection(self.collection_name):
+            # collection 已存在，读取实际维度并验证
+            actual_dim = self._get_collection_dim()
+            if actual_dim is not None and actual_dim != cfg_dim:
+                raise DimensionMismatchError(
+                    f"Milvus collection '{self.collection_name}' 的向量维度为 {actual_dim}，"
+                    f"但当前配置 EMBEDDING_DIMENSION={cfg_dim}（模型：{cfg_model}）。\n"
+                    f"解决方案：\n"
+                    f"  1. 新建 collection：修改 MILVUS_COLLECTION 为新名称（如 local_life_kb_{cfg_dim}）\n"
+                    f"  2. 或恢复原模型：将 EMBEDDING_MODEL_NAME 改回 {cfg_dim} 维模型\n"
+                    f"  3. 如需迁移：先删除旧 collection，再重新 ingest 所有文档"
+                )
+            self._actual_dim = actual_dim or cfg_dim
+            log.info("milvus_collection_verified", collection=self.collection_name, dim=self._actual_dim)
             return
 
-        schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
+        # 新建 collection
+        schema = client.create_schema(
+            auto_id=False,
+            enable_dynamic_field=False,
+            description=json.dumps({
+                "embedding_model": cfg_model,
+                "embedding_dimension": cfg_dim,
+                "created_at": datetime.datetime.utcnow().isoformat(),
+            }),
+        )
         schema.add_field("chunk_id",    DataType.VARCHAR, max_length=64,   is_primary=True)
         schema.add_field("doc_id",      DataType.VARCHAR, max_length=64)
         schema.add_field("content",     DataType.VARCHAR, max_length=2048)
-        schema.add_field("embedding",   DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM)
+        schema.add_field("embedding",   DataType.FLOAT_VECTOR, dim=cfg_dim)
         schema.add_field("scope",       DataType.VARCHAR, max_length=20)
         schema.add_field("merchant_id", DataType.INT64)
         schema.add_field("source",      DataType.VARCHAR, max_length=50)
@@ -84,10 +115,10 @@ class MilvusVectorStore:
 
         index_params = client.prepare_index_params()
         index_params.add_index(
-            field_name="embedding",
-            index_type=INDEX_TYPE,
-            metric_type=METRIC_TYPE,
-            params={"nlist": 128},
+            field_name  ="embedding",
+            index_type  =INDEX_TYPE,
+            metric_type =METRIC_TYPE,
+            params      ={"nlist": 128},
         )
 
         client.create_collection(
@@ -95,90 +126,95 @@ class MilvusVectorStore:
             schema=schema,
             index_params=index_params,
         )
-        log.info("milvus_collection_created", collection=self.collection_name)
+        self._actual_dim = cfg_dim
+        log.info("milvus_collection_created",
+                 collection=self.collection_name, dim=cfg_dim, model=cfg_model)
 
-    # =========================================================
-    # 写入：文档向量化入库
-    # =========================================================
+    def _get_collection_dim(self) -> int | None:
+        """从 collection schema 读取实际向量维度。"""
+        try:
+            schema = self._client.describe_collection(self.collection_name)
+            for field in schema.get("fields", []):
+                if field.get("name") == "embedding":
+                    params = field.get("params", {})
+                    return params.get("dim")
+        except Exception as e:
+            log.warning("milvus_get_dim_failed", error=str(e))
+        return None
+
+    # ──────────────────────────────────────────
+    # 写入
+    # ──────────────────────────────────────────
 
     def upsert(self, documents: list[dict]) -> int:
-        """
-        批量插入/更新文档向量。
-
-        :param documents: 每个 dict 包含：
-          chunk_id, doc_id, content, embedding, scope, merchant_id, source, title
-        :return: 成功写入条数
-        """
+        """批量插入/更新文档向量，写入前验证维度一致性。"""
         client = self._get_client()
         if client is None:
             log.warning("milvus_upsert_skipped", reason="Milvus 不可用", count=len(documents))
             return 0
 
+        # 验证向量维度
+        if documents:
+            vec = documents[0].get("embedding", [])
+            actual_vec_dim = len(vec)
+            cfg_dim = rag_config.embedding_dimension
+            if actual_vec_dim != cfg_dim:
+                raise DimensionMismatchError(
+                    f"写入向量维度 {actual_vec_dim} ≠ 配置 EMBEDDING_DIMENSION={cfg_dim}。"
+                    f"请检查 embedding-service 是否已切换模型。"
+                )
+
         try:
             client.upsert(collection_name=self.collection_name, data=documents)
             log.info("milvus_upserted", count=len(documents))
             return len(documents)
+        except DimensionMismatchError:
+            raise
         except Exception as e:
             log.error("milvus_upsert_failed", error=str(e))
             return 0
 
-    # =========================================================
-    # 读取：权限感知向量搜索
-    # =========================================================
+    # ──────────────────────────────────────────
+    # 读取
+    # ──────────────────────────────────────────
 
     def search(
         self,
         query_vector: list[float],
         merchant_id: int | None,
-        top_k: int = TOP_K_FETCH,
+        top_k: int | None = None,
     ) -> list[dict]:
-        """
-        向量搜索，带权限过滤。
-
-        权限规则（来自设计文档 7.3）：
-          scope=public                         → 所有人可见
-          scope=merchant_private AND merchant_id=X → 只有商家 X 可见
-          cs/admin 角色：merchant_id=None 时只搜 public 文档
-
-        Milvus filter 表达式：
-          "scope == 'public' or (scope == 'merchant_private' and merchant_id == 20001)"
-
-        :param query_vector:  查询向量（已归一化）
-        :param merchant_id:   当前商家 ID（merchant 角色必填，cs/admin 可为 None）
-        :param top_k:         返回 top K 结果（默认 20，再由 reranker 裁剪）
-        :return: 搜索结果列表
-        """
+        """权限感知向量搜索。"""
+        effective_top_k = top_k if top_k is not None else rag_config.top_k_recall
         client = self._get_client()
         if client is None:
             return self._mock_search()
 
-        # 构建权限过滤表达式
         if merchant_id is not None:
             filter_expr = (
                 f"scope == 'public' or "
                 f"(scope == 'merchant_private' and merchant_id == {merchant_id})"
             )
         else:
-            # cs/admin 或 merchant_id 为空：只搜公共文档
             filter_expr = "scope == 'public'"
 
         try:
             results = client.search(
                 collection_name=self.collection_name,
                 data=[query_vector],
-                limit=top_k,
+                limit=effective_top_k,
                 filter=filter_expr,
                 output_fields=["chunk_id", "doc_id", "content", "scope", "merchant_id", "source", "title"],
                 search_params={"metric_type": METRIC_TYPE, "params": {"nprobe": 16}},
             )
             return [
                 {
-                    "chunk_id":    hit["id"],
-                    "doc_id":      hit["entity"].get("doc_id", ""),
-                    "content":     hit["entity"].get("content", ""),
-                    "title":       hit["entity"].get("title", ""),
-                    "source":      hit["entity"].get("source", ""),
-                    "score":       hit["distance"],
+                    "chunk_id":   hit["id"],
+                    "doc_id":     hit["entity"].get("doc_id", ""),
+                    "content":    hit["entity"].get("content", ""),
+                    "title":      hit["entity"].get("title", ""),
+                    "source":     hit["entity"].get("source", ""),
+                    "score":      hit["distance"],
                 }
                 for hit in results[0]
             ]
@@ -187,14 +223,11 @@ class MilvusVectorStore:
             return []
 
     def _mock_search(self) -> list[dict]:
-        """Milvus 不可用时的 Mock 结果（开发调试用）。"""
-        return [
-            {
-                "chunk_id": "mock-001",
-                "doc_id":   "mock-doc-001",
-                "content":  "[Mock] Milvus 未启动，返回 Mock 搜索结果。请检查 MILVUS_URI 配置。",
-                "title":    "Mock 文档",
-                "source":   "mock",
-                "score":    0.5,
-            }
-        ]
+        return [{
+            "chunk_id": "mock-001",
+            "doc_id":   "mock-doc-001",
+            "content":  "[Mock] Milvus 未启动，返回 Mock 搜索结果。请检查 MILVUS_URI 配置。",
+            "title":    "Mock 文档",
+            "source":   "mock",
+            "score":    0.5,
+        }]

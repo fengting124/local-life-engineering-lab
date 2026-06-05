@@ -157,7 +157,8 @@ class McpClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            # trust_env=False：MCP Server 是内部服务，不走 WSL 代理
+            async with httpx.AsyncClient(timeout=self._timeout, trust_env=False) as client:
                 response = await client.post(
                     f"{self._base_url}/mcp",
                     json=payload,

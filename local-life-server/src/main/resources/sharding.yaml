@@ -49,12 +49,11 @@ dataSources:
   ds0:
     dataSourceClassName: com.zaxxer.hikari.HikariDataSource
     driverClassName: com.mysql.cj.jdbc.Driver
-    # ShardingSphere 5.x 支持 ${VARIABLE:-default} 系统属性替换。
-    # 开发环境：使用默认值（localhost:3306/root/123456）
-    # Docker 环境：通过 JAVA_OPTS 传入 -DMYSQL_HOST=mysql 等参数覆盖
-    jdbcUrl: jdbc:mysql://${MYSQL_HOST:-localhost}:${MYSQL_PORT:-3306}/local_life?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=UTF-8&allowPublicKeyRetrieval=true&useSSL=false
-    username: ${MYSQL_USER:-root}
-    password: ${MYSQL_PASSWORD:-123456}
+    # 本地开发硬编码（ShardingSphere 5.5.0 对 ${VAR:-default} 语法存在兼容性问题）
+    # Docker 运行时使用 sharding-docker.yaml（见 docker-compose.dev.yml）
+    jdbcUrl: jdbc:mysql://localhost:3306/local_life?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=UTF-8&allowPublicKeyRetrieval=true&useSSL=false
+    username: root
+    password: 123456
     # HikariCP 连接池参数（与 application.yml 中原配置保持一致）
     connectionTimeout: 3000
     maximumPoolSize: 16
@@ -86,12 +85,15 @@ rules:
     # 分片算法定义
     shardingAlgorithms:
       orderModSharding:
-        # MOD 取模算法：user_id % sharding-count 决定路由到哪个物理表
+        # INLINE 行表达式算法：user_id % 4 决定路由到哪个物理表
         # 例：user_id=10001 → 10001 % 4 = 1 → order_info_1
         # 例：user_id=10002 → 10002 % 4 = 2 → order_info_2
-        type: MOD
+        # 注意：必须用 INLINE 而非 MOD。MOD/HASH_MOD 属于 auto-sharding 算法，
+        #       只能配合 autoTables 使用，不能用于 standard 手动表策略（actualDataNodes）。
+        #       否则报错：tables sharding configuration can not use auto sharding algorithm
+        type: INLINE
         props:
-          sharding-count: '4'
+          algorithm-expression: order_info_${user_id % 4}
 
     # 默认分片键（当 SQL 中未包含分片键时生效的广播策略）
     # 不设置默认分片策略：非分片键查询（如按 order_no）会广播到所有分片，

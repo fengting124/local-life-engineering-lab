@@ -25,32 +25,21 @@ class Settings(BaseSettings):
 
     # ===== LLM Provider 配置 =====
     # 支持：anthropic | deepseek | openai | qwen | local
-    llm_provider: str = "anthropic"
+    # 日常开发推荐 deepseek（¥2/百万 token），面试演示可切 anthropic
+    llm_provider: str = "deepseek"
 
-    # 统一的 API Key 字段（不同 provider 填不同 key）
-    # anthropic → 填 Claude API Key
-    # deepseek  → 填 DeepSeek API Key
-    # openai    → 填 OpenAI API Key
-    # qwen      → 填阿里云 DashScope API Key
-    # local     → 填任意字符串（Ollama 不需要 key）
-    llm_api_key: str = ""
+    # ── DeepSeek ──
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-v4-flash"
 
-    # 兼容旧配置（优先读 llm_api_key，没有则读 anthropic_api_key）
+    # ── Anthropic Claude ──
     anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-6"
 
-    # 模型名称（不同 provider 格式不同，见下方注释）
-    # anthropic:  claude-sonnet-4-6 | claude-opus-4-7 | claude-haiku-4-5-20251001
-    # deepseek:   deepseek-chat | deepseek-reasoner
-    # openai:     gpt-4o | gpt-4o-mini | o1
-    # qwen:       qwen-max | qwen-turbo | qwen-plus
-    # local:      qwen2.5:7b | llama3.2:3b（Ollama 里 pull 的模型名）
-    llm_model: str = "claude-sonnet-4-6"
-
-    # API Base URL（可选，留空则用各 provider 默认地址）
-    # deepseek: https://api.deepseek.com/v1
-    # qwen:     https://dashscope.aliyuncs.com/compatible-mode/v1
-    # local:    http://localhost:11434/v1（Ollama）
-    # openai:   https://api.openai.com/v1（默认，可不填）
+    # ── 通用 OpenAI 兼容接口（qwen / local / openai）──
+    llm_api_key: str = ""
+    llm_model: str = ""
     llm_base_url: str = ""
 
     # 最大输出 token（单次 LLM 调用）
@@ -83,6 +72,8 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        # 忽略 .env 中未在此类声明的字段（RAG 配置由 rag/config.py 单独读取）
+        extra = "ignore"
 
 
 # 全局单例

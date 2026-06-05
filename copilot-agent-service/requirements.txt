@@ -18,6 +18,9 @@ anthropic==0.40.0
 # ===== RAG 完整流水线 =====
 pymilvus==2.4.9
 langchain-milvus==0.1.6
+# marshmallow 必须 <4：4.x 移除了 __version_info__，与 pymilvus 2.4.9 的 environs 依赖不兼容
+# 否则报错 "module 'marshmallow' has no attribute '__version_info__'"，Milvus 整个不可用
+marshmallow<4
 rank-bm25==0.2.2
 numpy>=1.26.0
 

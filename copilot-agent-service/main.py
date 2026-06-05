@@ -107,7 +107,8 @@ async def lifespan(app: FastAPI):
     # 验证 MCP Server 是否可达（不阻塞启动）
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        # trust_env=False：内部服务调用不走 WSL 代理
+        async with httpx.AsyncClient(timeout=3.0, trust_env=False) as client:
             resp = await client.get(f"{settings.mcp_server_url}/actuator/health")
             if resp.status_code == 200:
                 log.info("mcp_server_healthy", url=settings.mcp_server_url)

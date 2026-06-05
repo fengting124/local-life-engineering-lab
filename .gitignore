@@ -26,7 +26,9 @@ __pycache__/
 
 # Env
 .env
-.env.local
+*.env
+.env.*
+!.env.example
 
 # Local browser automation and scraper outputs
 .browser_profiles/
@@ -34,8 +36,28 @@ data/nowcoder_*.jsonl
 data/nowcoder_*urls*.txt
 data/search_*.html
 
-# Docker
+# Docker volumes / data
 docker-data/
+milvus_data/
+mysql_data/
+redis_data/
+
+# Model cache
+models/
+.model-cache/
+.huggingface/
+.cache/huggingface/
+
+# Logs
+logs/
+*.log
+
+# Python venv
+.venv/
+venv/
+
+# Build output
+build/
 
 # Obsidian 编辑器配置（本地个人设置，不提交仓库）
 docs/.obsidian/

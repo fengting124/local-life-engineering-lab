@@ -57,7 +57,7 @@ services:
       - "${SERVER_PORT:-8080}:8080"
     environment:
       # 使用 Docker 网络内部地址访问 MySQL/Redis
-      SPRING_DATASOURCE_URL: "jdbc:shardingsphere:classpath:sharding.yaml"
+      SPRING_DATASOURCE_URL: "jdbc:shardingsphere:classpath:sharding-docker.yaml"
       # ShardingSphere 内的 jdbcUrl 需要指向 Docker 网络中的 MySQL
       # 通过 JAVA_OPTS 传入，覆盖 sharding.yaml 的默认 localhost
       # ShardingSphere 读取 MYSQL_HOST 等系统属性（见 sharding.yaml 的 ${MYSQL_HOST:-localhost}）
@@ -184,7 +184,11 @@ services:
       - local-life-net
 
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.3
+    # 自定义镜像：内置 IK 中文分词插件（见 infra/elasticsearch/Dockerfile）
+    build:
+      context: ./elasticsearch
+      dockerfile: Dockerfile
+    image: local-life-es:8.17.3-ik
     container_name: local-life-es
     profiles: ["search"]
     environment:
@@ -202,6 +206,8 @@ services:
     image: apache/rocketmq:5.3.2
     container_name: local-life-rmq-namesrv
     profiles: ["mq"]
+    environment:
+      JAVA_OPT_EXT: "-server -Xms256m -Xmx256m -Xmn128m"
     command: sh mqnamesrv
     ports:
       - "${ROCKETMQ_NAMESRV_PORT:-9876}:9876"
@@ -219,6 +225,8 @@ services:
       - "10909:10909"
     environment:
       NAMESRV_ADDR: rocketmq-namesrv:9876
+      # WSL 内存有限（7.4GB），限制 broker JVM 堆为 512MB，避免 OOM Killed (exit 137)
+      JAVA_OPT_EXT: "-server -Xms512m -Xmx512m -Xmn256m"
     command: sh mqbroker -n rocketmq-namesrv:9876 --enable-proxy
     networks:
       - local-life-net
@@ -340,6 +348,93 @@ services:
     networks:
       - local-life-net
 
+  # =========================================================
+  # 本地模型服务（RAG 必需）
+  # 启动方式：docker compose --profile rag up -d embedding-service reranker-service
+  # 模型文件共享至 model-cache volume（首次启动时自动下载，约 2GB）
+  # =========================================================
+
+  embedding-service:
+    build:
+      context: ../copilot-agent-service/model_services/embedding_service
+      dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        ALL_PROXY: ${ALL_PROXY:-}
+    image: local-life-embedding:latest
+    container_name: local-life-embedding
+    user: root
+    profiles: ["rag"]
+    ports:
+      - "${EMBEDDING_PORT:-8100}:8100"
+    environment:
+      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-intfloat/multilingual-e5-base}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-768}
+      EMBEDDING_DEVICE: ${EMBEDDING_DEVICE:-auto}
+      MODEL_CACHE_DIR: /models
+      MAX_BATCH_SIZE: ${MAX_BATCH_SIZE:-64}
+      MAX_TEXT_LENGTH: ${MAX_TEXT_LENGTH:-2048}
+      EMBEDDING_NORMALIZE: ${EMBEDDING_NORMALIZE:-true}
+      HF_ENDPOINT: https://huggingface.co
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+    volumes:
+      - model-cache:/models
+    networks:
+      - local-life-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8100/health', timeout=5)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
+  reranker-service:
+    build:
+      context: ../copilot-agent-service/model_services/reranker_service
+      dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        ALL_PROXY: ${ALL_PROXY:-}
+    image: local-life-reranker:latest
+    container_name: local-life-reranker
+    user: root
+    profiles: ["rag"]
+    ports:
+      - "${RERANKER_PORT:-8101}:8101"
+    environment:
+      RERANKER_MODEL_NAME: ${RERANKER_MODEL_NAME:-BAAI/bge-reranker-base}
+      RERANKER_DEVICE: ${RERANKER_DEVICE:-auto}
+      MODEL_CACHE_DIR: /models
+      MAX_DOCUMENTS: ${MAX_DOCUMENTS:-50}
+      MAX_QUERY_LENGTH: ${MAX_QUERY_LENGTH:-512}
+      MAX_DOCUMENT_LENGTH: ${MAX_DOCUMENT_LENGTH:-2048}
+      HF_ENDPOINT: https://huggingface.co
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+    volumes:
+      - model-cache:/models
+    networks:
+      - local-life-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8101/health', timeout=5)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
 volumes:
   mysql_data:
   redis_data:
@@ -349,6 +444,7 @@ volumes:
   etcd_data:
   minio_data:
   milvus_data:
+  model-cache:  # 共享模型缓存：embedding-service 和 reranker-service 复用同一个 /models 目录
 
 networks:
   local-life-net:

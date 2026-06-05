@@ -23,9 +23,10 @@ import asyncio
 import structlog
 from functools import lru_cache
 
-from rag.embedding import embed_query
+from rag.embedding_client import embed_query
 from rag.vector_store import MilvusVectorStore
-from rag.reranker import rerank, RELEVANCE_THRESHOLD
+from rag.reranker_client import rerank, RELEVANCE_THRESHOLD
+from rag.config import rag_config
 from config.settings import settings
 
 log = structlog.get_logger(__name__)
@@ -37,7 +38,8 @@ MAX_CHUNK_CHARS = 800
 @lru_cache(maxsize=1)
 def _get_vector_store() -> MilvusVectorStore:
     """获取全局向量库单例（懒加载）。"""
-    return MilvusVectorStore(uri=settings.milvus_uri, collection_name=settings.milvus_collection)
+    milvus_uri = f"http://{rag_config.milvus_host}:{rag_config.milvus_port}"
+    return MilvusVectorStore(uri=milvus_uri, collection_name=rag_config.milvus_collection)
 
 
 class RagResult:
@@ -225,11 +227,10 @@ async def ingest_document(
     if not chunks:
         return 0
 
-    # 批量向量化（passage 前缀）
+    # 批量向量化（embedding-service 内部加 passage 前缀，走 HTTP，不本地加载模型）
     loop  = asyncio.get_event_loop()
-    from rag.embedding import embed_texts
-    prefixed_chunks  = [f"passage: {c}" for c in chunks]
-    vectors = await loop.run_in_executor(None, embed_texts, prefixed_chunks)
+    from rag.embedding_client import embed_documents_batch
+    vectors = await loop.run_in_executor(None, embed_documents_batch, chunks)
 
     # 构建 Milvus 数据行
     rows = [
