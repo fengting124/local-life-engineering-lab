@@ -98,9 +98,11 @@ public class PostDocument {
 
     /**
      * 点赞数（Integer），用于 function_score 排序加权。
-     * 搜索结果排序规则：score = 文本相关性得分 × log(1 + likeCount)
+     * 搜索结果排序规则：score = 文本相关性得分 + log10(1 + likeCount)（详见 PostSearchService.boostByPopularity）
      * → 相关性相同时，点赞多的排前面
-     * → 相关性高但点赞少时，仍然能排前面
+     * → 相关性高但点赞少（含零赞，笔记的常态）时，仍然按相关性正常排序——
+     *   用「加法」而不是「乘法」融合两个信号，就是为了避免 likeCount=0 时
+     *   log(1+0)=0 把相关性直接乘成 0，让大多数笔记的排序失去意义
      *
      * <p>此字段是「快照值」，不要求绝对实时，ES 同步时会更新。
      */
