@@ -59,6 +59,21 @@ def route_after_llm(state: AgentState) -> str:
     if state.get("final_answer"):
         return "final_node"
 
+    # ---- Auto-Compact 触发检查 ----
+    # 思路对照 Claude Code 的 autoCompact：不是等 token_count 顶满预算才终止会话，
+    # 而是提前 compact_buffer_tokens 触发摘要压缩，把早期消息打薄成一段摘要继续跑。
+    # 三个限制条件缺一不可：
+    #   1. 必须接近预算（留出缓冲，给摘要请求本身预留空间）
+    #   2. 熔断器未触发（避免「压缩了也没用」时反复浪费 token）
+    #   3. 消息数足够多（太短的对话没必要也没法安全切分）
+    compact_threshold = settings.session_token_budget - settings.compact_buffer_tokens
+    if (
+        state["token_count"] >= compact_threshold
+        and state.get("compact_failures", 0) < settings.compact_max_consecutive_failures
+        and len(state.get("messages", [])) > settings.compact_keep_recent_messages + 1
+    ):
+        return "compact_node"
+
     # ---- Reflection 触发检查 ----
     # 条件：每 N 步触发一次 OR 上次工具失败
     should_reflect = (
@@ -93,6 +108,7 @@ def build_graph() -> StateGraph:
     builder.add_node("llm_node",        nodes.llm_node)
     builder.add_node("tool_node",       nodes.tool_node)
     builder.add_node("reflection_node", nodes.reflection_node)
+    builder.add_node("compact_node",    nodes.compact_node)
     builder.add_node("hitl_node",       nodes.hitl_node)
     builder.add_node("final_node",      nodes.final_node)
 
@@ -106,6 +122,7 @@ def build_graph() -> StateGraph:
         {
             "tool_node":       "tool_node",
             "reflection_node": "reflection_node",
+            "compact_node":    "compact_node",
             "hitl_node":       "hitl_node",
             "final_node":      "final_node",
         },
@@ -116,6 +133,10 @@ def build_graph() -> StateGraph:
 
     # Reflection 完成后回到 LLM（携带反思结果）
     builder.add_edge("reflection_node", "llm_node")
+
+    # Compact 完成（或跳过/失败）后回到 LLM 继续推理；
+    # 早期消息已被摘要替换，llm_node 会把摘要拼进 system prompt 继续工作
+    builder.add_edge("compact_node",    "llm_node")
 
     # HITL：interrupt 挂起，此边到 END（等待外部恢复）
     builder.add_edge("hitl_node",       END)

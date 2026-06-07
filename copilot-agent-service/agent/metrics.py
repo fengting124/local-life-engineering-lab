@@ -93,6 +93,16 @@ rag_latency_seconds = Histogram(
 )
 
 # =========================================================
+# Auto-Compact 指标
+# =========================================================
+
+compact_events_total = Counter(
+    "copilot_compact_events_total",
+    "上下文自动压缩事件计数（按结果分组）",
+    ["result"],   # result: success / skipped_no_split / failed / circuit_broken
+)
+
+# =========================================================
 # HITL 指标
 # =========================================================
 
@@ -136,6 +146,11 @@ def record_session_end(status: str, role: str, step_count: int):
     """会话结束时统一调用此函数。"""
     agent_sessions_total.labels(status=status, role=role).inc()
     agent_steps_histogram.observe(step_count)
+
+
+def record_compact_event(result: str):
+    """上下文自动压缩尝试结束时统一调用（无论成功/跳过/失败/熔断）。"""
+    compact_events_total.labels(result=result).inc()
 
 
 def record_tool_call(tool_name: str, result: str, duration_seconds: float):

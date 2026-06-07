@@ -64,6 +64,16 @@ class Settings(BaseSettings):
     session_token_budget: int = 50_000
     reflection_interval: int = 5
 
+    # ===== Auto-Compact（上下文自动压缩，参考 Claude Code 的 autoCompact 设计）=====
+    # 触发缓冲带：token_count 达到「预算 - 缓冲」时就提前压缩，而不是等顶满才动手，
+    # 给生成摘要本身预留空间，避免摘要请求自己撞上下文墙。
+    compact_buffer_tokens: int = 8_000
+    # 压缩时强制保留最近 N 条原始消息不摘要，保证近期上下文完整可用、可追溯。
+    compact_keep_recent_messages: int = 6
+    # 连续压缩失败（含「无安全可压缩内容」）达到此阈值后熔断，
+    # 不再尝试压缩，直接走 token_budget 硬终止，防止死循环浪费 token。
+    compact_max_consecutive_failures: int = 2
+
     # ===== 服务 =====
     app_host: str = "0.0.0.0"
     app_port: int = 8000

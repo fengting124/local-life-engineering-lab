@@ -268,6 +268,8 @@ async def chat(
         "needs_reflection": False,
         "last_tool_failed": False,
         "last_tool_error":  None,
+        "conversation_summary": None,
+        "compact_failures": 0,
         "pending_hitl":   False,
         "pending_action": None,
         "final_answer":   None,

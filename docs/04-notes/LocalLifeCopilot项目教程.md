@@ -359,6 +359,60 @@ def route(self, all_tools):
 
 **效果**：平均传给 LLM 的工具从 10 个减到 4-6 个，节省约 30% token。
 
+### 6.3 工具并发安全分级——不是所有工具都能并发跑
+
+**问题**：前面说"独立工具用 `asyncio.gather` 并发执行，延迟降到 1/N"，
+但如果 LLM 一轮里同时决定调用 `query_order`（只读查询）和 `execute_refund`
+（资金类高风险写操作）呢？把两者不分青红皂白地丢进同一个 `gather`，会带来两个隐患：
+1. **竞态**：退款是否应该执行依赖订单的最新状态，和查询并发跑可能读到脏数据；
+2. **失控**：高风险写操作混在普通查询的并发批里，出错时不好单独追溯、隔离重试，
+   也不利于审计——并行执行的初衷是"压缩独立查询的延迟"，不该把它用到有副作用的动作上。
+
+**设计参考**：Claude Code 给每个工具显式声明 `isConcurrencySafe()` /
+`isDestructive()`（且默认值是"不安全/有破坏性"，即 fail-closed），
+再通过 `partitionToolCalls()` 把一轮工具调用切成
+"连续安全工具合并成并发批" + "不安全/高风险工具单独隔离成串行批" 两类，
+绝不让破坏性操作和别的调用抢跑。
+
+**落地到 Copilot**：`tool_router.py` 新增一张并发安全名单 `TOOL_CONCURRENCY_SAFE`
+（只收录只读查询类工具）和判定函数 `is_tool_concurrency_safe()`：
+
+```python
+# tool_router.py
+TOOL_CONCURRENCY_SAFE: set[str] = {
+    "query_order", "query_payment", "query_coupon_issue_log",
+    "query_mq_dead_letter", "shop_metrics_query",
+    "coupon_policy_lookup", "knowledge_search",
+}
+
+def is_tool_concurrency_safe(tool_name: str) -> bool:
+    return tool_name in TOOL_CONCURRENCY_SAFE
+```
+
+> **fail-closed 原则**：`execute_refund` / `issue_compensation_coupon` /
+> `campaign_draft_generate`（连同未来任何新增的工具）都不在这张名单里——
+> 没有显式登记 = 一律按"不安全"处理，自动退化为单独串行执行。
+> 宁可多等一轮，也不能让没声明过的高风险动作意外混进并发批。
+
+`tool_node` 执行前先用 `_partition_tool_calls()` 分批，例如：
+
+```
+[query_order, query_order, execute_refund, query_payment]
+        ↓ 分批
+[并发批: query_order, query_order] → [串行批: execute_refund] → [并发批: query_payment]
+```
+
+安全批仍然走 `asyncio.gather` 并发执行吃满 1/N 的延迟收益；不安全批单独 `await`，
+与前后批次彻底隔离、不与任何调用并发竞争。最终按原始下标把结果回填进
+`results` 数组，保证 `ToolMessage` 顺序与 LLM 发出的 `tool_calls` 一一对应。
+
+**面试说法**：
+> 「我们没有不分青红皂白地把一轮里的所有工具调用都丢进 `asyncio.gather`。
+> 工具会先按并发安全性分级——只读查询类合并成并发批，吃满 1/N 的延迟收益；
+> `execute_refund` 这类资金类高风险写操作会被单独隔离成串行批，
+> 避免它和其他调用产生竞态，也方便单独追溯和审计。这张分级表是 fail-closed 的，
+> 没有显式登记的工具一律当作不安全处理，新增工具不会被意外并发执行。」
+
 ---
 
 ## 第 7 章：HITL——高风险动作必须人类确认

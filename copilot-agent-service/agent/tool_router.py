@@ -41,6 +41,37 @@ TOOL_ROLE_MAP: dict[str, list[str]] = {
     "knowledge_search":          ["merchant", "cs", "admin"],
 }
 
+# =========================================================
+# 工具并发安全分级
+# =========================================================
+#
+# 参考 Claude Code 的 Tool 接口设计：每个工具显式声明 isConcurrencySafe /
+# isDestructive，框架按声明对一轮工具调用分批（见 partitionToolCalls）——
+# 连续的「并发安全」工具合并为并发批，不安全/高风险工具单独隔离为串行批，
+# 避免诸如 query_order 与 execute_refund 在同一轮里抢跑的竞态场景。
+#
+# fail-closed 原则：只有显式登记在此集合中的工具才会被并发执行；
+# 未登记的工具（含未来新增工具）一律视为「不安全」，自动退化为单独串行执行——
+# 宁可错杀（多一次串行等待），不可放过（让高风险动作在并发中失控）。
+TOOL_CONCURRENCY_SAFE: set[str] = {
+    # 只读查询类：不修改任何业务状态，互不干扰，可放心并发
+    "query_order",
+    "query_payment",
+    "query_coupon_issue_log",
+    "query_mq_dead_letter",
+    "shop_metrics_query",
+    "coupon_policy_lookup",
+    "knowledge_search",
+}
+# 不在上面集合中的工具（如 execute_refund / issue_compensation_coupon —— 资金类
+# 高风险写操作；campaign_draft_generate —— 有副作用的生成型操作）一律按不安全处理。
+
+
+def is_tool_concurrency_safe(tool_name: str) -> bool:
+    """判断工具是否可与其他工具并发执行（fail-closed：未登记 = 不安全）。"""
+    return tool_name in TOOL_CONCURRENCY_SAFE
+
+
 # 工具任务分组（按使用场景分类）
 TOOL_TASK_MAP: dict[str, list[str]] = {
     "diagnosis": [    # 订单异常排查场景
