@@ -68,6 +68,27 @@ rocketmq:
     # 消费者组，同一业务的 Consumer 用同一 Group（实现负载均衡和集群消费）
     group: local-life-consumer-group
 
+# ===== Canal 配置（binlog 订阅，驱动门店缓存失效）=====
+# 详见 ShopService 类注释「缓存一致性：从延迟双删到 Canal+binlog」
+# 与 ShopCacheInvalidationListener 的实现。
+canal:
+  # 总开关：Canal Server 是需要独立部署的中间件（依赖 MySQL 开启 binlog），
+  # 不是开箱即用的基础设施。本地开发默认关闭——此时 ShopCacheInvalidationListener
+  # 不会启动后台订阅线程，缓存一致性完全依赖「写 DB 前同步删缓存 + 30min TTL」，
+  # 这也是这套架构"基础设施可以分阶段上线、关闭时不影响业务正确性"的体现。
+  enabled: false
+  # Canal Server 地址，对应 docker-compose canal-server 服务的 11111 端口
+  server-host: localhost
+  server-port: 11111
+  # Canal instance 名称，对应 Canal Server 端 conf/{destination}/instance.properties
+  destination: local_life
+  username: ""
+  password: ""
+  # 订阅过滤表达式：库名\.表名，只订阅 shop 表，减少无关 binlog 事件的解析开销
+  subscribe-filter: local_life\.shop
+  # 单批最多拉取的 binlog 事件数
+  batch-size: 100
+
 # ===== MyBatis-Plus 配置 =====
 mybatis-plus:
   # Mapper XML 文件位置，* 通配符匹配所有 XML

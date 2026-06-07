@@ -157,6 +157,14 @@ services:
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
+      # 开启 binlog（ROW 格式），是 Canal 订阅变更事件的前提——
+      # Canal Server 把自己伪装成 MySQL 的"从库"，通过 dump 协议拉取 binlog 并解析；
+      # ROW 格式记录每一行变更前后的完整数据（而不是 STATEMENT 格式记录 SQL 语句），
+      # Canal 才能精确提取出"哪一行的哪个字段变成了什么值"。
+      # server-id 是从库在主从复制中的唯一标识，必须显式指定且与潜在的其他从库不冲突。
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --server-id=1
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -228,6 +236,44 @@ services:
       # WSL 内存有限（7.4GB），限制 broker JVM 堆为 512MB，避免 OOM Killed (exit 137)
       JAVA_OPT_EXT: "-server -Xms512m -Xmx512m -Xmn256m"
     command: sh mqbroker -n rocketmq-namesrv:9876 --enable-proxy
+    networks:
+      - local-life-net
+
+  # =========================================================
+  # Canal Server：订阅 MySQL binlog，驱动门店缓存失效
+  # 启动方式：docker compose --profile canal up -d
+  # 用途详见 ShopService 类注释「缓存一致性：从延迟双删到 Canal+binlog」
+  # 与 ShopCacheInvalidationListener（应用内的瘦客户端消费者）。
+  #
+  # 工作原理：Canal Server 把自己伪装成 MySQL 的"从库"，通过 dump 协议
+  # 拉取并解析 binlog（前提：mysql 服务已开启 --log-bin --binlog-format=ROW），
+  # 再通过 TCP 协议把解析好的行级变更事件推送给下游的瘦客户端
+  # （应用内的 ShopCacheInvalidationListener，通过 canal.client SDK 连接）。
+  #
+  # 默认关闭（profile=canal，不在 app/dev 默认启动范围内）：
+  # 这是一个需要独立运维的中间件，本地开发不强制要求；
+  # ShopCacheInvalidationListener 在 canal.enabled=false 时也不会报错——
+  # 此时缓存一致性退化为「写 DB 前同步删缓存 + 30min TTL 兜底」，业务仍然正确。
+  # =========================================================
+  canal-server:
+    image: canal/canal-server:v1.1.8
+    container_name: local-life-canal-server
+    profiles: ["canal"]
+    depends_on:
+      - mysql
+    environment:
+      # canal.instance.master.address：要订阅的 MySQL 地址（同一 compose 网络内用服务名访问）
+      canal.instance.master.address: mysql:3306
+      # 必须与 MySQL 账号匹配——该账号需要 REPLICATION SLAVE / REPLICATION CLIENT 权限
+      # （开发环境直接复用 root，生产环境应该建专用的最小权限 dump 账号）
+      canal.instance.dbUsername: root
+      canal.instance.dbPassword: ${MYSQL_ROOT_PASSWORD:-123456}
+      # canal instance 名称，需要和 application.yml 里的 canal.destination 一致
+      canal.destination: local_life
+      # 只订阅 shop 表，减少无关 binlog 事件的解析与转发开销
+      canal.instance.filter.regex: local_life\\.shop
+    ports:
+      - "${CANAL_PORT:-11111}:11111"
     networks:
       - local-life-net
 

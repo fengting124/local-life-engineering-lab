@@ -34,21 +34,56 @@ import java.util.stream.Collectors;
  * <p>不存在的 shopId（如恶意爬虫遍历 ID）会被布隆过滤器拦截，不查 DB。
  * 误判率 1%：100 个不存在的 ID 中约 1 个会通过，后续缓存空值兜底。
  *
- * <h3>延迟双删（Cache Aside + Delayed Double Delete）</h3>
- * <p>写操作执行「先删缓存 → 写 DB → 延迟 500ms 再删缓存」三步：
+ * <h3>缓存一致性：从延迟双删到 Canal+binlog（已完成升级）</h3>
+ * <p>早期方案是「延迟双删」（Cache Aside + Delayed Double Delete）：
+ * 写操作执行「先删缓存 → 写 DB → 延迟 500ms 再删缓存」，第二次删除用一个
+ * "猜测的" 500ms 延迟去对冲"写 DB 期间读线程把旧值回填缓存"的竞态窗口。
+ * 这个方案能工作，但有两个不优雅的地方：
  * <ul>
- *   <li>第一次删：写 DB 前清理可能的旧缓存</li>
- *   <li>写 DB：持久化数据</li>
- *   <li>500ms 后再删：防止「写 DB 期间有读线程把旧值回填缓存」的竞态窗口</li>
+ *   <li>500ms 是拍脑袋的经验值（"主从同步延迟通常 &lt;200ms，给 2.5 倍余量"），
+ *       本质是在猜"数据变更需要多久才能让所有读路径感知到"——猜对了万事大吉，
+ *       猜小了竞态窗口仍然存在，猜大了则让缓存不必要地脏更久</li>
+ *   <li>缓存失效逻辑和业务写逻辑耦合在一起：每新增一个会改 shop 表的写路径
+ *       （这次是 update/online/offline，下次可能是后台批量改价），都要记得
+ *       补上"删缓存"调用——一旦漏掉，就是一个只有在生产环境并发场景下才会
+ *       暴露的隐蔽 bug</li>
  * </ul>
- * 500ms 依据：MySQL 主从同步延迟通常 <200ms，500ms 是 2.5 倍安全余量。
+ * <p>现已升级为 <b>Canal + binlog</b> 方案（实现见
+ * {@code com.personalprojections.locallife.server.module.shop.canal.ShopCacheInvalidationListener}），
+ * 把"猜延迟"换成"听事件"：
+ * <pre>
+ *   写 DB 前：deleteShopDetail(shopId)        ← 同步、立即，处理"写之前缓存里还有旧值"的简单情形
+ *   写 DB
+ *   写 DB 后：（不再需要业务代码显式删除）
+ *            └─ MySQL 写入 binlog（行级变更日志，唯一可信的"数据变了"信号源）
+ *               └─ Canal Server 订阅 binlog，解析后推送给 ShopCacheInvalidationListener
+ *                  └─ deleteShopDetail(shopId)  ← 由数据变更事件精确驱动，不是定时器猜出来的
+ * </pre>
+ * <p>这一换并不是简单的"用新中间件替换旧代码"，而是把缓存失效的触发条件
+ * 从"我猜数据已经落盘并同步完成了"换成"binlog 明确告诉我数据确实变了"——
+ * 后者既更快（不需要凭空等待 500ms），又更准（不依赖任何经验阈值），
+ * 还彻底解耦了业务代码与缓存失效逻辑（新增写路径无需再记得"删缓存"，
+ * 因为 Canal 盯的是表，不是某一条具体的业务代码路径）。
+ * <p>{@code ShopCacheService.SHOP_DETAIL_TTL}（30 分钟）仍然保留，作为这套体系的<b>最终安全网</b>——
+ * 即使 Canal Server 宕机、{@code ShopCacheInvalidationListener} 重连失败，
+ * 缓存最多脏 30 分钟后自然过期重建，不会永久不一致；Canal 真正压缩的是
+ * "正常情况下"的不一致窗口（从"最长 30 分钟"到"百毫秒级"），而不是取代 TTL
+ * 这道兜底防线——这与 {@code OrderService} "MQ 延时消息为主链路、定时任务兜底"
+ * 的分层防御思路一脉相承：让快速路径专注于"快"，把"绝对不能错"的责任
+ * 交给慢但可靠的兜底机制。
  *
  * <h3>面试追问准备</h3>
  * <ul>
- *   <li>为什么不用 Canal+binlog 替代延迟双删？→ Canal 引入独立组件，当前阶段延迟双删够用，
- *       Canal 是下一阶段升级方向</li>
- *   <li>延迟双删能 100% 保证一致性吗？→ 不能，存在极短窗口期；
- *       但发生的概率极低（需要精确的并发时序），可接受的 Trade-off</li>
+ *   <li>为什么从延迟双删升级到 Canal？→ 延迟双删的"500ms"是拍脑袋的经验值，
+ *       且要求每个写路径都记得调用缓存失效；Canal 把失效逻辑收敛到"监听 binlog"
+ *       这一个地方，由真实的数据变更事件驱动，更快、更准、更解耦</li>
+ *   <li>Canal 引入了一个外部中间件依赖，万一它挂了怎么办？→ 不会导致永久不一致——
+ *       Redis 缓存本身有 30 分钟 TTL 兜底，Canal 只是把"正常情况"下的不一致窗口
+ *       从分钟级压缩到毫秒级，而不是成为正确性的单点依赖</li>
+ *   <li>升级后旧的延迟双删代码去哪了？→ 完全移除（{@code ShopCacheService.delayedDeleteShopDetail}
+ *       已删除，{@code @EnableAsync} 也一并移除——它是该方法存在时唯一的使用者）。
+ *       写 DB 前的同步 {@code deleteShopDetail} 予以保留：它处理的是"写之前缓存里
+ *       还有旧值"这个简单情形，与 Canal 的职责互不重叠，没有理由删掉</li>
  * </ul>
  *
  * <h2>权限校验策略</h2>
@@ -72,7 +107,7 @@ public class ShopService {
     /** 布隆过滤器：前置拦截不存在的 shopId，防缓存穿透 */
     private final BloomFilterService bloomFilterService;
 
-    /** 门店详情缓存（Redis L2 + @Async 延迟双删） */
+    /** 门店详情缓存（Redis L2，一致性由 Canal+binlog 驱动失效，详见类注释） */
     private final ShopCacheService shopCacheService;
 
     // =========================================================
@@ -86,8 +121,9 @@ public class ShopService {
      * <ol>
      *   <li>布隆过滤器：shopId 一定不存在 → 直接抛 SHOP_NOT_FOUND，不查缓存/DB</li>
      *   <li>Redis 缓存：命中 → 直接返回（注意：缓存了 ONLINE 状态的门店，
-     *       如果门店下线，缓存会在 TTL（30min）内仍返回旧值；
-     *       写操作的延迟双删会在 500ms 内清理）</li>
+     *       如果门店下线，正常情况下 {@code ShopCacheInvalidationListener} 会在
+     *       binlog 事件到达后的百毫秒级内清理；极端情况下（Canal 不可用）
+     *       缓存最多在 TTL（30min）后自然过期重建——见类注释「缓存一致性」）</li>
      *   <li>MySQL：查到 → 写入缓存，返回；查不到 → 缓存空值（5min TTL）防短期重复穿透</li>
      * </ol>
      *
@@ -199,8 +235,10 @@ public class ShopService {
     /**
      * 更新门店信息（商家操作）。
      *
-     * <p>写 DB 后执行延迟双删：先立即删一次缓存，500ms 后再删一次。
-     * 防止写 DB 期间有读线程把旧值回填缓存的竞态窗口。
+     * <p>写 DB 前同步删一次缓存，处理"写之前缓存里还有旧值"的简单情形；
+     * 写 DB 之后不再需要业务代码显式删缓存——MySQL 写入 binlog 后，
+     * {@code ShopCacheInvalidationListener} 会监听到这次 UPDATE 事件并精确失效缓存
+     * （详见类注释「缓存一致性：从延迟双删到 Canal+binlog」）。
      */
     public ShopVO updateShop(Long shopId, UpdateShopRequest request) {
         Shop shop = requireOwnShop(shopId);
@@ -223,11 +261,7 @@ public class ShopService {
 
         shopMapper.updateById(shop);
 
-        // 写 DB 后：延迟 500ms 再删一次（消除并发读写的竞态窗口）
-        // @Async 异步执行，不阻塞主流程
-        shopCacheService.delayedDeleteShopDetail(shopId);
-
-        log.info("[ShopService] 门店更新，shopId={}，触发延迟双删", shopId);
+        log.info("[ShopService] 门店更新，shopId={}，缓存失效交由 Canal binlog 监听器处理", shopId);
 
         shopSearchService.syncShop(shop);
         return toVO(shop);
@@ -235,7 +269,10 @@ public class ShopService {
 
     /**
      * 门店上线（DRAFT/OFFLINE → ONLINE）。
-     * 状态变更后清理缓存（延迟双删），确保 C 端能查到最新状态。
+     *
+     * <p>写 DB 前同步删一次缓存；写 DB 后的缓存失效由
+     * {@code ShopCacheInvalidationListener} 监听 binlog 驱动完成
+     * （详见类注释「缓存一致性：从延迟双删到 Canal+binlog」）。
      */
     public ShopVO onlineShop(Long shopId) {
         Shop shop = requireOwnShop(shopId);
@@ -250,10 +287,7 @@ public class ShopService {
         shop.setStatus("ONLINE");
         shopMapper.updateById(shop);
 
-        // 延迟双删（防竞态）
-        shopCacheService.delayedDeleteShopDetail(shopId);
-
-        log.info("[ShopService] 门店上线，shopId={}，触发延迟双删", shopId);
+        log.info("[ShopService] 门店上线，shopId={}，缓存失效交由 Canal binlog 监听器处理", shopId);
 
         shopSearchService.syncShop(shop);
         return toVO(shop);
@@ -261,7 +295,10 @@ public class ShopService {
 
     /**
      * 门店下线（ONLINE → OFFLINE）。
-     * 下线后需立即清理缓存，防止 C 端继续看到已下线门店。
+     *
+     * <p>写 DB 前同步删一次缓存；写 DB 后的缓存失效由
+     * {@code ShopCacheInvalidationListener} 监听 binlog 驱动完成
+     * （详见类注释「缓存一致性：从延迟双删到 Canal+binlog」）。
      */
     public ShopVO offlineShop(Long shopId) {
         Shop shop = requireOwnShop(shopId);
@@ -276,10 +313,7 @@ public class ShopService {
         shop.setStatus("OFFLINE");
         shopMapper.updateById(shop);
 
-        // 延迟双删（防竞态）
-        shopCacheService.delayedDeleteShopDetail(shopId);
-
-        log.info("[ShopService] 门店下线，shopId={}，触发延迟双删", shopId);
+        log.info("[ShopService] 门店下线，shopId={}，缓存失效交由 Canal binlog 监听器处理", shopId);
 
         shopSearchService.syncShop(shop);
         return toVO(shop);

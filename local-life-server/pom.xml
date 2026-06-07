@@ -122,6 +122,28 @@
             <version>2.3.1</version>
         </dependency>
 
+        <!--
+            Canal 客户端 SDK：订阅 MySQL binlog 变更事件，用于替代「延迟双删」做缓存一致性
+            （架构对比与选型理由见 ShopService 类注释「缓存一致性：从延迟双删到 Canal+binlog」）。
+
+            只引入 canal.client（瘦客户端，基于 TCP 协议连接 Canal Server 拉取解析好的 binlog 事件），
+            不引入 canal.server / canal.deployer —— Server 端作为独立中间件部署（见 infra/docker-compose.dev.yml
+            的 canal-server 服务），应用只是其下游的一个"消费者"，这正是 Canal 方案"业务代码与 binlog 解析解耦"
+            的核心价值所在。
+        -->
+        <dependency>
+            <groupId>com.alibaba.otter</groupId>
+            <artifactId>canal.client</artifactId>
+            <version>1.1.8</version>
+        </dependency>
+        <!-- canal.client 把 canal.protocol（binlog 事件的 protobuf 消息定义：Message/CanalEntry/RowChange）
+             声明为 optional 依赖，需要显式引入才能拿到 Message、CanalEntry、RowChange 等协议类 -->
+        <dependency>
+            <groupId>com.alibaba.otter</groupId>
+            <artifactId>canal.protocol</artifactId>
+            <version>1.1.8</version>
+        </dependency>
+
         <!-- ===== JSON 处理 ===== -->
 
         <!--
