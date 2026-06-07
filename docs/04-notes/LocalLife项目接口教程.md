@@ -916,12 +916,12 @@ if (!callback.getPaidAmount().equals(paymentOrder.getPayAmount())) {
 
 ---
 
-### 6.5 延迟关单（closeExpiredOrders）
+### 6.5 延迟关单：从「定时轮询」到「MQ 延时消息 + 兜底」的真实升级
 
 **问题**：下单后 30 分钟不支付，订单应该自动关闭（释放资源，让用户重新操作）。
 但 HTTP 接口是「请求-响应」模式，不能自己定时触发。
 
-**当前方案：定时任务轮询**
+#### 6.5.1 旧方案：纯定时任务轮询（曾经的唯一机制）
 
 ```java
 @Scheduled(fixedDelay = 60_000)  // 每 60 秒执行一次
@@ -939,15 +939,83 @@ public void closeExpiredOrders() {
 }
 ```
 
-**需要 `@EnableScheduling` 在启动类上才会生效！**（LocalLifeServerApplication 已添加）
+问题很直观：精度只有 1 分钟（扫描间隔），且不管有没有过期订单，每分钟都要全表扫一次
+`WAIT_PAY` 状态的订单——订单量大了之后这个轮询本身就是 DB 压力来源。
+当时类注释里留了一句「升级方向：RocketMQ 延时消息（面试时说清楚升级路径即可）」——
+这是一个**写在代码里、还没有落地的 TODO**。
 
-**升级路径（面试亮点）**：
+#### 6.5.2 新方案：MQ 延时消息（主链路，秒级）+ 定时任务（兜底，分钟级）
 
-当前定时轮询的精度是 1 分钟（扫描间隔）。
-更优方案：**RocketMQ 延时消息**
-- 下单时投递一条「30分钟后投递」的延时消息
-- 消费时检查订单状态：若已 PAID 忽略，若仍 WAIT_PAY 则关闭
-- 好处：精度到秒，不依赖轮询，数据库压力从「每分钟全表扫」→「事件驱动」
+参考了开源外卖 O2O 平台 **siam-cloud**（`OrderConsumer` + `closeOverdueOrder`）的经典实现
+模式——「下单时投递延时消息，消费时重新查库复检状态再决定是否关闭」，落地后的链路：
+
+```
+createOrder() 下单成功，事务提交后
+        │
+        ↓ registerOrderCloseDelayMessageAfterCommit()（afterCommit 钩子）
+投递 30 分钟延时消息（best-effort，syncSend(destination, msg, timeout, delayLevel=16)）
+        │
+        ↓ Broker 在 30 分钟后精确投递（秒级精度，不依赖应用轮询）
+OrderCloseConsumer.onMessage()
+        │ 重新查库，拿到订单"此刻"的最新状态
+        ↓
+handleOrderCloseDelayMessage() → closeOrderIfExpired()
+        │（与兜底定时任务共用同一段判断 + 关闭逻辑）
+   复检：还是 WAIT_PAY 且确实已过期？
+        ├─ 是 → CAS 更新为 CANCELLED + 回退优惠券
+        └─ 否（已支付/已取消/未到期）→ 幂等跳过，什么也不做
+```
+
+旧的 `closeExpiredOrders()` 并没有被删除，而是**降级为兜底任务**：执行频率从 60 秒
+放宽到 5 分钟，日志级别从 `info` 改成 `warn`（正常情况下应该"无事可做"，
+一旦扫到东西，说明 MQ 链路有缝隙，值得运维关注）。
+
+#### 6.5.3 四个值得拆开讲的设计决策（面试高频追问点）
+
+**① 为什么不直接用项目里现成的 Outbox（支付成功 / 秒杀成功都在用）？**
+
+Outbox 解决的是「事件必须可靠投递、丢了就会数据不一致」的问题（落库 + Relay 轮询投递，
+"至少一次"语义 + 指数退避重试）。但订单关闭延时消息恰恰相反——它是**可以丢的**：
+- 它不是触发关单的唯一途径，丢了订单也只是退化为"等兜底任务扫到"，最终一定会关闭
+- 消费侧操作天然幂等（CAS 更新），重复投递不会有副作用
+
+用 Outbox 的"落库 + Relay 轮询"两段式反而是过度设计：多一次 DB 写入、多一段轮询延迟，
+却没换来"必须"的可靠性收益。choice 是直接 `syncSend` 同步发送、best-effort、
+失败只记日志不重试——**可靠性投入要和事件的重要程度匹配，不是所有消息都值得上最高保障**。
+
+**② 为什么不在 `@Transactional` 方法内部直接发消息？**
+
+这是「事务内发 MQ 消息」的经典坑：
+- 消息发出去了，但事务后续步骤抛异常回滚 → DB 没有这笔订单，消息却已投递（孤儿消息）
+- 即便事务最终提交成功，MQ 投递可能快于本地事务提交（网络抖动/GC 暂停），
+  消费者这时候去查订单——查到的是"还不存在"
+
+解法是用 `TransactionSynchronizationManager.registerSynchronization(...)` 注册一个
+`afterCommit` 回调，把发送动作推迟到**事务确定提交成功之后**。这样消息可见时，
+DB 里的订单数据必然已经可查，从根上消除竞态。这是比"Outbox"更轻量的另一种解法——
+不持久化、不轮询，本质上是给"什么时候发消息"这件事找一个更准确的时间点。
+
+**③ 为什么消费者收到消息后还要重新查库复检，不能直接关？**
+
+下单和到期之间隔了 30 分钟，这段时间窗口里订单完全可能已经被支付或被用户主动取消。
+如果直接信"收到延时消息 = 订单已过期未支付 = 该关闭"，会出现"用户已经付了款，
+订单却被消息驱动的链路误关闭"的严重 bug。**消息只是一个"到期了，去看看"的触发器，
+不是事实本身**——真正"是否关闭"的决定权永远在重新查询到的最新数据手里。
+甚至更进一步：消费者在执行关闭前还会再判断一次 `expire_at <= NOW()`
+（防止 Broker 配置差异/重试导致消息提前到达就被误判为"已过期"）。
+
+**④ 为什么消费者不需要像 PaymentSuccessConsumer 那样加 Redis SETNX 幂等层？**
+
+`PaymentSuccessConsumer`/`SeckillSuccessConsumer` 执行的是 **INSERT**（写用户券、流水），
+重复执行会产生脏数据，必须在执行业务逻辑之前用 Redis SETNX 拦住重复消费。
+而这里执行的是一次 `WHERE status='WAIT_PAY'` 的 **CAS 更新**——业务操作本身就是幂等的：
+第一次让状态从 WAIT_PAY 变成 CANCELLED（affected=1），后面无论调用多少次，
+affected 永远是 0，不产生任何副作用。额外叠一层 Redis 幂等 Key 不会让系统更正确，
+只会多一次 Redis 往返——**幂等保障应该长在离"写操作"最近的地方，
+而不是机械地给每个消费者套同一个模板**。
+
+**需要 `@EnableScheduling` 在启动类上才会生效！**（兜底任务仍然是 `@Scheduled`，
+LocalLifeServerApplication 已添加）
 
 ---
 
@@ -1248,6 +1316,100 @@ RocketMQ 消费者默认重试 **16 次**，每次间隔递增（10s、30s、1mi
 
 ---
 
+### 7.10 架构复用：秒杀域如何复用同一套 Outbox 基础设施
+
+> **面试加分点**：好的基础设施不是「为某个业务量身定做」，而是「建一次、处处复用」。
+> 这一节讲的就是 Outbox 从「只服务支付域」演进为「服务支付 + 秒杀两个域」的过程，
+> 也是把秒杀模块"Lua 预扣 → 同步写 DB"升级为"Lua 预扣 → MQ 异步写 DB"的具体落地。
+
+**升级前的状态**（`SeckillService` 类注释里自己写明的简化点）：
+
+```
+Lua 脚本原子预扣库存成功
+    ↓
+直接同步 INSERT user_coupon（写在秒杀响应的主链路里）
+    ↓
+返回结果给用户
+```
+
+问题：DB 写入压力和秒杀流量耦合在一起——抢购瞬间的并发全部砸向 `user_coupon` 表，
+即便 Redis 层已经原子防超卖，MySQL 连接池仍可能在峰值被打满。
+
+**升级思路：不新建一套 MQ 机制，直接复用 `OutboxService`**
+
+支付域已经有一条验证过的可靠消息链路：`业务事务内写 outbox_message → Relay 投递 → 消费者幂等消费`。
+秒杀域要做的"异步写 DB"本质上是同一个问题，没有理由另起炉灶。复用前要解决一个小障碍：
+
+```java
+// 升级前：saveToOutbox 写死了 PaymentSuccessEvent，秒杀域传不进去
+public void saveToOutbox(PaymentSuccessEvent event, String topic, String tag)
+
+// 升级后：泛化为 Object + 显式 eventId，序列化和落表逻辑与事件类型解耦
+public void saveToOutbox(Object event, String eventId, String topic, String tag)
+```
+
+把 `eventId` 从"调用 `event.getEventId()`"改成"显式传参"，是泛化的关键一步——
+`saveToOutbox` 不再需要知道事件长什么样，只负责"序列化 + 落表"，
+事件类型相关的语义完全交给调用方决定。
+
+**升级后的链路**：
+
+```
+Lua 预扣库存成功（原子防超卖 + 防重复，逻辑不变）
+    ↓
+同事务内写 outbox_message（PENDING）+ 写 Redis 结果 Key 为 PENDING
+    ↓（事务提交，Lua 预扣的"名额锁定"语义在这一刻才算最终落定）
+[Relay 任务，复用同一套，每 10s 扫描]
+    ↓
+rocketMQTemplate.syncSend(seckill-success-topic)
+    ↓
+[SeckillSuccessConsumer 消费，与 PaymentSuccessConsumer 同款幂等模板]
+    ├── Redis SETNX 判重（consume:seckill_success:{eventId}）
+    ├── INSERT user_coupon（真正的 DB 写入，从主链路里搬出来了）
+    ├── 捕获 DuplicateKeyException 兜底幂等（uk_user_coupon_template 唯一索引）
+    └── 写 Redis 结果 Key 为 SUCCESS
+```
+
+**前端怎么知道"到底抢到没"？**——`querySeckillResult` 三层兜底查询：
+
+1. 查 `user_coupon` 表：有记录 → 最终一致的权威依据，直接返回成功
+2. 查 Redis 结果 Key（`seckill:result:{sessionId}:{templateId}:{userId}`）：
+   `PENDING` → 还在异步处理中；`SUCCESS` → 消费者已处理完（可能存在主从延迟，DB 还没读到）
+3. 都没有 → 退回 `USER_SET_KEY`（SISMEMBER）兜底判断，仍命中则提示"处理中"
+
+**三层幂等防线**（层层兜底，互为补充，体现"防御性设计"思路）：
+
+| 层级 | 机制 | 解决的问题 | 发生阶段 |
+| --- | --- | --- | --- |
+| 1 | Redis Set（SISMEMBER） | 拦截重复请求，性能优先 | 秒杀入口（同步） |
+| 2 | Redis SETNX 幂等消费 Key | 防 MQ 重复投递导致重复处理 | 异步消费 |
+| 3 | `user_coupon` 唯一索引 | 即使前两层失效（如 Redis 重启丢数据）也不会产生重复券 | DB 兜底 |
+
+**这一节真正想说明的事**：复用基础设施不是"少写代码"这么简单的事，
+而是把"可靠投递、幂等消费、死信处理、监控告警"这些已经在生产中验证过的能力，
+原封不动地带给了新的业务域——秒杀的可靠性直接继承了支付链路的成熟度，
+不需要再单独"踩一遍坑"。
+
+#### 面试复述练习
+
+**题目：秒杀模块的 DB 写入是怎么从主链路解耦出去的？**
+
+> 参考答案：
+>
+> Lua 脚本原子预扣成功后，不直接同步 INSERT user_coupon，
+> 而是把"写券"封装成 `SeckillSuccessEvent`，复用项目里已有的 `OutboxService`：
+> 在同一个事务里写 outbox_message，由 Relay 任务异步投递到 RocketMQ，
+> `SeckillSuccessConsumer` 用和支付成功消费者一样的 Redis SETNX 幂等模板异步落库。
+>
+> 复用而不是重新造轮子的关键是把 `saveToOutbox` 从"写死 PaymentSuccessEvent"
+> 泛化成"接收任意事件对象 + 显式 eventId"——序列化落表的逻辑和事件类型解耦了。
+>
+> 好处是秒杀主链路只剩"Redis 原子操作 + 写一行 outbox_message"，响应极快；
+> 真正的 DB 写入压力被 Relay 和消费者削峰填谷，不会在抢购瞬间打满连接池。
+> 同时秒杀的可靠性直接继承了支付链路已经验证过的"可靠投递 + 幂等消费 + 死信兜底"。
+
+---
+
 ---
 
 ## 第 8 章：Elasticsearch 全文搜索——门店和笔记怎么搜出来的
@@ -1293,7 +1455,9 @@ ES 的概念对应 MySQL 的概念：
 MySQL shop 表        ←   业务写入主数据
        ↓
 ES shop_index        ←   双写同步（当前方案）
-                     ←   Canal Binlog 方案（后续增强）
+                     ←   Canal Binlog 同步 ES（仍是未来方向，详见 8.7 末尾的说明：
+                          这与"已落地的 Canal 驱动 Redis 缓存失效"是同一信号源
+                          的两个不同下游消费场景，互不冲突）
 ```
 
 ES 文档里只存**搜索需要的字段**，不是 MySQL 表的全量拷贝。
@@ -1451,7 +1615,7 @@ shopSearchRepository.save(doc) ← Spring Data ES
 - ES 是搜索系统，短暂不一致是可以接受的（最终一致性）
 - 如果需要强一致，可以将 MySQL 和 ES 写操作放在同一 `@Transactional` 里，但 ES 不支持分布式事务
 
-**后续 Canal 方案（增强项）：**
+**后续 Canal 方案（增强项，仍是未来方向——注意和下面"已落地的 Canal 用法"是两件事）：**
 
 ```
 MySQL binlog
@@ -1463,6 +1627,16 @@ ES shop_index（更新文档）
 ```
 
 Canal 方案解耦了 ShopService 和 ES 同步逻辑，ShopService 不再需要知道 ES 的存在。
+
+> **提醒一个容易混淆的点**：上面这段"Canal 同步 MySQL → ES"和
+> `ShopService` 已经落地的"Canal 驱动 Redis 缓存失效"
+> （详见 `ShopCacheInvalidationListener` 与本教程「缓存一致性」相关章节）
+> 是**两个不同的下游消费场景**——它们都订阅同一个上游信号源（`shop` 表的 binlog），
+> 但目的完全不同：一个是让 ES 索引追上 MySQL 主数据（最终一致性的搜索索引同步），
+> 一个是让 Redis 缓存及时失效（缓存一致性）。这正是 binlog 订阅模式的核心优势——
+> "一个信号源，多个独立的下游消费者，互不干扰"：今天已经接了一个缓存失效的消费者，
+> 未来要接 ES 同步消费者时，只需要再订阅一次 binlog（甚至可以是同一个 Canal Server
+> 的不同 destination/filter），不需要改动 MySQL 或 ShopService 一行代码。
 
 ---
 
@@ -1492,6 +1666,67 @@ ES 的文档是非关系型，不支持 JOIN。
 
 ---
 
+### 8.8.1 笔记搜索的相关性设计：multi_match 字段权重 + function_score 热度融合（已完成升级）
+
+`PostSearchService.searchPosts()` 用 `NativeQuery`（`co.elastic.clients` 新版客户端的查询构建方式，
+区别于 8.5 节 `ShopSearchService` 仍在用的 `CriteriaQuery`）实现了两个层次的相关性设计，
+分别对应 ES 里两个容易混淆、但解决不同问题的工具：
+
+**第一层：`multi_match` 字段级权重——解决"同一个关键词在不同字段里命中，重要性应该不同"**
+
+用户搜「饺子」时，命中 `title`（标题里直接写了"饺子"）应该比命中 `content`
+（正文某处提到了一句"饺子还行"）更相关。`multi_match` 的字段级 boost 语法
+`title^3, shopName^2, content` 正是为这个场景设计的：
+
+```java
+bool.must(m -> m.multiMatch(mm -> mm
+        .query(req.getKeyword())
+        .fields("title^3", "shopName^2", "content")   // ^N 是字段权重：标题 3 倍、门店名 2 倍、正文 1 倍
+        .type(TextQueryType.BestFields)));            // BestFields：取多字段中最高分作为该文档的相关性分数
+```
+
+**第二层：`function_score` 热度融合——解决"文本相关性相同时，应该让更受欢迎的内容靠前"**
+
+这是一个和上面**完全不同**的问题：不是"同一关键词在哪个字段更重要"，
+而是"两篇笔记文本相关性差不多，该让点赞多的那篇排前面"。
+
+```java
+private Query boostByPopularity(Query relevanceQuery) {
+    return FunctionScoreQuery.of(fs -> fs
+            .query(relevanceQuery)
+            .functions(FunctionScore.of(f -> f
+                    .fieldValueFactor(fvf -> fvf
+                            .field("likeCount")
+                            .modifier(FieldValueFactorModifier.Log1p)   // log10(1 + likeCount)
+                            .missing(0.0))))
+            .boostMode(FunctionBoostMode.Sum))                          // 关键：用「加」融合，不是「乘」
+            ._toQuery();
+}
+```
+
+> **一个值得讲的"纠错"细节**：`PostDocument` 字段注释最初写的排序公式是
+> `score = 文本相关性得分 × log(1 + likeCount)`（乘法融合，`boost_mode=MULTIPLY`）。
+> 但稍加推演就会发现这个公式有一个致命缺陷——当 `likeCount = 0`（绝大多数笔记的常态：
+> 零赞是常态而非异常）时，`log10(1+0) = 0`，整个分数被乘成 0，
+> 导致系统里大多数笔记的排序完全失去意义（文本相关性再高也会排到最后）。
+> 这是"按字面实现 TODO"和"理解 TODO 想达成的目标后再实现"之间的差别——
+> 前者会精确复刻这个 bug，后者会发现"乘法融合 + log1p(0)=0"在零赞是常态的场景下
+> 根本不可行，从而改用**加法融合**：`score = _score + log10(1 + likeCount)`。
+> 这样即便 `likeCount=0`，最终得分也等于纯文本相关性分数——排序退化为"按相关性排序"，
+> 而不是"全员归零"；只有当 likeCount 显著时，热度信号才会在相关性接近的文档之间
+> 起到"加分项"的作用。这正是 `function_score` 该有的语义：**融合**两个信号，
+> 而不是让其中一个信号有"一票归零"的权力。
+
+**两层设计的边界感是这部分最值得讲的地方**：`multi_match` 解决的是
+"字段间的权重分配"，`function_score` 解决的是"文本信号与业务信号的融合"——
+两者处理的是完全不同维度的问题，不能互相替代。原 TODO 注释里曾建议"用
+`function_score` 实现字段权重"，这其实是把 `function_score` 用错了地方
+（它不擅长、也不该用来做字段级文本权重，`multi_match` 的 `^N` 语法
+才是教科书式的正确工具）——分清楚"这个工具到底解决什么问题"，
+是避免"看起来能跑但用错了地方"这类隐蔽设计问题的关键。
+
+---
+
 ### 8.9 关键词卡片（Elasticsearch 搜索模块）
 
 | 关键词 | 一句话解释 |
@@ -1504,7 +1739,7 @@ ES 的文档是非关系型，不支持 JOIN。
 | **GeoPoint** | ES 地理坐标类型，支持 geo_distance（附近 X km）查询 |
 | **filter vs query** | filter 不计算评分可缓存（适合固定条件），query 计算评分（适合全文搜索） |
 | **双写** | MySQL 写完立刻写 ES，简单但强一致难保证 |
-| **Canal** | MySQL Binlog 监听工具，实现 MySQL → ES 的异步解耦同步 |
+| **Canal** | MySQL Binlog 订阅中间件：把自己伪装成 MySQL 从库，解析 binlog 后推送给下游消费者。本项目已落地的用法是驱动 `ShopCacheInvalidationListener` 失效 Redis 门店缓存（详见「缓存一致性」相关章节）；MySQL → ES 的同步是同一信号源的另一个潜在下游消费者，仍是未来方向 |
 | **_score** | ES 相关性评分，由词频、文档频率等综合计算，数值越高越相关 |
 
 ---
