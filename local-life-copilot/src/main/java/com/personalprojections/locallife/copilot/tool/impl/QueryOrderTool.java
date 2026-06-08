@@ -136,29 +136,35 @@ public class QueryOrderTool implements McpTool {
      * 返回的 Map 结构即为工具文档中 outputSchema 约定的格式。
      */
     private Map<String, Object> buildResult(Map<String, Object> row) {
-        return Map.of(
-                "order_id",        safeStr(row.get("order_id")),
-                "order_no",        safeStr(row.get("order_no")),
-                "user_id",         safeStr(row.get("user_id")),
-                "shop_id",         safeStr(row.get("shop_id")),
-                "original_amount", row.getOrDefault("original_amount", 0),
-                "coupon_discount",  row.getOrDefault("coupon_discount", 0),
-                "order_amount",    row.getOrDefault("order_amount", 0),
-                "order_status",    safeStr(row.get("order_status")),
-                "payment",         Map.of(
-                        "pay_status",   safeStr(row.get("pay_status")),
-                        "channel",      safeStr(row.get("channel")),
-                        "trade_no",     safeStr(row.get("trade_no")),
-                        "paid_amount",  row.getOrDefault("paid_amount", 0),
-                        "paid_at",      safeStr(row.get("paid_at"))
-                ),
-                "coupon",          Map.of(
-                        "coupon_status",  safeStr(row.get("coupon_status")),
-                        "coupon_name",    safeStr(row.get("coupon_name")),
-                        "discount_type",  safeStr(row.get("discount_type")),
-                        "discount_value", row.getOrDefault("discount_value", 0)
-                )
-        );
+        // 注意：这里不能用 Map.of(...) —— 它在任何一个 value 为 null 时都会抛 NullPointerException，
+        // 而 safeStr() 在对应数据库列为 NULL 时就是要返回 null（这正是 x-business-hint 里
+        // "情况4：pay_status=null → 该订单未发起过支付" 所依赖的数据形状：未支付/无券的订单
+        // 是完全正常的业务状态，不是异常）。LinkedHashMap 允许 null 值，且保留写入顺序方便阅读。
+        Map<String, Object> payment = new java.util.LinkedHashMap<>();
+        payment.put("pay_status",  safeStr(row.get("pay_status")));
+        payment.put("channel",     safeStr(row.get("channel")));
+        payment.put("trade_no",    safeStr(row.get("trade_no")));
+        payment.put("paid_amount", row.getOrDefault("paid_amount", 0));
+        payment.put("paid_at",     safeStr(row.get("paid_at")));
+
+        Map<String, Object> coupon = new java.util.LinkedHashMap<>();
+        coupon.put("coupon_status",  safeStr(row.get("coupon_status")));
+        coupon.put("coupon_name",    safeStr(row.get("coupon_name")));
+        coupon.put("discount_type",  safeStr(row.get("discount_type")));
+        coupon.put("discount_value", row.getOrDefault("discount_value", 0));
+
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("order_id",        safeStr(row.get("order_id")));
+        result.put("order_no",        safeStr(row.get("order_no")));
+        result.put("user_id",         safeStr(row.get("user_id")));
+        result.put("shop_id",         safeStr(row.get("shop_id")));
+        result.put("original_amount", row.getOrDefault("original_amount", 0));
+        result.put("coupon_discount", row.getOrDefault("coupon_discount", 0));
+        result.put("order_amount",    row.getOrDefault("order_amount", 0));
+        result.put("order_status",    safeStr(row.get("order_status")));
+        result.put("payment", payment);
+        result.put("coupon", coupon);
+        return result;
     }
 
     private String safeStr(Object val) {
