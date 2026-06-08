@@ -99,7 +99,7 @@ mysql -uroot -p123456 local_life < local-life-server/src/main/resources/db/migra
 mysql -uroot -p123456 local_life < local-life-server/src/main/resources/db/migration/V7__init_outbox_message.sql
 mysql -uroot -p123456 local_life < local-life-server/src/main/resources/db/migration/V8__init_order_sharding.sql
 # Copilot 专用表
-mysql -uroot -p123456 local_life < local-life-copilot/src/main/resources/db/migration/V1__init_copilot_tables.sql
+mysql -uroot -p123456 local_life < local-life-copilot/src/main/resources/db/migration/V101__init_copilot_tables.sql
 ```
 
 ### 第三步：启动服务（顺序很重要）
