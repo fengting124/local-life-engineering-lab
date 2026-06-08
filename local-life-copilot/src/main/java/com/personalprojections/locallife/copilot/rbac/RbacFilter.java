@@ -72,8 +72,17 @@ public class RbacFilter implements Filter {
                 return;
             }
 
-            Long userId     = Long.parseLong(userIdStr);
-            Long merchantId = StringUtils.hasText(merchantStr) ? Long.parseLong(merchantStr) : null;
+            Long userId;
+            Long merchantId;
+            try {
+                userId     = Long.parseLong(userIdStr);
+                merchantId = StringUtils.hasText(merchantStr) ? Long.parseLong(merchantStr) : null;
+            } catch (NumberFormatException e) {
+                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                response.setContentType("application/json;charset=UTF-8");
+                response.getWriter().write("{\"error\":\"X-User-Id and X-Merchant-Id must be numeric\"}");
+                return;
+            }
 
             // merchant 角色必须提供 merchantId，防止权限越界
             if ("merchant".equals(role) && merchantId == null) {
