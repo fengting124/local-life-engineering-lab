@@ -2,10 +2,11 @@
 
 ## 概述
 
-本服务（Python + FastAPI）的测试全部为单元测试，使用 pytest + pytest-asyncio 运行。
-所有外部依赖（Milvus、MySQL、MCP Server、DeepSeek API）均通过 `unittest.mock` 完全隔离。
+本服务（Python + FastAPI）的测试以 pytest + pytest-asyncio 为主，覆盖单元、契约和 in-process E2E。
+Milvus、MySQL、真实 MCP Server、真实 LLM API 默认都通过 `unittest.mock` / scripted LLM 隔离；
+跨进程真链路另按 docs 中的手动/CI 流程执行。
 
-**测试规模：142 条用例，6 个文件，100% 通过**
+**测试规模：187 条用例，10 个文件（单元 183 + Pact 契约 2 + ReAct E2E 2）**
 
 ---
 
@@ -15,7 +16,7 @@
 cd copilot-agent-service
 source .venv/bin/activate          # 激活虚拟环境（需先 pip install -r requirements.txt）
 
-python -m pytest                   # 运行全部测试
+DEBUG=false python -m pytest        # 运行全部测试（若 shell 中 DEBUG 被设成非布尔值，显式覆盖）
 python -m pytest -v                # 详细模式（显示每条用例名）
 python -m pytest tests/test_guardrails.py   # 只跑某个文件
 python -m pytest -k "fastpath"     # 按关键词过滤
@@ -28,8 +29,8 @@ python -m pytest -k "fastpath"     # 按关键词过滤
 ## 覆盖率（pytest-cov）
 
 ```bash
-pip install -r requirements-dev.txt        # pytest / pytest-asyncio / pytest-mock / pytest-cov
-python -m pytest --cov --cov-report=term-missing --cov-report=html
+pip install -r requirements-dev.txt        # pytest / pytest-asyncio / pytest-mock / pytest-cov / mutmut
+python -m pytest --cov --cov-report=term-missing --cov-report=html --cov-fail-under=45
 # 报告：htmlcov/index.html
 ```
 
@@ -42,11 +43,31 @@ python -m pytest --cov --cov-report=term-missing --cov-report=html
 | `agent/tool_router.py` | 100% |
 | `guardrails/input_checker.py` | 100% |
 | `mcp/mcp_client.py` | 94.6% |
+| `agent/graph.py` | 98.6% |
 | `rag/bm25_store.py` | 88.5% |
 | `rag/pipeline.py` | 83.5% |
 
-> 整体 ~35%：未覆盖的是 `nodes.py`（ReAct 循环，需真实 LLM）、`vector_store.py`（需真 Milvus）、
-> `embedding/reranker`（需加载本地模型）等重 I/O 模块——刻意把测试投在可纯逻辑验证的核心代码上。
+> 整体约 48.4%：未覆盖/低覆盖主要是 `vector_store.py`（需真 Milvus）、`session/*`（需真 DB）、
+> `embedding/reranker`（需加载本地模型）等重 I/O 模块。ReAct 控制流和整图接线已用
+> scripted LLM + mock MCP 覆盖。
+
+---
+
+## 变异测试（mutmut）
+
+`setup.cfg` 将变异范围限定在两个纯逻辑核心模块：
+
+- `agent/tool_router.py`：RBAC 过滤、任务路由、高风险工具门控
+- `guardrails/input_checker.py`：Prompt Injection 和敏感输出防护
+
+```bash
+DEBUG=false mutmut run
+python scripts/check_mutmut_score.py --min-kill-rate 50 --max-other 0
+mutmut results
+```
+
+当前基线：216 个变异，110 killed，106 survived，杀死率约 50.9%。CI 使用 50% 作为防回退门禁；
+后续每补强一批断言，再逐步抬高阈值。
 
 ---
 
@@ -60,7 +81,11 @@ python -m pytest --cov --cov-report=term-missing --cov-report=html
 | `test_rag_pipeline.py` | 5 | 29 | `rag/pipeline.py` |
 | `test_bm25_store.py` | 4 | 16 | `rag/bm25_store.py` |
 | `test_chat_api.py` | 3 | 19 | `api/chat.py` |
-| **合计** | **25** | **142** | |
+| `test_agent_graph.py` | 6 | 29 | ReAct 路由、工具分批、死循环检测、图编译 |
+| `test_agent_nodes.py` | 3 | 10 | `llm_node` / `tool_node` / `final_node` |
+| `tests/contract/test_mcp_contract.py` | — | 2 | Pact：McpClient ↔ MCP Server JSON-RPC 契约 |
+| `test_e2e_agent.py` | — | 2 | 真实编译 LangGraph 图的 in-process E2E |
+| **合计** | | **187** | |
 
 ---
 

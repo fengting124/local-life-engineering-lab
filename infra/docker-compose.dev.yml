@@ -132,7 +132,10 @@ services:
       REDIS_URL: "redis://redis:6379/2"
       MILVUS_URI: "http://milvus:19530"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
-      LLM_MODEL: "${LLM_MODEL:-claude-sonnet-4-6}"
+      LLM_PROVIDER: "${LLM_PROVIDER:-deepseek}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LLM_MODEL: "${LLM_MODEL:-deepseek-v4-flash}"
+      LLM_BASE_URL: "${LLM_BASE_URL:-}"
       DEBUG: "false"
     depends_on:
       locallife-copilot:

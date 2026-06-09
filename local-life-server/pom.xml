@@ -399,6 +399,19 @@
                         <artifactId>pitest-junit5-plugin</artifactId>
                         <version>1.2.1</version>
                     </dependency>
+                    <!--
+                        关键修复：pitest-junit5-plugin 1.2.1 会传递引入一个旧版
+                        junit-platform-launcher，与 Spring Boot 3.5 BOM 的 junit-platform-engine 1.12.2
+                        版本错配。JUnit Platform 1.11+ 要求 launcher 提供 OutputDirectoryProvider，
+                        旧 launcher 没有 → PIT 的 coverage minion 在 discover 阶段抛
+                        "OutputDirectoryProvider not available" 直接退出（表现为 minion UNKNOWN_ERROR）。
+                        显式钉死 launcher 与 engine 同版本即可对齐。
+                    -->
+                    <dependency>
+                        <groupId>org.junit.platform</groupId>
+                        <artifactId>junit-platform-launcher</artifactId>
+                        <version>1.12.2</version>
+                    </dependency>
                 </dependencies>
                 <configuration>
                     <targetClasses>
@@ -417,6 +430,13 @@
                         <param>HTML</param>
                         <param>XML</param>
                     </outputFormats>
+                    <!--
+                        变异测试门禁：当前基线为 136 个变异 / 86 killed（≈63%），覆盖到的代码
+                        test strength ≈75%。阈值先按「防回退」设置，后续补强用例后再逐步抬高。
+                    -->
+                    <mutationThreshold>60</mutationThreshold>
+                    <coverageThreshold>80</coverageThreshold>
+                    <testStrengthThreshold>70</testStrengthThreshold>
                     <threads>4</threads>
                     <timestampedReports>false</timestampedReports>
                     <!--
@@ -466,6 +486,129 @@
                         <goals>
                             <goal>report</goal>
                         </goals>
+                    </execution>
+                    <!--
+                        覆盖率门禁只卡核心业务类，避免 Controller / ES / MQ / Canal 等重 I/O 黏合层
+                        把整体覆盖率目标稀释成刷数字。阈值按当前基线略留余量，核心逻辑回退会 fail build。
+                    -->
+                    <execution>
+                        <id>check-core-coverage</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>CLASS</element>
+                                    <includes>
+                                        <include>com.personalprojections.locallife.server.module.seckill.service.SeckillService</include>
+                                    </includes>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.90</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.90</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                                <rule>
+                                    <element>CLASS</element>
+                                    <includes>
+                                        <include>com.personalprojections.locallife.server.module.seckill.service.CouponService</include>
+                                    </includes>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.95</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.95</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                                <rule>
+                                    <element>CLASS</element>
+                                    <includes>
+                                        <include>com.personalprojections.locallife.server.module.order.service.PaymentService</include>
+                                    </includes>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.80</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.70</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                                <rule>
+                                    <element>CLASS</element>
+                                    <includes>
+                                        <include>com.personalprojections.locallife.server.module.shop.service.ShopService</include>
+                                    </includes>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.80</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.60</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                                <rule>
+                                    <element>CLASS</element>
+                                    <includes>
+                                        <include>com.personalprojections.locallife.server.module.order.service.OrderService</include>
+                                    </includes>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.60</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.60</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                                <rule>
+                                    <element>CLASS</element>
+                                    <includes>
+                                        <include>com.personalprojections.locallife.server.common.interceptor.AuthInterceptor</include>
+                                    </includes>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.90</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.85</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>

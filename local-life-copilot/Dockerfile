@@ -5,7 +5,8 @@ FROM maven:3.9.9-eclipse-temurin-17-alpine AS build
 WORKDIR /workspace
 
 COPY pom.xml .
-COPY ../pom.xml ../pom.xml
+COPY local-life-copilot/pom.xml local-life-copilot/pom.xml
+COPY local-life-server/pom.xml local-life-server/pom.xml
 RUN mvn dependency:go-offline -pl local-life-copilot -am -q
 
 COPY . .

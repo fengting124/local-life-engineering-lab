@@ -7,7 +7,8 @@ WORKDIR /workspace
 
 # 先只复制 pom 文件，利用 Docker 层缓存（依赖不变时跳过 mvn download）
 COPY pom.xml .
-COPY ../pom.xml ../pom.xml
+COPY local-life-server/pom.xml local-life-server/pom.xml
+COPY local-life-copilot/pom.xml local-life-copilot/pom.xml
 
 # 下载所有依赖（父 pom + 子模块）
 RUN mvn dependency:go-offline -pl local-life-server -am -q

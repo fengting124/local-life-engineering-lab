@@ -1,0 +1,17 @@
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+mutants/
+.mutmut-cache
+
+tests/
+setup.cfg
+pytest.ini
+requirements-dev.txt
+TESTING.md
+
+model_services/
