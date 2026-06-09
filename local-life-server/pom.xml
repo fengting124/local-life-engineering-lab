@@ -378,6 +378,62 @@
                 所以一份报告同时反映单元 + 集成测试的覆盖。
                 报告产物：target/site/jacoco/index.html（人看）+ jacoco.csv / jacoco.xml（CI 解析）
             -->
+            <!--
+                PIT 变异测试：衡量「测试的有效性」而非「覆盖率」。
+                JaCoCo 只回答「这行代码被执行了吗」，PIT 回答「如果我把这行逻辑改坏，测试能抓到吗」——
+                它会自动给被测类植入大量变异（把 > 改成 >=、把 return 改成 return null、删掉一行调用…），
+                每个变异跑一遍对应的单元测试：测试失败 = 变异被「杀死」（好）；测试仍通过 = 变异「存活」
+                （说明这段逻辑没被有效断言，是测试盲区）。变异杀死率比行覆盖率更能反映测试质量。
+
+                只挂在 seckill / order 两个最核心、单测最充分的 Service 上（集成测试 *IT 不参与，避免拉容器）。
+                运行：mvn -pl local-life-server test-compile org.pitest:pitest-maven:mutationCoverage
+                报告：target/pit-reports/index.html
+            -->
+            <plugin>
+                <groupId>org.pitest</groupId>
+                <artifactId>pitest-maven</artifactId>
+                <version>1.17.0</version>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.pitest</groupId>
+                        <artifactId>pitest-junit5-plugin</artifactId>
+                        <version>1.2.1</version>
+                    </dependency>
+                </dependencies>
+                <configuration>
+                    <targetClasses>
+                        <param>com.personalprojections.locallife.server.module.seckill.service.SeckillService</param>
+                        <param>com.personalprojections.locallife.server.module.seckill.service.CouponService</param>
+                        <param>com.personalprojections.locallife.server.module.order.service.OrderService</param>
+                        <param>com.personalprojections.locallife.server.module.order.service.PaymentService</param>
+                    </targetClasses>
+                    <targetTests>
+                        <param>com.personalprojections.locallife.server.module.seckill.SeckillServiceTest</param>
+                        <param>com.personalprojections.locallife.server.module.seckill.CouponServiceTest</param>
+                        <param>com.personalprojections.locallife.server.module.order.OrderServiceTest</param>
+                        <param>com.personalprojections.locallife.server.module.order.PaymentServiceTest</param>
+                    </targetTests>
+                    <outputFormats>
+                        <param>HTML</param>
+                        <param>XML</param>
+                    </outputFormats>
+                    <threads>4</threads>
+                    <timestampedReports>false</timestampedReports>
+                    <!--
+                        本模块依赖巨多（ShardingSphere/ES/RocketMQ/Canal…），classpath 极长，
+                        直接传给 PIT minion 会超出 OS 命令行长度限制导致 minion 启动即崩
+                        （表现为 UNKNOWN_ERROR、无 Java 栈）。useClasspathJar 把 classpath 打进
+                        一个 manifest-only 的 jar 再传给 minion，绕开长度限制。
+                    -->
+                    <useClasspathJar>true</useClasspathJar>
+                    <!-- 不继承 surefire 的 argLine（避免未解析的 ${argLine} 占位符传进 minion 导致启动崩溃） -->
+                    <parseSurefireConfig>false</parseSurefireConfig>
+                    <jvmArgs>
+                        <param>-Xmx1024m</param>
+                    </jvmArgs>
+                </configuration>
+            </plugin>
+
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
