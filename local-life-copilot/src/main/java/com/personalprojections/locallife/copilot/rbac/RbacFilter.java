@@ -57,9 +57,9 @@ public class RbacFilter implements Filter {
             String role        = request.getHeader("X-User-Role");
             String merchantStr = request.getHeader("X-Merchant-Id");
 
-            // 健康检查等非 MCP 端点跳过身份校验
+            // 健康检查、Swagger 文档等非 MCP 端点跳过身份校验
             String path = request.getRequestURI();
-            if (path.startsWith("/actuator")) {
+            if (isPublicEndpoint(path)) {
                 chain.doFilter(req, resp);
                 return;
             }
@@ -107,5 +107,12 @@ public class RbacFilter implements Filter {
             // 必须清理，防止线程池复用时 ThreadLocal 污染
             RbacContext.clear();
         }
+    }
+
+    private boolean isPublicEndpoint(String path) {
+        return path.startsWith("/actuator")
+                || path.equals("/swagger-ui.html")
+                || path.startsWith("/swagger-ui/")
+                || path.startsWith("/v3/api-docs");
     }
 }

@@ -12,6 +12,10 @@ import com.personalprojections.locallife.copilot.mcp.dto.ToolDefinition;
 import com.personalprojections.locallife.copilot.rbac.RbacContext;
 import com.personalprojections.locallife.copilot.tool.McpTool;
 import com.personalprojections.locallife.copilot.tool.ToolRegistry;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.enums.ParameterIn;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -56,6 +60,7 @@ import java.util.Optional;
  */
 @Slf4j
 @RestController
+@Tag(name = "MCP", description = "JSON-RPC 2.0 over HTTP 工具入口")
 @RequiredArgsConstructor
 public class McpController {
 
@@ -78,6 +83,21 @@ public class McpController {
      * @param threadId  LangGraph thread ID（来自 X-Thread-Id Header，用于审计）
      * @return JSON-RPC 响应体
      */
+    @Operation(
+            summary = "MCP JSON-RPC 入口",
+            description = "支持 initialize、tools/list、tools/call。真实链路中身份 Header 由 Python Agent Service 注入。",
+            parameters = {
+                    @Parameter(name = "X-User-Id", in = ParameterIn.HEADER, required = true,
+                            description = "当前用户 ID，例如 10001"),
+                    @Parameter(name = "X-User-Role", in = ParameterIn.HEADER, required = true,
+                            description = "角色：merchant / cs / admin"),
+                    @Parameter(name = "X-Merchant-Id", in = ParameterIn.HEADER,
+                            description = "merchant 角色必填，其他角色可不填"),
+                    @Parameter(name = "X-Session-Id", in = ParameterIn.HEADER,
+                            description = "会话 ID，用于工具审计"),
+                    @Parameter(name = "X-Thread-Id", in = ParameterIn.HEADER,
+                            description = "LangGraph thread ID，用于工具审计")
+            })
     @PostMapping("/mcp")
     public McpResponse handle(
             @RequestBody McpRequest request,

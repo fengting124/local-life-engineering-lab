@@ -47,6 +47,22 @@ mybatis-plus:
 server:
   port: 8081
 
+# ===== OpenAPI / Swagger 在线接口文档 =====
+# 本地访问：
+#   Swagger UI: http://localhost:8081/swagger-ui.html
+#   OpenAPI JSON: http://localhost:8081/v3/api-docs
+# 生产环境 MCP Server 通常只在内网开放，不建议把文档直接暴露到公网。
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+  packages-to-scan: com.personalprojections.locallife.copilot
+  paths-to-match:
+    - /mcp
+
 # ===== Actuator =====
 management:
   endpoints:

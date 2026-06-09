@@ -145,6 +145,7 @@ public class AuthInterceptor implements HandlerInterceptor {
 
             // 运维 / 文档
             PublicEndpoint.anyMethod("/actuator/**"),
+            PublicEndpoint.anyMethod("/swagger-ui.html"),
             PublicEndpoint.anyMethod("/swagger-ui/**"),
             PublicEndpoint.anyMethod("/v3/api-docs/**")
     );

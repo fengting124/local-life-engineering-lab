@@ -118,6 +118,23 @@ server:
     # 暂不设 context-path，保持 /api/v1/... 的路径直接可用
     context-path: /
 
+# ===== OpenAPI / Swagger 在线接口文档 =====
+# 本地访问：
+#   Swagger UI: http://localhost:8080/swagger-ui.html
+#   OpenAPI JSON: http://localhost:8080/v3/api-docs
+# 生产环境建议只在内网、测试环境或带鉴权的网关后开放。
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+  packages-to-scan: com.personalprojections.locallife.server
+  paths-to-match:
+    - /api/**
+    - /internal/**
+
 # ===== Actuator 运维端点 =====
 management:
   endpoints:
