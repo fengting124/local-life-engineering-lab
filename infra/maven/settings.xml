@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Docker 构建专用 Maven settings —— 把 Maven Central 的流量改走阿里云公共仓库镜像。
+
+  动机：
+    在 Docker Desktop / WSL 环境里直连 repo.maven.apache.org 偶发
+    "Unknown host" / 连接超时（宿主机 DNS + IPv6 + JVM 网络栈交互不稳定）。
+    阿里云 public 仓库聚合了 Maven Central 及常见仓库，国内链路稳定，
+    用它做 central 的镜像后，构建不再依赖对 Maven Central 的直连。
+
+  作用范围：
+    只镜像 <mirrorOf>central</mirrorOf>——即默认的依赖仓库与插件仓库（super-pom 里
+    二者 id 都是 central）。项目所有依赖（Spring Boot / ShardingSphere / MyBatis-Plus /
+    RocketMQ / Canal 等）都在 Maven Central，因此该镜像即可覆盖全部下载。
+    不写 *，避免万一某天引入只存在于特定第三方仓库、而阿里云未收录的构件时被误拦。
+
+  仅在镜像构建阶段使用（Dockerfile COPY 到 /root/.m2/settings.xml，Maven 自动读取），
+  不影响开发者本机的 ~/.m2/settings.xml。
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
+                              https://maven.apache.org/xsd/settings-1.0.0.xsd">
+    <mirrors>
+        <mirror>
+            <id>aliyun-public</id>
+            <name>Aliyun Public (mirror of Maven Central)</name>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <mirrorOf>central</mirrorOf>
+        </mirror>
+    </mirrors>
+</settings>
