@@ -32,7 +32,11 @@ engine = create_async_engine(
     settings.db_url,
     pool_size=5,
     max_overflow=10,
-    pool_pre_ping=True,   # 每次取连接前 ping，防止连接池中出现断开的连接
+    # SQLAlchemy 2.0.36 + aiomysql 0.2.0 的 pool_pre_ping 会走 PyMySQL 的
+    # ping() 调用路径，但 aiomysql 适配层需要 reconnect 参数，导致偶发
+    # TypeError: AsyncAdapt_aiomysql_connection.ping() missing ... reconnect。
+    # 开发环境关闭预 ping，避免 /chat 在会话落库时因为连接探活失败返回 500。
+    pool_pre_ping=False,
     echo=False,           # True 时打印所有 SQL（调试用）
 )
 
