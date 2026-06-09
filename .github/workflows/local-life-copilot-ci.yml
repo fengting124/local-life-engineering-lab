@@ -29,6 +29,15 @@ concurrency:
   group: local-life-copilot-ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Maven 解析器 HTTP 重试：吃掉拉取依赖时的瞬时网络抖动（GitHub runner → Maven Central
+# 一般很稳，但偶发 5xx / 超时仍会发生）。只在「单个构件下载」层面重试，不重跑测试，
+# 所以真正的用例失败不会被错误地反复重试。CI 直连 Maven Central（海外 runner 最快最稳），
+# 不用 Docker 那套面向国内网络的阿里云镜像。
+env:
+  MAVEN_OPTS: >-
+    -Daether.connector.http.retryHandler.count=5
+    -Daether.connector.http.retryHandler.requestSentEnabled=true
+
 jobs:
   test:
     runs-on: ubuntu-latest

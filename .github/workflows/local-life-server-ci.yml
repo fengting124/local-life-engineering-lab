@@ -18,6 +18,16 @@ concurrency:
   group: local-life-server-ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Maven 解析器 HTTP 重试：吃掉拉取依赖时的瞬时网络抖动（GitHub runner → Maven Central
+# 一般很稳，但偶发 5xx / 超时仍会发生）。这里只在「单个构件下载」层面重试，不重跑测试或
+# 质量门禁——所以真正的用例失败 / 覆盖率门禁不达标不会被错误地反复重试。
+# 注意：不在 CI 里用 Docker 那套阿里云镜像——GitHub runner 在海外，直连 Maven Central
+# 才是最快最稳的；阿里云镜像是给本地 Docker Desktop（国内网络）用的。
+env:
+  MAVEN_OPTS: >-
+    -Daether.connector.http.retryHandler.count=5
+    -Daether.connector.http.retryHandler.requestSentEnabled=true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
