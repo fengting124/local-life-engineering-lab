@@ -3,11 +3,14 @@
 # ───── Stage 1: Build ─────
 FROM maven:3.9.9-eclipse-temurin-17-alpine AS build
 WORKDIR /workspace
+ENV MAVEN_OPTS="-Djava.net.preferIPv4Stack=true \
+                -Dsun.net.client.defaultConnectTimeout=30000 \
+                -Dsun.net.client.defaultReadTimeout=30000"
+ENV JAVA_TOOL_OPTIONS="${MAVEN_OPTS}"
 
 COPY pom.xml .
 COPY local-life-copilot/pom.xml local-life-copilot/pom.xml
 COPY local-life-server/pom.xml local-life-server/pom.xml
-RUN mvn dependency:go-offline -pl local-life-copilot -am -q
 
 COPY . .
 RUN mvn package -pl local-life-copilot -am -DskipTests -q

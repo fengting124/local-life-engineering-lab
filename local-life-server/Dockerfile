@@ -4,16 +4,18 @@
 # ───── Stage 1: Build ─────
 FROM maven:3.9.9-eclipse-temurin-17-alpine AS build
 WORKDIR /workspace
+ENV MAVEN_OPTS="-Djava.net.preferIPv4Stack=true \
+                -Dsun.net.client.defaultConnectTimeout=30000 \
+                -Dsun.net.client.defaultReadTimeout=30000"
+ENV JAVA_TOOL_OPTIONS="${MAVEN_OPTS}"
 
 # 先只复制 pom 文件，利用 Docker 层缓存（依赖不变时跳过 mvn download）
 COPY pom.xml .
 COPY local-life-server/pom.xml local-life-server/pom.xml
 COPY local-life-copilot/pom.xml local-life-copilot/pom.xml
 
-# 下载所有依赖（父 pom + 子模块）
-RUN mvn dependency:go-offline -pl local-life-server -am -q
-
-# 复制源码并编译（跳过测试加速构建）
+# 复制源码并编译（跳过测试加速构建）。不使用 dependency:go-offline：
+# Maven dependency plugin 会解析 ShardingSphere 已排除的缺失传递依赖，正常 package 不受影响。
 COPY . .
 RUN mvn package -pl local-life-server -am -DskipTests -q
 
