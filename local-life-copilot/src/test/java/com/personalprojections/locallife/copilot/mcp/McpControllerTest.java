@@ -1,5 +1,6 @@
 package com.personalprojections.locallife.copilot.mcp;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.personalprojections.locallife.copilot.audit.ToolAuditService;
 import com.personalprojections.locallife.copilot.mcp.dto.ToolDefinition;
@@ -22,6 +23,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import lombok.Data;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.mockito.ArgumentMatchers.any;
@@ -416,5 +418,105 @@ class McpControllerTest {
                 .andExpect(jsonPath("$.error.data.detail").value("数据库连接超时"));
 
         verify(auditService).recordError(isNull(), isNull(), eq("query_order"), any(), eq("数据库连接超时"), anyLong());
+    }
+
+    // =====================================================================
+    // 7. tools/call —— buildContentResult 序列化各种形状的 tool result
+    //
+    //    所有 tool 返回值统一走 ObjectMapper.writeValueAsString()（String 例外，直通）：
+    //    序列化后 readTree() 复核，任何异常都短路成 internal_error，
+    //    不再用 .toString() 兜底（那会产出非法 JSON、让 Agent 解析炸掉）。
+    //
+    //    覆盖 6 种入参形状：Map（已被 section 5 的用例兼顾）、JsonNode、DTO、
+    //    List、null、非法对象（触发 FAIL_ON_EMPTY_BEANS）。
+    // =====================================================================
+
+    /** 用于 DTO 序列化测试的简单 POJO。 */
+    @Data
+    static class OrderSummary {
+        private final String orderId;
+        private final int amount;
+    }
+
+    /** 无任何可见属性——确定性触发 FAIL_ON_EMPTY_BEANS（Jackson 默认开启），不依赖 mock ObjectMapper。 */
+    private static final class Unserializable {
+        @SuppressWarnings("unused")
+        private final String hidden = "secret";
+    }
+
+    @Test
+    void buildContentResult_jsonNodeResult_serializesAsValidJsonInTextField() throws Exception {
+        McpTool tool = stubRegisteredTool("query_order", List.of("merchant", "cs", "admin"));
+        JsonNode node = objectMapper.readTree("{\"status\":\"PAID\",\"amount\":2990}");
+        when(tool.execute(any())).thenReturn(node);
+
+        mockMvc.perform(mcpRequest("""
+                {"jsonrpc":"2.0","id":"r-jn","method":"tools/call","params":{"name":"query_order","arguments":{}}}
+                """, "admin"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result.content[0].type").value("text"))
+                .andExpect(jsonPath("$.result.content[0].text", containsString("\"status\":\"PAID\"")))
+                .andExpect(jsonPath("$.result.content[0].text", containsString("\"amount\":2990")));
+    }
+
+    @Test
+    void buildContentResult_dtoResult_serializesAsValidJsonObject() throws Exception {
+        McpTool tool = stubRegisteredTool("query_order", List.of("merchant", "cs", "admin"));
+        when(tool.execute(any())).thenReturn(new OrderSummary("ORD-001", 999));
+
+        mockMvc.perform(mcpRequest("""
+                {"jsonrpc":"2.0","id":"r-dto","method":"tools/call","params":{"name":"query_order","arguments":{}}}
+                """, "admin"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result.content[0].text", containsString("\"orderId\":\"ORD-001\"")))
+                .andExpect(jsonPath("$.result.content[0].text", containsString("\"amount\":999")));
+    }
+
+    @Test
+    void buildContentResult_listResult_serializesAsJsonArray() throws Exception {
+        McpTool tool = stubRegisteredTool("query_order", List.of("merchant", "cs", "admin"));
+        when(tool.execute(any())).thenReturn(List.of("item_a", "item_b", "item_c"));
+
+        mockMvc.perform(mcpRequest("""
+                {"jsonrpc":"2.0","id":"r-list","method":"tools/call","params":{"name":"query_order","arguments":{}}}
+                """, "admin"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result.content[0].text").value("[\"item_a\",\"item_b\",\"item_c\"]"));
+    }
+
+    @Test
+    void buildContentResult_nullResult_serializesAsJsonNull() throws Exception {
+        McpTool tool = stubRegisteredTool("query_order", List.of("merchant", "cs", "admin"));
+        when(tool.execute(any())).thenReturn(null);
+
+        mockMvc.perform(mcpRequest("""
+                {"jsonrpc":"2.0","id":"r-null","method":"tools/call","params":{"name":"query_order","arguments":{}}}
+                """, "admin"))
+                .andExpect(status().isOk())
+                // null → objectMapper.writeValueAsString(null) = "null"（JSON null 字面量）
+                // 比空字符串更明确地向 Agent 表达"工具没有返回任何数据"
+                .andExpect(jsonPath("$.result.content[0].text").value("null"));
+    }
+
+    @Test
+    void buildContentResult_unserializableResult_returnsInternalError_ratherThanSilentlyProducingInvalidJson() throws Exception {
+        // 回归点：旧实现 catch(Exception e) { text = toolResult.toString(); }
+        // .toString() 的结果不是合法 JSON，会让 Agent 端 json.loads() 直接炸掉。
+        // 修复后：序列化失败直接短路成 internal_error，不做危险兜底。
+        McpTool tool = stubRegisteredTool("query_order", List.of("merchant", "cs", "admin"));
+        when(tool.execute(any())).thenReturn(new Unserializable());
+
+        mockMvc.perform(mcpRequest("""
+                {"jsonrpc":"2.0","id":"r-bad","method":"tools/call","params":{"name":"query_order","arguments":{}}}
+                """, "admin"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.error.code").value(-32603))
+                .andExpect(jsonPath("$.error.message").value("internal_error"))
+                .andExpect(jsonPath("$.error.data.detail", containsString("工具返回值序列化失败")));
+
+        // 序列化阶段（tool.execute() 已经成功）的失败不走 recordError——
+        // tool.execute() 正常返回，失败发生在 Controller 内部的包装环节
+        verify(auditService, times(1))
+                .recordSuccess(any(), any(), eq("query_order"), any(), any(), anyLong());
     }
 }
