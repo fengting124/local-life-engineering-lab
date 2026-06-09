@@ -7,6 +7,8 @@
 #   2. 创建数据库（若不存在）
 #   3. 按版本顺序执行所有 SQL 迁移（V1~V9 + Copilot V1）
 #   4. 使用迁移记录表（schema_migrations）防止重复执行
+#      迁移 key 使用 namespace:version（如 server:V1 / copilot:V1），避免不同模块
+#      都有 V1 时互相遮挡。历史库中已有的 server 侧旧 key（V1~V9）会被兼容跳过。
 #
 # 使用方式：
 #   # 本地开发（MySQL 在 localhost）
@@ -85,25 +87,40 @@ CREATE TABLE IF NOT EXISTS \`schema_migrations\` (
 
 # ---- Step 4：执行迁移 ----
 run_migration() {
-  local sql_file="$1"
+  local namespace="$1"
+  local sql_file="$2"
   local filename=$(basename "${sql_file}")
   # 提取版本号：V1__xxx.sql → V1
   local version=$(echo "${filename}" | sed 's/^\(V[0-9]*\)__.*/\1/')
+  local version_key="${namespace}:${version}"
   local description=$(echo "${filename}" | sed 's/^V[0-9]*__\(.*\)\.sql$/\1/')
 
   # 检查是否已执行
   local already_applied=$(${MYSQL_CMD} ${MYSQL_DATABASE} -sN -e \
-    "SELECT COUNT(*) FROM schema_migrations WHERE version='${version}'" 2>/dev/null || echo "0")
+    "SELECT COUNT(*) FROM schema_migrations WHERE version='${version_key}'" 2>/dev/null || echo "0")
 
   if [ "${already_applied}" = "1" ]; then
-    echo "   ⏭  ${filename} (${version} 已执行，跳过)"
+    echo "   ⏭  ${filename} (${version_key} 已执行，跳过)"
     return 0
+  fi
+
+  # 兼容历史库：早期只记录 V1/V2...，这些记录都来自 server 迁移。
+  # 发现旧 key 时补写新的 namespaced key，不重跑 SQL，避免 ALTER/INSERT 重复执行。
+  if [ "${namespace}" = "server" ]; then
+    local legacy_applied=$(${MYSQL_CMD} ${MYSQL_DATABASE} -sN -e \
+      "SELECT COUNT(*) FROM schema_migrations WHERE version='${version}'" 2>/dev/null || echo "0")
+    if [ "${legacy_applied}" = "1" ]; then
+      ${MYSQL_CMD} ${MYSQL_DATABASE} -e \
+        "INSERT IGNORE INTO schema_migrations(version, description) VALUES('${version_key}', '${description}');"
+      echo "   ⏭  ${filename} (${version} legacy 已执行，补记 ${version_key} 后跳过)"
+      return 0
+    fi
   fi
 
   echo "   🔄 执行 ${filename}..."
   if ${MYSQL_CMD} ${MYSQL_DATABASE} < "${sql_file}"; then
     ${MYSQL_CMD} ${MYSQL_DATABASE} -e \
-      "INSERT INTO schema_migrations(version, description) VALUES('${version}', '${description}');"
+      "INSERT INTO schema_migrations(version, description) VALUES('${version_key}', '${description}');"
     echo "   ✅ ${filename} 完成"
   else
     echo "   ❌ ${filename} 执行失败！"
@@ -115,13 +132,13 @@ echo ""
 echo "📝 执行 LocalLife Server 迁移..."
 # 按版本顺序执行
 for f in $(ls "${SERVER_MIGRATION_DIR}"/V*.sql 2>/dev/null | sort -V); do
-  run_migration "${f}"
+  run_migration "server" "${f}"
 done
 
 echo ""
 echo "📝 执行 Copilot 迁移..."
 for f in $(ls "${COPILOT_MIGRATION_DIR}"/V*.sql 2>/dev/null | sort -V); do
-  run_migration "${f}"
+  run_migration "copilot" "${f}"
 done
 
 echo ""

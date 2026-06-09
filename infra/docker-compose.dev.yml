@@ -58,15 +58,11 @@ services:
     environment:
       # 使用 Docker 网络内部地址访问 MySQL/Redis
       SPRING_DATASOURCE_URL: "jdbc:shardingsphere:classpath:sharding-docker.yaml"
-      # ShardingSphere 内的 jdbcUrl 需要指向 Docker 网络中的 MySQL
-      # 通过 JAVA_OPTS 传入，覆盖 sharding.yaml 的默认 localhost
-      # ShardingSphere 读取 MYSQL_HOST 等系统属性（见 sharding.yaml 的 ${MYSQL_HOST:-localhost}）
+      # ShardingSphere Driver 直接读取 sharding-docker.yaml，不经过 Spring 占位符替换；
+      # Docker MySQL 连接信息固定写在 sharding-docker.yaml 中。JAVA_OPTS 只保留
+      # Redis / ES / RocketMQ / Zipkin 等 Spring 能正常读取的运行期覆盖。
       JAVA_OPTS: >-
         -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0
-        -DMYSQL_HOST=mysql
-        -DMYSQL_PORT=3306
-        -DMYSQL_USER=root
-        -DMYSQL_PASSWORD=${MYSQL_ROOT_PASSWORD:-123456}
         -Dspring.data.redis.host=redis
         -Dspring.elasticsearch.uris=http://elasticsearch:9200
         -Drocketmq.name-server=rocketmq-namesrv:9876
@@ -81,7 +77,7 @@ services:
       - local-life-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health >/dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -112,7 +108,7 @@ services:
       - local-life-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8081/actuator/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health >/dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -131,6 +127,11 @@ services:
       DB_URL: "mysql+aiomysql://root:${MYSQL_ROOT_PASSWORD:-123456}@mysql:3306/local_life"
       REDIS_URL: "redis://redis:6379/2"
       MILVUS_URI: "http://milvus:19530"
+      MILVUS_HOST: "milvus"
+      MILVUS_PORT: "19530"
+      MILVUS_COLLECTION: "${MILVUS_COLLECTION:-local_life_kb}"
+      EMBEDDING_SERVICE_URL: "http://embedding-service:8100"
+      RERANKER_SERVICE_URL: "http://reranker-service:8101"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
       LLM_PROVIDER: "${LLM_PROVIDER:-deepseek}"
       LLM_API_KEY: "${LLM_API_KEY:-}"
@@ -144,7 +145,7 @@ services:
       - local-life-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5).read()\""]
       interval: 30s
       timeout: 10s
       retries: 5

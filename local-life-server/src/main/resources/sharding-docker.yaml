@@ -49,11 +49,13 @@ dataSources:
   ds0:
     dataSourceClassName: com.zaxxer.hikari.HikariDataSource
     driverClassName: com.mysql.cj.jdbc.Driver
-    # 本地开发硬编码（ShardingSphere 5.5.0 对 ${VAR:-default} 语法存在兼容性问题）
-    # Docker 运行时使用 sharding-docker.yaml（见 docker-compose.dev.yml）
-    jdbcUrl: jdbc:mysql://${MYSQL_HOST}:${MYSQL_PORT}/local_life?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=UTF-8&allowPublicKeyRetrieval=true&useSSL=false
-    username: ${MYSQL_USER}
-    password: ${MYSQL_PASSWORD}
+    # Docker 专用配置：ShardingSphere Driver 直接读取此 YAML，不经过 Spring
+    # EnvironmentPostProcessor，因此 ${MYSQL_PORT} / ${MYSQL_USER} 等占位符不会被
+    # Spring 或 JVM -D 参数替换。这里显式使用 docker-compose.dev.yml 中的服务名和
+    # 默认开发密码，保证容器镜像启动后可以直接连接真实 MySQL。
+    jdbcUrl: jdbc:mysql://mysql:3306/local_life?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=UTF-8&allowPublicKeyRetrieval=true&useSSL=false
+    username: root
+    password: 123456
     # HikariCP 连接池参数（与 application.yml 中原配置保持一致）
     connectionTimeout: 3000
     maximumPoolSize: 16
