@@ -24,6 +24,15 @@ dist/
 __pycache__/
 *.pyc
 
+# 测试覆盖率产物（报告是生成物，不入库；.coveragerc 配置要入库）
+htmlcov/
+.coverage
+.coverage.*
+.pytest_cache/
+
+# Claude Code 本地工作目录（记忆/会话，非项目代码）
+.claude/
+
 # Env
 .env
 *.env

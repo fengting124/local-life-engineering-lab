@@ -1,0 +1,30 @@
+# coverage.py 配置（pytest-cov 读取）
+# 运行：pytest --cov --cov-report=term-missing --cov-report=html
+
+[run]
+# 统计分支覆盖（if/else 两条边都要走到），比纯行覆盖更严格
+branch = True
+source = .
+# 测试代码本身、虚拟环境、启动入口、纯配置、离线脚本均不计入覆盖
+omit =
+    tests/*
+    .venv/*
+    */__init__.py
+    main.py
+    config/*
+    evals/*
+    scripts/*
+
+[report]
+# 这些行不算「未覆盖」
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    if TYPE_CHECKING:
+precision = 1
+show_missing = True
+skip_covered = False
+
+[html]
+directory = htmlcov

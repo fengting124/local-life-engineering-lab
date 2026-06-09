@@ -25,6 +25,31 @@ python -m pytest -k "fastpath"     # 按关键词过滤
 
 ---
 
+## 覆盖率（pytest-cov）
+
+```bash
+pip install -r requirements-dev.txt        # pytest / pytest-asyncio / pytest-mock / pytest-cov
+python -m pytest --cov --cov-report=term-missing --cov-report=html
+# 报告：htmlcov/index.html
+```
+
+配置见 `.coveragerc`（`branch = True` 开启分支覆盖，omit 掉测试/配置/启动入口）。
+
+**被测核心模块覆盖率**：
+
+| 模块 | 覆盖率 |
+|------|--------|
+| `agent/tool_router.py` | 100% |
+| `guardrails/input_checker.py` | 100% |
+| `mcp/mcp_client.py` | 94.6% |
+| `rag/bm25_store.py` | 88.5% |
+| `rag/pipeline.py` | 83.5% |
+
+> 整体 ~35%：未覆盖的是 `nodes.py`（ReAct 循环，需真实 LLM）、`vector_store.py`（需真 Milvus）、
+> `embedding/reranker`（需加载本地模型）等重 I/O 模块——刻意把测试投在可纯逻辑验证的核心代码上。
+
+---
+
 ## 测试文件一览
 
 | 文件 | 测试类数 | 用例数 | 被测模块 |

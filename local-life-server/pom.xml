@@ -67,9 +67,21 @@
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
+        <!--
+            注意：用纯 redisson（而非 redisson-spring-boot-starter），原因见下：
+            redisson-spring-boot-starter 会传递引入 redisson-spring-data-32（为 Spring Data
+            Redis 3.2.x 适配），并自动注册一个 RedissonConnectionFactory 顶替 Lettuce。
+            但本项目的 spring-data-redis 实际版本是 3.5.x（来自 Spring Boot 3.5 BOM），
+            该适配器未实现新版 RedisKeyCommands 的 pExpire(key, millis, Condition) 重载，
+            导致 DefaultedRedisConnection 的默认方法互相委托、StackOverflowError
+            （RedisTemplate.opsForValue().set(key, value, ttl, unit) 等设置过期时间的调用都会触发）。
+            本项目只需要 RedissonClient（见 RedissonConfig，手动 Redisson.create 构建，
+            用于 BloomFilterService 布隆过滤器 / 秒杀分布式锁），不需要 Spring Data Redis 集成，
+            纯 redisson 既不带这个冲突的自动配置，又能满足全部需求。
+        -->
         <dependency>
             <groupId>org.redisson</groupId>
-            <artifactId>redisson-spring-boot-starter</artifactId>
+            <artifactId>redisson</artifactId>
             <version>3.27.2</version>
         </dependency>
 
@@ -266,6 +278,35 @@
             <scope>test</scope>
         </dependency>
 
+        <!--
+            Testcontainers：用真实的 Docker 容器（MySQL / Redis）跑集成测试，
+            而不是 H2 / 嵌入式 Redis 这类「形似而神不似」的替身。
+            企业级测试金字塔里「集成测试」这一层的标准做法：
+              - 测的是真实数据库的真实行为（唯一索引冲突、隔离级别、Lua 原子性）
+              - 容器随测试启动、随测试销毁，完全隔离、可重复、不污染开发库
+            版本由 Spring Boot 3.5 BOM（导入 testcontainers-bom）统一管理，无需显式写 version。
+        -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- MySQLContainer：一键拉起 mysql:8.4 容器，提供 JDBC URL / 用户名 / 密码 -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>mysql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!--
+            Redis 没有专门的 Testcontainers 模块，直接用 GenericContainer + redis:7.4-alpine 镜像，
+            testcontainers 核心包已被 junit-jupiter 传递引入，此处显式声明便于阅读。
+        -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <build>
@@ -285,6 +326,92 @@
                         </exclude>
                     </excludes>
                 </configuration>
+            </plugin>
+
+            <!--
+                surefire：跑「单元测试」（命名 *Test）。
+                单元测试快、纯内存、Mock 一切外部依赖，每次 mvn test 都跑。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <includes>
+                        <include>**/*Test.java</include>
+                    </includes>
+                    <excludes>
+                        <exclude>**/*IT.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+
+            <!--
+                failsafe：跑「集成测试」（命名 *IT，Integration Test）。
+                集成测试用 Testcontainers 拉起真实 MySQL / Redis，慢且依赖 Docker，
+                绑定到 verify 阶段（mvn verify 才跑），与快速的单元测试分离。
+                这是企业里区分「单元 vs 集成」测试的标准 Maven 约定。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>3.5.3</version>
+                <configuration>
+                    <includes>
+                        <include>**/*IT.java</include>
+                    </includes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+                JaCoCo：代码覆盖率统计。
+                prepare-agent           → 给 surefire（单元测试）注入字节码探针
+                prepare-agent-integration → 给 failsafe（集成测试）注入探针
+                两次执行默认 append 到同一个 target/jacoco.exec，report 读取后合并出总覆盖率，
+                所以一份报告同时反映单元 + 集成测试的覆盖。
+                报告产物：target/site/jacoco/index.html（人看）+ jacoco.csv / jacoco.xml（CI 解析）
+            -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.12</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>prepare-agent-integration</id>
+                        <goals>
+                            <goal>prepare-agent-integration</goal>
+                        </goals>
+                        <configuration>
+                            <!--
+                                关键：让集成测试的探针数据 append 到与单元测试同一个 jacoco.exec，
+                                这样 report 一次读取就能合并「单元 + 集成」两层覆盖率，
+                                而不是各自一份、报告只反映其中一半。
+                            -->
+                            <destFile>${project.build.directory}/jacoco.exec</destFile>
+                        </configuration>
+                    </execution>
+                    <!-- 在 verify 阶段（单元 + 集成测试都跑完后）生成合并报告 -->
+                    <execution>
+                        <id>report</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

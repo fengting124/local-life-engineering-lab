@@ -1,0 +1,10 @@
+# ================================================================
+# 测试 / 开发期依赖（生产镜像不需要）
+# 安装：pip install -r requirements-dev.txt
+# ================================================================
+
+pytest==9.0.3
+pytest-asyncio==1.4.0   # 异步测试驱动（asyncio_mode = auto）
+pytest-mock==3.15.1     # mocker fixture
+pytest-cov==7.1.0       # 覆盖率（基于 coverage.py）
+coverage==7.14.1

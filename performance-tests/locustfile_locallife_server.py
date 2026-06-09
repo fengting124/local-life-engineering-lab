@@ -35,6 +35,8 @@ LocalLife Server 压测脚本（Locust）。
 """
 import random
 import json
+import itertools
+import threading
 from locust import HttpUser, task, between, events
 from locust.runners import MasterRunner
 
@@ -43,9 +45,28 @@ from locust.runners import MasterRunner
 # =========================================================
 SHOP_IDS         = list(range(1, 20))
 POST_IDS         = list(range(1, 50))
-SECKILL_SESSIONS = [(1, 1), (1, 2), (2, 1)]  # (sessionId, couponTemplateId)
+# (sessionId, couponTemplateId)：必须是合法配对——seckill_session 一场次只绑一个券模板。
+# 与 scripts/seed-perf-data.sql 对齐：场次 1→模板 1，场次 2→模板 2。
+SECKILL_SESSIONS = [(1, 1), (2, 2)]
 TEST_MOBILE      = "13800000001"
 TEST_CODE        = "123456"  # 测试验证码（测试环境固定值）
+
+# 秒杀专项压测需要「不同用户」才能真实争抢库存：
+# 如果所有虚拟用户都用同一个 mobile 登录，第一个抢到后其余全是「已领取(400)」，
+# 测不出超卖。这里用一段连号手机号池，每个虚拟用户取一个不同号。
+#   ⚠️ 前提：这些账号必须已在 DB 里存在（见 docs 里的「压测数据准备」），否则登录失败。
+SECKILL_MOBILE_BASE  = 13900000000
+SECKILL_MOBILE_COUNT = 2000
+_mobile_seq = itertools.count(0)   # 线程安全的自增（gevent 协作式调度下安全）
+
+# 秒杀结果计数器（HTTP 层校验超卖：claimed 总数应 <= 库存）
+_seckill_lock = threading.Lock()
+_seckill_outcomes = {"claimed": 0, "sold_out": 0, "duplicated": 0, "rate_limited": 0, "error": 0}
+
+
+def _record_seckill(outcome: str):
+    with _seckill_lock:
+        _seckill_outcomes[outcome] = _seckill_outcomes.get(outcome, 0) + 1
 
 
 class LocalLifeUser(HttpUser):
@@ -140,13 +161,19 @@ class SeckillUser(HttpUser):
     """
     wait_time = between(0.1, 0.5)  # 秒杀场景用户等待时间短
     token: str = ""
+    mobile: str = ""
 
     def on_start(self):
+        # 每个虚拟用户取一个不同的手机号，模拟「不同的人」同时抢同一批库存
+        idx = next(_mobile_seq) % SECKILL_MOBILE_COUNT
+        self.mobile = str(SECKILL_MOBILE_BASE + idx)
         with self.client.post("/api/v1/auth/login",
-                              json={"mobile": TEST_MOBILE, "code": TEST_CODE},
+                              json={"mobile": self.mobile, "code": TEST_CODE},
                               name="/auth/login [seckill]", catch_response=True) as resp:
             if resp.status_code == 200:
                 self.token = resp.json().get("data", {}).get("token", "")
+            else:
+                resp.failure(f"登录失败（账号是否已 seed？）: {resp.status_code}")
 
     @task
     def seckill(self):
@@ -159,14 +186,24 @@ class SeckillUser(HttpUser):
                 name="/api/v1/seckill",
                 catch_response=True) as resp:
             if resp.status_code == 200:
+                # 解析业务结果：success=true 才是真正「抢到一张」（用于 HTTP 层超卖核对）
+                try:
+                    success = resp.json().get("data", {}).get("success", False)
+                except (ValueError, AttributeError):
+                    success = False
+                _record_seckill("claimed" if success else "sold_out")
                 resp.success()
             elif resp.status_code == 400:
                 # 库存不足 / 已领取 → 正常业务 4xx，不算错误
+                body = resp.text
+                _record_seckill("duplicated" if "ALREADY" in body else "sold_out")
                 resp.success()
             elif resp.status_code == 429:
                 # 限流触发 → 正常，不算错误
+                _record_seckill("rate_limited")
                 resp.success()
             else:
+                _record_seckill("error")
                 resp.failure(f"Unexpected: {resp.status_code} {resp.text[:100]}")
 
 
@@ -230,3 +267,16 @@ def on_test_stop(environment, **kwargs):
                   f"P99: {entry.get_response_time_percentile(0.99):5.0f}ms | "
                   f"Fail: {entry.fail_ratio:.1%}")
     print("=" * 60)
+
+    # 秒杀专项：HTTP 层的超卖核对
+    total_seckill = sum(_seckill_outcomes.values())
+    if total_seckill > 0:
+        print("秒杀结果分布（HTTP 层）")
+        print("-" * 60)
+        print(f"  抢到券 claimed     : {_seckill_outcomes['claimed']:>6}  "
+              f"← 这个数必须 ≤ Redis 预置库存总量，否则就是超卖")
+        print(f"  售罄  sold_out      : {_seckill_outcomes['sold_out']:>6}")
+        print(f"  重复  duplicated    : {_seckill_outcomes['duplicated']:>6}  （同一用户重复抢）")
+        print(f"  限流  rate_limited  : {_seckill_outcomes['rate_limited']:>6}")
+        print(f"  异常  error         : {_seckill_outcomes['error']:>6}  ← 应为 0")
+        print("=" * 60)
