@@ -146,6 +146,16 @@ class TestCheckOutput:
         r = check_output("password = mysecret123", merchant_id=None)
         assert r.level == GuardLevel.BLOCK
 
+    def test_password_field_uppercase_blocked(self):
+        # 变异测试发现的盲区：DB 凭据正则带 re.IGNORECASE，但原测试只覆盖小写。
+        # 把 IGNORECASE 去掉的变异（mutant）此前能存活——补上大写用例将其杀死。
+        r = check_output("PASSWORD = MySecret123", merchant_id=None)
+        assert r.level == GuardLevel.BLOCK
+
+    def test_jdbc_uppercase_blocked(self):
+        r = check_output("JDBC:mysql://db-host:3306/local_life", merchant_id=None)
+        assert r.level == GuardLevel.BLOCK
+
     def test_api_key_blocked(self):
         r = check_output("API 密钥是 sk-abcdef1234567890abcdef1234567890", merchant_id=None)
         assert r.level == GuardLevel.BLOCK
