@@ -301,7 +301,7 @@ public class PaymentService {
                 .paidAt(payAt)
                 .eventAt(LocalDateTime.now())
                 .build();
-        outboxService.saveToOutbox(event, MqTopics.PAYMENT_SUCCESS_TOPIC, MqTopics.TAG_PAYMENT_SUCCESS);
+        outboxService.saveToOutbox(event, event.getEventId(), MqTopics.PAYMENT_SUCCESS_TOPIC, MqTopics.TAG_PAYMENT_SUCCESS);
 
         log.info("[Payment] 支付成功处理完毕（含 Outbox 写入）, paymentNo={}, orderId={}, paidAmount={}分",
                 callback.getPaymentNo(), paymentOrder.getOrderId(), callback.getPaidAmount());

@@ -100,6 +100,27 @@ rules:
     # 这是 ShardingSphere 的默认行为，结果正确但效率较低。
     # 生产优化：对高频的 order_no 查询，建立 ES 订单索引，绕过广播查询。
 
+  # ================================================================
+  # 单表规则：让 ShardingSphere 把「未参与分片的表」当作普通表加载进元数据
+  # ================================================================
+  # 关键认知（容易踩坑的点）：ShardingSphere 5.x 不会自动把物理库里的表当作
+  # "passthrough" 直接放行——只有出现在某个 rule 里的表才会被加载进元数据。
+  # 不写 !SINGLE 规则时，框架内部会用一个空的 SingleRuleConfiguration（验证方式：
+  # DefaultSingleRuleConfigurationBuilder#build 直接 new 空配置，没有 tables/
+  # defaultDataSource），于是 shop / user / post / outbox_message 等所有未分片
+  # 表都不在元数据里，SQL 绑定阶段统一报 TableNotFoundException："Table or view
+  # 'xxx' does not exist"——即便这些表在物理库里确实存在、order_info 分片查询也
+  # 一切正常（因为它在 !SHARDING 规则里显式声明了）。
+  #
+  # tables: ["*.*"] 是 SingleTableLoadUtils#getAllTablesNodeStr 对 MySQL 这类
+  # 不支持 schema 的库返回的"加载全部表"通配符（数据源.表），等价于"把 ds0 下
+  # 所有未被其它规则接管的物理表都注册为单表"。defaultDataSource 指定 CREATE
+  # TABLE 等 DDL 在未指定库时落到哪个数据源（开发环境只有 ds0）。
+  - !SINGLE
+    tables:
+      - "*.*"
+    defaultDataSource: ds0
+
 # ================================================================
 # 全局属性
 # ================================================================

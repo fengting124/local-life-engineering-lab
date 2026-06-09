@@ -40,11 +40,17 @@ import java.time.LocalDateTime;
  *
  * <h2>expireAt 和延迟关单</h2>
  * <p>创建订单时写入 expireAt = createdAt + 30 分钟。
- * 延迟关单方案（当前：定时任务轮询；后续升级：RocketMQ 延时消息）：
+ * 延迟关单方案（已完成升级：MQ 延时消息为主链路 + 定时任务兜底，详见
+ * {@link com.personalprojections.locallife.server.module.order.service.OrderService} 类注释）：
  * <ul>
- *   <li>当前：每分钟扫 {@code WHERE order_status='WAIT_PAY' AND expire_at < NOW()}，批量关闭</li>
- *   <li>升级：创建订单时发一条 30 分钟后投递的延时消息，消费时检查状态再关闭</li>
- *   <li>升级的好处：精确到秒，不依赖轮询间隔；DB 扫描压力从每分钟变成事件驱动</li>
+ *   <li>主链路：下单时投递一条 30 分钟后到达的 RocketMQ 延时消息，
+ *       {@code OrderCloseConsumer} 收到后重新查库复检状态，确认仍 WAIT_PAY 且已过期才关闭——
+ *       精确到秒，不依赖轮询间隔</li>
+ *   <li>兜底：{@code OrderService.closeExpiredOrders()} 定时任务（每 5 分钟）继续扫
+ *       {@code WHERE order_status='WAIT_PAY' AND expire_at < NOW()}，
+ *       兜住消息丢失/消费失败的极端情况，保证最终一致</li>
+ *   <li>双链路共用同一段判断 + 关闭逻辑（{@code OrderService.closeOrderIfExpired}），
+ *       不会出现"两条路径各信各的"的口径漂移</li>
  * </ul>
  */
 @Data

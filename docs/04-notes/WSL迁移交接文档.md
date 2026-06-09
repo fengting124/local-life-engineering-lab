@@ -119,7 +119,7 @@ python -m evals.metrics --real --category query  # 先跑简单的 15 条
 # .env 改成 deepseek
 LLM_PROVIDER=deepseek
 LLM_API_KEY=你的key
-LLM_MODEL=deepseek-chat
+LLM_MODEL=deepseek-v4-flash
 
 python -m evals.metrics --real --category diagnosis
 ```

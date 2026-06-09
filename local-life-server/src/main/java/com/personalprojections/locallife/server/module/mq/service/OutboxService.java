@@ -5,7 +5,6 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.personalprojections.locallife.server.domain.entity.OutboxMessage;
 import com.personalprojections.locallife.server.domain.mapper.OutboxMessageMapper;
-import com.personalprojections.locallife.server.module.mq.event.PaymentSuccessEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
@@ -63,22 +62,31 @@ public class OutboxService {
     // =========================================================
 
     /**
-     * 将支付成功事件写入本地消息表（需要在业务事务内调用）。
+     * 将业务事件写入本地消息表（需要在业务事务内调用）。
      *
      * <p>此方法使用 {@code Propagation.MANDATORY}：强制要求调用方已有事务。
      * 如果没有外层事务就调用此方法，会抛 {@code IllegalTransactionStateException}。
-     * 这样确保 outbox_message 和业务数据（payment_order、order_info）在同一个事务里，
-     * 要么都提交，要么都回滚。
+     * 这样确保 outbox_message 和业务数据（如 payment_order/order_info、user_coupon）
+     * 在同一个事务里，要么都提交，要么都回滚。
      *
-     * <p>调用场景：PaymentService.handleCallback → orderService.markOrderAsPaid → 成功后调此方法
-     * （handleCallback 有 @Transactional，满足 MANDATORY 要求）
+     * <p>泛化为 {@code Object event}：本方法不关心事件的具体类型（PaymentSuccessEvent /
+     * SeckillSuccessEvent / ...），只负责「序列化 + 落表」，事件类型相关的语义
+     * （如 eventId 的生成规则）由调用方决定并显式传入，保持本方法职责单一、可复用。
      *
-     * @param event     支付成功事件对象
+     * <p>调用场景示例：
+     * <ul>
+     *   <li>PaymentService.handleCallback → orderService.markOrderAsPaid → 成功后调此方法</li>
+     *   <li>SeckillService.participateSeckill → Lua 预扣成功后调此方法</li>
+     * </ul>
+     * （调用方需自带 {@code @Transactional}，满足 MANDATORY 要求）
+     *
+     * @param event     业务事件对象（任意可被 Jackson 序列化的事件 DTO）
+     * @param eventId   事件全局唯一 ID（用于下游幂等消费，如 "{businessId}_{action}"）
      * @param topic     目标 RocketMQ Topic
      * @param tag       消息 Tag（可为空字符串）
      */
     @Transactional(propagation = Propagation.MANDATORY)
-    public void saveToOutbox(PaymentSuccessEvent event, String topic, String tag) {
+    public void saveToOutbox(Object event, String eventId, String topic, String tag) {
         String payload;
         try {
             payload = objectMapper.writeValueAsString(event);
@@ -88,7 +96,7 @@ public class OutboxService {
         }
 
         OutboxMessage message = OutboxMessage.builder()
-                .eventId(event.getEventId())
+                .eventId(eventId)
                 .topic(topic)
                 .tag(tag != null ? tag : "")
                 .payload(payload)
@@ -98,7 +106,7 @@ public class OutboxService {
                 .build();
 
         outboxMessageMapper.insert(message);
-        log.debug("[Outbox] 写入消息: eventId={}, topic={}", event.getEventId(), topic);
+        log.debug("[Outbox] 写入消息: eventId={}, topic={}", eventId, topic);
     }
 
     // =========================================================

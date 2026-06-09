@@ -33,7 +33,7 @@ def _create_llm() -> BaseChatModel:
     切换方式（.env 文件）：
       LLM_PROVIDER=deepseek
       LLM_API_KEY=sk-xxxxxxxx
-      LLM_MODEL=deepseek-chat
+      LLM_MODEL=deepseek-v4-flash
 
     各 Provider 特点：
       anthropic → Claude，工具调用最稳定，推荐（需 ANTHROPIC_API_KEY）
@@ -64,7 +64,9 @@ def _create_llm() -> BaseChatModel:
     provider_defaults = {
         "deepseek": {
             "base_url": "https://api.deepseek.com/v1",
-            "model":    "deepseek-chat",
+            # deepseek-chat / deepseek-reasoner 两个旧别名将于 2026-07-24 下线，
+            # 统一指向 deepseek-v4-flash（非思考模式），故直接使用新名称。
+            "model":    "deepseek-v4-flash",
         },
         "openai": {
             "base_url": "https://api.openai.com/v1",
@@ -84,7 +86,9 @@ def _create_llm() -> BaseChatModel:
 
     defaults = provider_defaults.get(provider, {})
     base_url = settings.llm_base_url or defaults.get("base_url", "")
-    model    = settings.llm_model if settings.llm_model != "claude-sonnet-4-6" else defaults.get("model", settings.llm_model)
+    # llm_model 默认是空字符串（未显式配置），这种情况下要落回 provider 的默认模型名，
+    # 否则会把 model="" 传给 API 导致报错；只有用户显式填写了 LLM_MODEL 才尊重该值。
+    model    = settings.llm_model or defaults.get("model", settings.llm_model)
     key      = api_key or defaults.get("api_key", "placeholder")
 
     log.info("llm_provider", provider=provider, model=model, base_url=base_url)
