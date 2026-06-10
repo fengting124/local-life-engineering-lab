@@ -185,14 +185,14 @@ curl -X POST http://localhost:8000/chat \
 
 | 文档 | 说明 | 适合谁读 |
 |------|------|---------|
-| [项目总路线](docs/01-project/双线项目路线.md) | 双线整体规划 | 第一次看项目 |
+| [学习路线](docs/00-学习路线.md) | 从需求到实现再到面试的阅读顺序 | 第一次看项目 |
+| [代码级实现地图](docs/01-project/02-代码级实现地图.md) | 接口、类、表、Redis/MQ、测试、面试考点 | 想吃透代码 |
 | [接口规范文档](docs/01-project/10-接口规范文档.md) | 统一响应结构、错误码、鉴权、分页 | 开发时参照 |
-| [Copilot 架构设计](docs/01-project/11-Copilot架构设计文档.md) | MCP+Agent+RAG+HITL 完整设计 | 理解 Copilot |
+| [Copilot Agent 设计](docs/01-project/07-Copilot企业级Agent设计.md) | MCP+Agent+RAG+HITL 完整设计 | 理解 Copilot |
 | [LocalLife 接口教程](docs/04-notes/LocalLife项目接口教程.md) | 11 章从请求链路到分表的深度教程 | 面试准备 |
 | [Copilot 全链路教程](docs/04-notes/LocalLifeCopilot项目教程.md) | 12 章 MCP/LangGraph/RAG/HITL 教程 | 面试准备 |
 | [环境搭建](docs/02-environment/01-环境搭建.md) | 工具链版本固定 | 初次配置 |
-| [增强路线图](docs/01-project/09-项目增强路线图.md) | P0/P1/P2 增强项规划 | 后续迭代 |
-| [PROGRESS.md](PROGRESS.md) | 所有已完成模块 + 关键决策 | 跨会话继续工作 |
+| [测试总览](docs/04-notes/测试总览与结果汇总.md) | 测试数量、覆盖率、变异测试、CI 门禁 | 工程化准备 |
 
 ---
 
@@ -213,7 +213,7 @@ curl -X POST http://localhost:8000/chat \
 
 | 问题 | 答案入口 |
 |------|---------|
-| 为什么选 MCP 而不是直接调 API | `docs/01-project/11-Copilot架构设计文档.md` 第 3 章 |
+| 为什么选 MCP 而不是直接调 API | `docs/01-project/02-代码级实现地图.md` 第 8 章 |
 | HITL 怎么实现挂起和恢复 | `session/hitl.py` + `session/checkpointer.py` |
 | Tool Router 的意义是什么 | `agent/tool_router.py` 注释 |
 | RAG 怎么防止编造内容 | `rag/reranker.py` 的 0.3 阈值拒答 |

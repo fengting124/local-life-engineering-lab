@@ -110,7 +110,7 @@ Layer 1  治理层：RBAC / Audit / Guardrails / Rate Limit / Evals
 **反问**：为什么 Agent 不直接调 `http://localhost:8080/api/v1/orders/12345`？
 
 因为：
-1. 那是「用户接口」，需要 JWT Token，Agent 没有真实用户 Token
+1. 那是「用户接口」，需要业务用户 token；Agent 不应该伪造或持有真实用户 token
 2. 没有审计：Agent 调了什么参数，返回了什么，没有记录
 3. 没有 RBAC 边界：merchant 可以查到 admin 的数据
 4. 工具 Schema 不清楚：LLM 不知道这个接口要传什么参数
@@ -204,9 +204,9 @@ POST /mcp
 ```python
 # mcp_client.py
 headers = {
-    "X-User-Id":     "10001",    # 从 JWT 解析，Agent 传递
-    "X-User-Role":   "merchant", # 从 JWT 解析
-    "X-Merchant-Id": "20001",    # 从数据库查询，Agent 不能自填
+    "X-User-Id":     "10001",    # 从 Agent 会话身份解析后注入
+    "X-User-Role":   "merchant", # merchant / cs / admin
+    "X-Merchant-Id": "20001",    # merchant 角色的商家边界，Agent 不能自填
 }
 ```
 
