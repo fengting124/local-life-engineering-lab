@@ -167,6 +167,14 @@ def trim_at_end_markers(text: str) -> tuple[str, int]:
     return text[:end].strip(), end
 
 
+def clean_main_text(text: str) -> str:
+    for marker in ("登录 / 注册", "登录/注册"):
+        idx = text.find(marker)
+        if 0 <= idx <= 300:
+            return text[idx + len(marker) :].strip()
+    return text
+
+
 def extract_from_body_text(body_text: str) -> ExtractedPost:
     text = normalize_text(body_text)
     trimmed, end = trim_at_end_markers(text)
@@ -287,16 +295,17 @@ def fetch_one(
     goto_with_fallback(page, url, timeout_ms)
     wait_for_content(page, require_pattern, timeout_ms)
     extracted = extract_post(page)
-    no_content_hits = [marker for marker in NO_CONTENT_MARKERS if marker in extracted.body_text]
-    content_ok = len(extracted.main_text) >= min_main_chars and not no_content_hits
+    main_text = clean_main_text(extracted.main_text)
+    no_content_hits = [marker for marker in NO_CONTENT_MARKERS if marker in main_text]
+    content_ok = len(main_text) >= min_main_chars and not no_content_hits
 
     return {
         "url": url,
         "page_title": page.title(),
         "extracted_title": extracted.title,
-        "main_text": extracted.main_text,
+        "main_text": main_text,
         "body_text": extracted.body_text,
-        "main_text_chars": len(extracted.main_text),
+        "main_text_chars": len(main_text),
         "body_text_chars": len(extracted.body_text),
         "extraction_method": extracted.extraction_method,
         "start_index": extracted.start_index,
@@ -309,16 +318,17 @@ def fetch_one(
 
 def extract_current_page(page: Page, min_main_chars: int) -> dict[str, object]:
     extracted = extract_post(page)
-    no_content_hits = [marker for marker in NO_CONTENT_MARKERS if marker in extracted.body_text]
-    content_ok = len(extracted.main_text) >= min_main_chars and not no_content_hits
+    main_text = clean_main_text(extracted.main_text)
+    no_content_hits = [marker for marker in NO_CONTENT_MARKERS if marker in main_text]
+    content_ok = len(main_text) >= min_main_chars and not no_content_hits
 
     return {
         "url": page.url,
         "page_title": page.title(),
         "extracted_title": extracted.title,
-        "main_text": extracted.main_text,
+        "main_text": main_text,
         "body_text": extracted.body_text,
-        "main_text_chars": len(extracted.main_text),
+        "main_text_chars": len(main_text),
         "body_text_chars": len(extracted.body_text),
         "extraction_method": f"current_page:{extracted.extraction_method}",
         "start_index": extracted.start_index,

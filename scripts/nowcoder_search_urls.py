@@ -16,7 +16,11 @@ DEFAULT_CHROME_PATHS = [
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
 ]
 
-DETAIL_RE = re.compile(r"(?:https://www\.nowcoder\.com)?/feed/main/detail/[0-9a-fA-F]{32}(?:\?[^#\s\"'<>]*)?")
+DETAIL_RE = re.compile(
+    r"(?:https://www\.nowcoder\.com)?"
+    r"(?:/feed/main/detail/[0-9a-fA-F]{32}|/discuss/\d+)"
+    r"(?:\?[^#\s\"'<>]*)?"
+)
 
 
 def find_browser_executable(explicit_path: str | None) -> str | None:

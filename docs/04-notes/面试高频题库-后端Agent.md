@@ -10,9 +10,10 @@
 
 ## 资料来源
 
-本轮整理使用了两类来源：
+本轮整理使用了三类来源：
 
 - 本仓库已有抓取数据：`data/nowcoder_posts.jsonl`、`data/nowcoder_research_posts.jsonl`、`data/nowcoder_resume_posts.jsonl`，以及 `scripts/nowcoder_search_urls.py`、`scripts/nowcoder_fetch_posts.py`。
+- 2026-06-11 最新公开抓取：`data/nowcoder_latest_candidate_urls_2026-06-11.txt` 共 80 个候选链接，`data/nowcoder_latest_posts_2026-06-11.jsonl` 共 80 条渲染结果，其中 69 条可用正文，正文约 19 万字。抓取正文属于本地研究数据，按 `.gitignore` 不提交进仓库。
 - 公开面经和题库资料：
   - [牛客：大模型 Agent 面试全攻略](https://www.nowcoder.com/discuss/871718560224112640)
   - [牛客：2025 Java 面试题（美团、快手方向）](https://www.nowcoder.com/discuss/722397808745033728)
@@ -20,7 +21,7 @@
   - [JavaGuide：AI 面试指南](https://javaguide.cn/ai/interview-questions/ai-interview-guide.html)
   - [JavaGuide：后端面试复习路线](https://javaguide.cn/interview-preparation/backend-interview-plan.html)
 
-本地抓取脚本当前缺少 `playwright` 运行依赖，所以这次没有重新批量拉取登录态帖子正文。后续如果要继续抓最新牛客全文，见本文末尾“继续拉取最新面经需要什么”。
+最新抓取的关键词频次与题库判断一致：`项目`、`Agent`、`Java`、`Redis`、`MySQL`、`RAG`、`缓存`、`索引`、`八股`、`算法` 都是高频项。后续如果要继续抓登录态帖子全文，见本文末尾“继续拉取最新面经需要什么”。
 
 ## 高频趋势
 
@@ -360,12 +361,14 @@
 
 ## 11. 继续拉取最新面经需要什么
 
-当前脚本在 `scripts/` 下已经具备搜索和正文抓取能力，但本机环境缺少 Playwright：
+当前脚本在 `scripts/` 下已经具备搜索和正文抓取能力，本机已安装 Playwright Python 包和 Chromium 浏览器缓存。若在新机器上重建环境，执行：
 
 ```bash
 pip install playwright
 python -m playwright install chromium
 ```
+
+如果 Linux 缺少 Chromium 运行库且不能 sudo，可以像本次一样把缺失的 `.deb` 解包到用户缓存目录，再通过 `LD_LIBRARY_PATH` 启动脚本。
 
 如果要抓牛客登录态或仅登录可见的帖子，需要提供以下任一方式：
 
@@ -374,9 +377,9 @@ python -m playwright install chromium
 
 ```bash
 python3 scripts/nowcoder_fetch_posts.py \
-  --urls-file data/nowcoder_candidate_urls.txt \
-  --out data/nowcoder_posts.jsonl \
+  --urls-file data/nowcoder_latest_candidate_urls_2026-06-11.txt \
+  --out data/nowcoder_latest_posts_with_cookie.jsonl \
   --cookie-env NOWCODER_COOKIE
 ```
 
-这不是当前文档更新的阻塞项；本次已经用本地已有 JSONL 和公开资料完成了题库整理。
+这不是当前题库更新的阻塞项；公开可访问部分已经完成最新抓取。
