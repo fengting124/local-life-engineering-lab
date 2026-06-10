@@ -25,7 +25,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from api.chat import router as chat_router
 from api.hitl import router as hitl_router
@@ -222,6 +222,18 @@ async def health():
         "service": "copilot-agent-service",
         "version": "1.0.0",
     }
+
+
+@app.get("/swagger-ui.html", include_in_schema=False)
+async def swagger_ui_alias():
+    """兼容 Java/Springdoc 的 Swagger UI 入口，实际跳转到 FastAPI /docs。"""
+    return RedirectResponse(url="/docs")
+
+
+@app.get("/v3/api-docs", include_in_schema=False)
+async def openapi_json_alias():
+    """兼容 Java/Springdoc 的 OpenAPI JSON 入口，实际返回 FastAPI schema。"""
+    return app.openapi()
 
 
 # ---- 静态文件服务（Chat UI + Approval UI）----

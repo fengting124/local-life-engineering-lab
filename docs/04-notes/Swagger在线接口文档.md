@@ -12,6 +12,12 @@
 | LocalLife Copilot MCP Server | http://localhost:8081/swagger-ui.html | http://localhost:8081/v3/api-docs |
 | Copilot Agent Service | http://localhost:8000/docs | http://localhost:8000/openapi.json |
 
+为方便统一记忆，Python Agent 也提供与 Java/Springdoc 一致的兼容入口：
+
+| 服务 | Swagger UI 兼容入口 | OpenAPI JSON 兼容入口 |
+| --- | --- | --- |
+| Copilot Agent Service | http://localhost:8000/swagger-ui.html | http://localhost:8000/v3/api-docs |
+
 如果启用了 Nginx 开发网关，当前网关只代理 Agent 文档：
 
 | 服务 | 网关地址 |
@@ -62,6 +68,27 @@ X-Merchant-Id: 20001
 ```
 
 这些 Header 在真实链路中由 Python Agent Service 注入，MCP Server 只信任内网调用。
+
+## Copilot Agent Service 调用
+
+Agent Service 是独立 Python FastAPI 服务，Swagger UI 由 FastAPI 自动生成。
+
+常用接口：
+
+| 接口 | 说明 |
+| --- | --- |
+| `POST /chat` | 发起 Agent 对话，SSE 流式返回步骤和最终答案 |
+| `POST /chat/resume` | HITL 审批后恢复 Agent 执行 |
+| `POST /sessions` | 创建会话 |
+| `GET /hitl/pending` | 查询待审批任务 |
+
+调用 Agent 接口需要身份 Header：
+
+```text
+X-User-Id: 880000000001
+X-User-Role: merchant
+X-Merchant-Id: 880000100001
+```
 
 ## 生产环境建议
 

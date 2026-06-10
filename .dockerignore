@@ -8,6 +8,10 @@ performance-tests/
 copilot-agent-service/
 
 **/target/
+!local-life-server/target/
+!local-life-server/target/local-life-server-0.1.0-SNAPSHOT.jar
+!local-life-copilot/target/
+!local-life-copilot/target/local-life-copilot-0.1.0-SNAPSHOT.jar
 **/build/
 **/out/
 **/.gradle/

@@ -1,0 +1,25 @@
+# Runtime-only image for local-life-server.
+#
+# Use this when the jar has already been built by Maven on the host or CI:
+#   mvn -s infra/maven/settings.xml -Dmaven.repo.local=/tmp/local-life-m2 \
+#     -pl local-life-server -DskipTests -Dmaven.test.skip=true package
+#   docker build -f local-life-server/Dockerfile.runtime -t locallife-server:latest .
+
+FROM eclipse-temurin:17-jre-alpine
+
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+WORKDIR /app
+
+COPY local-life-server/target/local-life-server-0.1.0-SNAPSHOT.jar app.jar
+
+ENV JAVA_OPTS="-XX:+UseContainerSupport \
+               -XX:MaxRAMPercentage=75.0 \
+               -XX:+UseG1GC \
+               -XX:+HeapDumpOnOutOfMemoryError \
+               -XX:HeapDumpPath=/tmp/heapdump.hprof \
+               -Djava.security.egd=file:/dev/./urandom"
+
+USER appuser
+EXPOSE 8080
+
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
