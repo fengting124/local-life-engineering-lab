@@ -191,6 +191,7 @@ curl -X POST http://localhost:8000/chat \
 | [Copilot Agent 设计](docs/01-project/07-Copilot企业级Agent设计.md) | MCP+Agent+RAG+HITL 完整设计 | 理解 Copilot |
 | [LocalLife 接口教程](docs/04-notes/LocalLife项目接口教程.md) | 11 章从请求链路到分表的深度教程 | 面试准备 |
 | [Copilot 全链路教程](docs/04-notes/LocalLifeCopilot项目教程.md) | 12 章 MCP/LangGraph/RAG/HITL 教程 | 面试准备 |
+| [后端 + Agent 面试高频题库](docs/04-notes/面试高频题库-后端Agent.md) | 结合面经趋势整理高频问题、追问链和项目答法 | 面试准备 |
 | [环境搭建](docs/02-environment/01-环境搭建.md) | 工具链版本固定 | 初次配置 |
 | [测试总览](docs/04-notes/测试总览与结果汇总.md) | 测试数量、覆盖率、变异测试、CI 门禁 | 工程化准备 |
 
