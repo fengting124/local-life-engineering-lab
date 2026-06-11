@@ -2,6 +2,85 @@
 
 本文给面试、交接和设计评审使用，重点展示 LocalLife 如何把传统后端能力安全地提供给 AI Agent。
 
+## 0. 当前本地 Docker Compose 组件关系
+
+这张图按当前本地容器的真实边界来画：每个方框基本对应一个独立服务或基础设施组件。服务之间不是直接调用对方代码，而是通过 HTTP、MCP JSON-RPC、数据库协议、Redis 协议、MQ 协议或日志采集链路通信。
+
+```mermaid
+flowchart LR
+    browser[浏览器 / Swagger / Chat UI]
+
+    subgraph app[应用服务]
+        server[local-life-server<br/>Java Spring Boot :8080]
+        mcp[local-life-copilot<br/>Java MCP Server :8081]
+        agent[copilot-agent-service<br/>Python FastAPI :8000]
+    end
+
+    subgraph data[业务数据与中间件]
+        mysql[(MySQL :3306<br/>业务表 / Agent 审计表 / checkpoint)]
+        redis[(Redis :6379<br/>登录态 / 缓存 / 秒杀库存)]
+        es[(Elasticsearch :9200<br/>门店 / 笔记搜索)]
+        mq[RocketMQ :9876 / 10911<br/>支付事件 / Outbox 投递]
+    end
+
+    subgraph rag[RAG 与模型侧]
+        milvus[(Milvus :19530<br/>向量库)]
+        embed[Embedding Service :8100]
+        rerank[Reranker Service :8101]
+        llm[DeepSeek flash API<br/>外部 HTTPS]
+    end
+
+    subgraph obs[可观测性]
+        prom[Prometheus :9090<br/>指标采集]
+        zipkin[Zipkin :9411<br/>Trace 查看]
+        promtail[Promtail<br/>Docker 日志采集]
+        loki[(Loki :3100<br/>日志存储 / 日志告警规则)]
+        alert[Alertmanager :9093<br/>告警接收 / 路由]
+        grafana[Grafana :3000<br/>统一排障入口]
+    end
+
+    browser -->|HTTP REST / Swagger| server
+    browser -->|HTTP SSE / Chat| agent
+    browser -->|HTTP JSON-RPC / Swagger| mcp
+
+    agent -->|MCP JSON-RPC<br/>POST /mcp| mcp
+    mcp -->|HTTP 内部 API| server
+
+    server -->|JDBC| mysql
+    server -->|Redis 协议| redis
+    server -->|HTTP| es
+    server -->|RocketMQ 协议| mq
+    mcp -->|JDBC 审计 / 工具查询| mysql
+
+    agent -->|MySQL 协议| mysql
+    agent -->|向量检索| milvus
+    agent -->|HTTP| embed
+    agent -->|HTTP| rerank
+    agent -->|HTTPS| llm
+
+    server -->|/actuator/prometheus| prom
+    mcp -->|/actuator/prometheus| prom
+    agent -->|/metrics| prom
+
+    app -->|stdout / stderr| promtail
+    data -->|stdout / stderr| promtail
+    rag -->|stdout / stderr| promtail
+    promtail -->|push logs| loki
+    loki -->|ruler alerts| alert
+    grafana -->|query logs| loki
+    grafana -->|query metrics| prom
+    grafana -->|query traces| zipkin
+```
+
+读这张图时重点抓四条线：
+
+| 链路 | 说明 |
+| --- | --- |
+| 用户业务链路 | 浏览器直接访问 `local-life-server`，查/改真实业务数据。 |
+| Agent 工具链路 | 浏览器访问 Python Agent，Agent 通过 MCP 调 Java MCP Server，再由 MCP Server 查业务系统。 |
+| RAG 链路 | Agent 访问 Milvus、Embedding、Reranker 和 DeepSeek flash，用于知识检索和回答生成。 |
+| 排障链路 | 各容器输出日志到 stdout，Promtail 采集到 Loki，Grafana 查询日志、指标和 trace，Alertmanager 接收日志告警。 |
+
 ## 1. 总体架构
 
 ```mermaid
