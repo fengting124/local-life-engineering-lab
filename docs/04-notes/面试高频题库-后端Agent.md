@@ -23,6 +23,8 @@
 
 最新抓取的关键词频次与题库判断一致：`项目`、`Agent`、`Java`、`Redis`、`MySQL`、`RAG`、`缓存`、`索引`、`八股`、`算法` 都是高频项。后续如果要继续抓登录态帖子全文，见本文末尾“继续拉取最新面经需要什么”。
 
+Agent 场景题的完整项目化答法已融合到 [LocalLife Copilot 全链路教程：第 13 章](./LocalLifeCopilot项目教程.md#第-13-章最新-agent-面经场景题)，那里按“面经问题 → 本项目实现 → 真实风险 → 代码入口”展开。
+
 ## 高频趋势
 
 本地 JSONL 和公开资料共同指向一个趋势：面试不是只问“用了什么技术”，而是连续追问“为什么这么设计、失败了怎么办、怎么验证”。后端实习仍然绕不开 Java、MySQL、Redis、MQ、Spring、并发、JVM 和算法；带 Agent 项目的候选人会额外被追问 RAG、Tool Calling、MCP、ReAct、Memory、HITL、安全和评测。

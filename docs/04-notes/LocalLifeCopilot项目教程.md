@@ -20,6 +20,7 @@
 10. [Evals：怎么量化 Agent 的质量](#第-10-章evals评测)
 11. [可观测性：Agent 的每步都可追溯](#第-11-章可观测性)
 12. [订单异常排查：一次完整的端到端示例](#第-12-章订单异常排查完整示例)
+13. [最新 Agent 面经场景题：问题如何落到本项目实现](#第-13-章最新-agent-面经场景题)
 
 ---
 
@@ -862,6 +863,313 @@ data: {
 
 ---
 
+## 第 13 章：最新 Agent 面经场景题
+
+本章来自 2026-06-11 本地抓取的牛客公开帖子正文：`data/nowcoder_latest_posts_2026-06-11.jsonl`。本轮共抓取 80 条渲染记录，其中 69 条可用正文，约 19 万字；Agent/RAG/MCP/大模型相关帖子有 44 条。抓取正文只作为本地研究数据，不提交进 git。
+
+这些面经不是让你额外背一套“AI 八股”，而是提醒你：面试官会把 Agent 问题压回真实业务和工程落地。下面每个场景都按“面经会怎么问 → 本项目怎么答 → 可能真实出问题的点 → 代码入口”组织。
+
+### 13.1 最新面经高频点和本项目映射
+
+| 高频问题 | 面经里的典型问法 | 本项目对应实现 | 回答重点 |
+| --- | --- | --- | --- |
+| Agent 项目真实性 | 这个项目有没有真实用户？为什么没上线？你具体做了什么？ | Docker Compose 全链路、Swagger、Chat UI、MCP、E2E/Smoke、批量业务模拟 | 不说“调了 API”，要讲业务闭环：订单/支付/券真实数据经 MCP 被 Agent 查询和处理。 |
+| Agent 失败/中断 | Agent 超时、工具失败、中断后怎么恢复？重试安全吗？ | `McpToolError.is_retryable()`、`agent/graph.py`、`session/checkpointer.py`、HITL | 可重试只限参数错误/超时；资金类动作不能盲重试，必须靠幂等、审批和业务侧状态机。 |
+| 资金安全场景 | 跨境汇款/退款场景下 Agent 失败如何避免资损？ | `execute_refund`、`issue_compensation_coupon`、`hitl_approval`、Java 主服务幂等 | Agent 不直接改钱；高风险动作进 HITL，Java 主服务做最终业务校验和幂等。 |
+| 多 Agent 编排 | 多 Agent 怎么协作？上下文怎么共享？死循环怎么办？ | 当前是单 Agent ReAct；暂缓 A2A/多 Agent | 要承认当前未引入多 Agent，并说明原因：本项目任务边界清晰，单 Agent + 工具路由足够，过早多 Agent 会增加循环和责任不清。 |
+| ReAct / Workflow / 状态机 | ReAct 和 DAG/Workflow 有什么区别？循环 RAG 适合什么？ | LangGraph 状态图：`llm_node/tool_node/reflection_node/compact_node/hitl_node/final_node` | DAG 适合固定流程；ReAct 适合需要根据 Observation 动态决策的订单异常排查。 |
+| 上下文和记忆 | 上下文过长、记忆污染、输出截断怎么处理？ | token budget、Auto-Compact、MySQL Checkpoint、Session Message | Checkpoint 是执行状态，不等于聊天记录；Auto-Compact 是上下文压缩，不是长期记忆。 |
+| RAG 召回和热更新 | RAG 召回率多少？知识库不停服更新怎么做？chunk 怎么切？ | `rag/pipeline.py`、Hybrid Recall、RRF、Reranker、`rag.ingest` | 本项目有 Hybrid RAG 和 rerank；当前入库是启动/脚本触发，生产热更新要补事件驱动增量索引。 |
+| 幻觉和评测 | RAG 怎么判断是检索错还是生成错？Agent 怎么评测？ | `evals/metrics.py`、Recall@5、工具准确率、事实一致性、拒答阈值 | 先看检索 TopK 是否有正确文档；有文档仍答错是生成/提示问题，无文档是召回/切分/索引问题。 |
+| MCP vs Function Calling vs Skill | MCP 和 Function Calling/Skill 区别是什么？ | Java MCP Server、`tools/list`、`tools/call`、Tool Router | Function Calling 是模型能力；MCP 是工具协议和运行边界；Skill 更像可复用能力包/任务模板。 |
+| SSE 和流式输出 | SSE 有什么局限？断连怎么办？ | `api/chat.py` StreamingResponse、`evals/real_agent_client.py` | SSE 简单但单向、断线恢复弱；生产要用 session/thread_id 续接，必要时改 WebSocket 或消息队列。 |
+| AI Coding 拷打 | 代码是不是 AI 写的？为什么这么设计？ | 本项目文档、测试、commit message、代码级地图 | 不能只说“AI 辅助写”，要能解释每个边界、失败模式、测试和取舍。 |
+
+### 13.2 场景题：Agent 工具调用失败，如何处理？
+
+面试官可能这样问：
+
+> 你的 Agent 调 MCP 工具超时了，或者工具返回参数错误。Agent 是直接重试吗？如果这个工具是退款，会不会重复退款？
+
+本项目回答：
+
+1. 工具失败先结构化，不让 LLM 猜。`mcp/mcp_client.py` 把 MCP 错误转换成 `McpToolError(reason, detail, hint)`。
+2. 只允许安全错误重试。`is_retryable()` 目前只把 `parameter_error`、`tool_timeout` 视为可重试；权限错误、业务冲突、资源不存在不能盲重试。
+3. 高风险写操作不进入普通重试。`execute_refund`、`issue_compensation_coupon` 先 HITL 挂起，审批通过后仍由 Java 主服务做幂等校验。
+4. 失败会进入 ReAct 观察链。`tool_node` 返回 Observation 后，`reflection_node` 可判断换工具、补充查询或终止。
+
+对应代码：
+
+- `copilot-agent-service/mcp/mcp_client.py`
+- `copilot-agent-service/agent/graph.py`
+- `copilot-agent-service/session/hitl.py`
+- `local-life-copilot/src/main/java/.../tool/McpTool.java`
+
+真实风险和改进：
+
+| 风险 | 当前防线 | 生产增强 |
+| --- | --- | --- |
+| 工具超时后其实已经执行成功 | Java 业务接口幂等、审批 ID、业务状态 CAS | 每个写工具引入业务幂等键，返回可查询的 operation_id。 |
+| LLM 看到错误后重复调用同一工具 | step 上限、reflection、重复工具检测设计 | 在 state 中记录 tool_name + args hash，超过阈值强制终止或转人工。 |
+| MCP Server 短暂不可用 | Fast Path 失败 fallback，MCP timeout | 独立熔断器、退避重试、降级回答、健康检查告警。 |
+
+面试一句话：
+
+> 我们不是“工具失败就重试”，而是按错误类型分级：参数/超时可修正重试，权限和业务冲突直接停止，高风险写操作必须 HITL + 幂等，避免把 Agent 的不确定性传导成资损。
+
+### 13.3 场景题：跨境汇款/退款类资金安全怎么设计？
+
+面经里常把电商退款换成“跨境汇款”“金融转账”来问，本质是同一类资损问题。
+
+本项目回答可以按四层讲：
+
+| 层 | 本项目实现 | 解决的问题 |
+| --- | --- | --- |
+| Agent 层 | ReAct 只做诊断和生成 pending action | 模型不能直接改资金状态。 |
+| HITL 层 | `hitl_approval`、审批工作台、`/chat/resume` | 人类确认高风险动作，留下审批记录。 |
+| MCP 层 | 工具 schema、RBAC、审计、approval_id 必填 | 防止越权调用和无审批调用。 |
+| Java 主服务层 | 支付/退款状态机、幂等、订单状态校验 | 最终业务事实由后端保证，Agent 只是调用方。 |
+
+如果面试官追问“审批通过后服务重启怎么办”，回答：
+
+- LangGraph thread 状态存 MySQL Checkpoint，不用内存保存。
+- 审批通过后通过 `thread_id + approval_id` 恢复，从挂起点继续执行。
+- 如果 MySQL Checkpoint 不可用，当前开发环境会 fallback 到 `MemorySaver`，但生产必须把 MySQL Checkpoint 作为强依赖，否则不能承诺长时间挂起恢复。
+
+对应代码：
+
+- `copilot-agent-service/session/checkpointer.py`
+- `copilot-agent-service/api/hitl.py`
+- `local-life-copilot/src/main/java/.../ExecuteRefundTool.java`
+- `local-life-copilot/src/main/java/.../IssueCompensationCouponTool.java`
+
+### 13.4 场景题：RAG 召回率低，怎么定位是检索错还是生成错？
+
+面经高频问法包括：
+
+- RAG 召回率多少？
+- RAG 知识库热更新怎么不停服？
+- 文档不是 Markdown，而是 PDF/Word/多格式，chunk 怎么做？
+- 如果回答错了，怎么判断是检索问题还是生成问题？
+
+本项目回答：
+
+1. 先看检索链路是否拿到了正确证据。
+   - `rag/pipeline.py` 同时走 Milvus 向量检索和 BM25。
+   - `_rrf_merge()` 做 RRF 排名融合。
+   - `rerank()` 做 Cross-Encoder 精排。
+   - `RELEVANCE_THRESHOLD` 低于阈值拒答。
+2. 如果 TopK 没有正确文档，是召回问题。
+   - 排查文档解析、chunk_size、overlap、embedding 模型、metadata 权限过滤、query rewrite、BM25 索引。
+3. 如果 TopK 有正确文档但答案错，是生成问题。
+   - 排查 prompt 是否强制引用来源、上下文是否太长被截断、模型是否忽略证据、输出检查是否缺失。
+4. 如果只在某个商家下查不到，优先看权限过滤。
+   - `scope=merchant_private` 时必须带正确 `merchant_id`。
+
+对应代码：
+
+- `copilot-agent-service/rag/pipeline.py`
+- `copilot-agent-service/rag/reranker.py`
+- `copilot-agent-service/rag/vector_store.py`
+- `copilot-agent-service/evals/metrics.py`
+
+当前项目边界要说清楚：
+
+| 问题 | 当前状态 | 面试怎么讲 |
+| --- | --- | --- |
+| 知识库热更新 | 启动时/脚本式 ingest，BM25 内存索引随进程重建 | 已有入库链路，生产可接文档变更事件或管理后台触发增量 upsert。 |
+| 多格式解析 | 当前更偏 Markdown/文本知识库 | 生产可加 PDF/Word parser，再按标题层级和段落做结构化 chunk。 |
+| 召回指标 | Evals 有 Recall@5 框架 | 要用 golden set 固定问题-正确文档，不能只靠人工感觉。 |
+
+面试一句话：
+
+> 我会先把错误拆成“检索没拿到证据”和“拿到证据但生成错”两类。前者看 chunk、embedding、BM25、metadata、rerank；后者看 prompt、上下文压缩、拒答阈值和引用约束。
+
+### 13.5 场景题：上下文过长、记忆污染和输出截断怎么办？
+
+面经里常把这个问题问成“怎么加强大模型记忆”“多轮对话怎么实现”“长流程输出被截断怎么办”。
+
+本项目里要区分三件事：
+
+| 名词 | 本项目含义 | 代码入口 | 面试注意 |
+| --- | --- | --- | --- |
+| Message History | 用户和助手消息历史 | `session/manager.py`、`agent_message` | 用于会话回放，不等于可无限塞给模型。 |
+| Checkpoint | LangGraph 执行状态快照 | `session/checkpointer.py`、`langgraph_checkpoint` | 用于 HITL/崩溃恢复，保存当前节点和工具状态。 |
+| Auto-Compact | 接近 token 预算时压缩早期上下文 | `agent/graph.py`、`compact_node` | 防止直接爆上下文，但可能损失细节。 |
+
+真实风险：
+
+- 压缩摘要可能丢掉关键约束，例如“不要退款，只补券”。
+- 多轮对话里旧的商家/订单上下文可能污染新任务。
+- 输出长报告时 SSE 断开，前端只拿到半截。
+
+本项目答法：
+
+1. 对短期任务状态，靠 Checkpoint，而不是靠 prompt 里塞聊天记录。
+2. 对上下文超限，提前触发 Auto-Compact，并保留最近 N 条消息。
+3. 对关键业务约束，不只放自然语言摘要，还要结构化进 state，例如 `pending_action`、`user_role`、`merchant_id`。
+4. 对长输出，SSE 事件按 step 推送，最终状态仍以 session/thread 为准；生产可增加 resume cursor。
+
+### 13.6 场景题：MCP、Function Calling、Skill 到底怎么区分？
+
+面试官问这个时，不是考定义，而是看你能不能讲清“边界”。
+
+| 概念 | 解决的问题 | 本项目怎么体现 |
+| --- | --- | --- |
+| Function Calling | 让模型按 JSON schema 生成函数参数 | LLM 可生成 `tool_calls`，但这只是调用表达。 |
+| MCP | 工具发现、工具 schema、工具调用、权限和审计边界 | Java MCP Server 的 `tools/list`、`tools/call`。 |
+| Skill | 面向任务的可复用能力包/流程模板 | 当前没有独立 Skill 系统，可把“订单异常排查流程”视作未来 Skill 候选。 |
+| Workflow/DAG | 固定步骤的流程编排 | 适合固定审批流，不适合未知原因的订单异常排查。 |
+| ReAct | 根据工具 Observation 动态决定下一步 | 当前 Agent 主循环。 |
+
+为什么本项目选 MCP：
+
+1. 后端业务能力在 Java，Agent 编排在 Python，MCP 提供跨语言边界。
+2. 工具由服务端声明，带 schema、角色、业务 hint。
+3. 审计和 RBAC 收口在 Java MCP Server，Agent 不直连业务库。
+4. 新工具可以注册到 `ToolRegistry`，Agent 通过 `tools/list` 发现。
+
+如果追问“为什么不直接 REST”，回答：
+
+> REST 是用户接口风格，面向前端和业务客户端；MCP 是 Agent 工具协议，面向模型工具发现和安全调用。直接 REST 会把权限、审计、schema、工具说明散落在各接口里，Agent 也更容易越过业务边界。
+
+### 13.7 场景题：多 Agent 要不要做？怎么防推诿和死循环？
+
+最新面经里多 Agent 很高频，但本项目当前没有做 A2A 多 Agent，这是一个要诚实讲清楚的点。
+
+为什么当前不做：
+
+- LocalLife Copilot 的任务主要是“商家/客服业务助手”：查询、诊断、RAG、审批，单 Agent + 工具路由已经足够。
+- 多 Agent 会引入上下文共享、责任划分、循环协商、成本和延迟问题。
+- 实习项目里盲目堆多 Agent，容易被追问“每个 Agent 的不可替代价值是什么”。
+
+如果面试官要求设计多 Agent，可以这样扩展：
+
+| Agent | 职责 | 输入输出 |
+| --- | --- | --- |
+| Triage Agent | 判断任务类型和风险等级 | 用户问题 → 任务类型、所需专家 |
+| Data Agent | 调 MCP 只读工具查业务事实 | 订单/支付/券/经营数据 |
+| Knowledge Agent | 走 RAG 查规则/SOP | 平台规则、客服话术、活动限制 |
+| Risk Agent | 判断是否资损/越权/需审批 | 风险等级、HITL 建议 |
+| Response Agent | 汇总证据生成回复 | 带引用和操作建议的最终答案 |
+
+防死循环策略：
+
+1. 每个 Agent 只能输出结构化结果，不能互相自由聊天。
+2. Orchestrator 统一调度，不让 Agent 互相直接转发任务。
+3. 设置最大轮数、重复任务 hash 检测、token 预算和超时。
+4. 高风险动作仍然只由主流程进入 HITL，不能让某个子 Agent 直接执行。
+
+面试一句话：
+
+> 我现在没有为了炫技做多 Agent，因为单 Agent 已能覆盖本项目闭环。若扩展多 Agent，我会按职责拆专家，并由 Orchestrator 统一调度，所有子 Agent 只能返回结构化证据，避免自由对话导致推诿和循环。
+
+### 13.8 场景题：SSE 流式输出有什么局限？
+
+本项目用 SSE，因为浏览器支持好、实现简单、适合单向文本流。
+
+对应代码：
+
+- `copilot-agent-service/api/chat.py`
+- `copilot-agent-service/evals/real_agent_client.py`
+
+面试回答：
+
+| 问题 | SSE 表现 | 本项目/生产应对 |
+| --- | --- | --- |
+| 只能服务端到客户端 | 用户中途发控制信号不方便 | 新请求用 `/chat/resume` 或独立取消接口；复杂协同可升级 WebSocket。 |
+| 断线恢复弱 | 浏览器断了可能丢中间事件 | 用 `session_id/thread_id` 作为事实状态，前端重连后查历史消息。 |
+| 长连接占资源 | 大量并发会占连接 | 网关限流、超时、心跳、连接数监控。 |
+| 代理缓冲 | Nginx 可能缓冲导致不实时 | 配置关闭 buffering，设置正确 `Content-Type: text/event-stream`。 |
+| 最终一致 | 前端看到流，不代表业务写成功 | 高风险动作以 Java 主服务返回和审计表为准。 |
+
+面试一句话：
+
+> SSE 适合把 Agent step、tool_call、final_answer 实时推给前端，但它不是任务状态存储。真正可恢复的是 session/thread/checkpoint，SSE 只是展示通道。
+
+### 13.9 场景题：AI 网关、模型超时和降级怎么做？
+
+最新帖子里会问“生产级 AI 系统不只是调 API”，这点本项目要如实区分“已有”和“可演进”。
+
+当前已有：
+
+- `.env` 支持多 Provider 配置，默认 DeepSeek flash。
+- Agent 服务通过配置选择模型，不把模型写死在业务代码里。
+- `settings.mcp_timeout_seconds` 控制 MCP 调用超时。
+- Fast Path 能让简单经营查询绕过 LLM，降低成本和延迟。
+
+当前还不是完整 AI 网关：
+
+- 没有独立的模型路由服务。
+- 没有多模型负载均衡和自动熔断。
+- 没有按租户统计模型成本账单。
+
+如果面试问“生产怎么补”，回答：
+
+1. 增加 Model Gateway：统一封装 DeepSeek/OpenAI/Qwen/Ollama。
+2. 加熔断和降级：主模型超时后切小模型或返回“稍后重试”，不能无限等待。
+3. 加成本预算：按 session/user/merchant 记录 token 和金额。
+4. 加缓存：规则类问题可缓存 RAG 检索结果和最终回答。
+5. 加观测：每次 LLM 请求记录 latency、tokens、model、error_code。
+
+### 13.10 场景题：怎么证明 Agent 质量变好了？
+
+面经常问“召回率多少”“复杂任务准确率怎么评估”“如果工具多调用了但结果没错，指标怎么算”。
+
+本项目的回答不要只说“我感觉变好了”，要落到 `evals/metrics.py`：
+
+| 指标 | 用来回答什么 | 注意点 |
+| --- | --- | --- |
+| Tool Call Accuracy | 工具是否选对 | 多调用无关工具会拉低精度，但如果结果正确，任务完成率仍可给分。 |
+| Task Completion Rate | 最终是否解决用户问题 | 面向业务结果，不只看过程。 |
+| Recall@5 | RAG 是否召回正确文档 | 只对 knowledge 用例计算。 |
+| Faithfulness | 回答是否有证据支撑 | 防幻觉核心指标。 |
+| Latency | 用户是否等得起 | 区分 Fast Path 和 ReAct 多步任务。 |
+| Token Cost | 成本是否可控 | Tool Router、Fast Path、Auto-Compact 都为成本服务。 |
+
+如果工具多调用了但答案没错，怎么评价？
+
+- 任务完成率可以算成功。
+- 工具调用准确率要扣分，因为它增加成本、延迟和潜在风险。
+- 高风险工具误调用即使没执行，也要在安全指标里单独扣分。
+
+建议你面试时主动说：
+
+> 我会把 Agent 评测拆成“结果指标”和“过程指标”。结果看任务完成和事实一致，过程看工具选择、RAG 召回、延迟、token 和风险工具误触发。这样不会因为答案碰巧对了，就掩盖工具乱调的问题。
+
+### 13.11 场景题：项目还没真实上线，怎么回答？
+
+最新面经会追问“有没有正式用户”“为什么没有上线”。这个问题不能硬编。
+
+推荐回答：
+
+> 这是一个面向实习求职的端到端项目，不是商业上线系统。我做到了本地生产化模拟：三服务 Docker 镜像、MySQL/Redis/MQ/Milvus、Swagger、Chat UI、HITL 工作台、批量业务数据模拟、E2E/Smoke、压测和 Eval。它和玩具 demo 的区别是：数据是真实入库的，Agent 通过 MCP 查真实业务表，高风险动作有审批和审计。但我不会把它包装成真实商用上线，生产上线还需要灰度、权限体系接公司 IAM、真实支付渠道沙箱、告警值班、数据脱敏和安全审计。
+
+对应到本项目短板：
+
+| 生产问题 | 当前项目状态 | 面试表达 |
+| --- | --- | --- |
+| 真实支付渠道 | 模拟支付/内部退款接口 | 已验证状态机和幂等，不宣称接了真实渠道。 |
+| 登录和 IAM | Header/RBAC 模拟身份 | 生产要接 SSO/IAM，Header 由网关签发。 |
+| 数据安全 | 本地演示数据 | 生产要脱敏、审计、最小权限和数据分级。 |
+| 模型稳定性 | Provider 可配置 | 生产要模型网关、熔断、成本预算。 |
+| RAG 热更新 | ingest 链路已具备 | 生产要管理后台和文档事件驱动增量索引。 |
+
+### 13.12 最新面经压缩成 8 个必背项目问答
+
+| 面试官问 | 你用本项目怎么答 |
+| --- | --- |
+| 你的 Agent 和普通 Chatbot 区别？ | Chatbot 只生成文本；本项目 Agent 能通过 MCP 查询订单/支付/券，能多步诊断，写操作 HITL，所有工具审计。 |
+| 为什么后端转 Agent 有优势？ | Agent 落地难点不是 prompt，而是业务边界、幂等、权限、审计、数据库、MQ 和故障恢复，这些正是后端能力。 |
+| RAG 做了三个月，召回率多少？ | 不虚报商业指标；项目有 Recall@5 评测框架，检索链路是 Hybrid Recall + RRF + Reranker，后续用 golden set 固定量化。 |
+| Agent 失败会不会导致资损？ | 不会让模型直接执行资金动作；退款/补券必须 HITL，Java 主服务做最终状态机和幂等。 |
+| 多 Agent 为什么没做？ | 当前业务单 Agent 足够，多 Agent 会增加复杂度；如果扩展，会按 Triage/Data/Knowledge/Risk/Response 拆分并由 Orchestrator 控制。 |
+| MCP 和 REST 有什么区别？ | REST 是用户接口；MCP 是 Agent 工具协议，统一工具发现、schema、权限、审计和跨语言边界。 |
+| SSE 断了怎么办？ | SSE 只是展示通道，状态在 session/thread/checkpoint；前端可按 session_id 恢复历史，生产补心跳和 resume cursor。 |
+| 怎么证明不是 AI 帮你糊出来的？ | 能讲清每个代码入口、失败模式、测试、commit 和 tradeoff；特别是资金安全、RAG 评测、工具路由和 HITL。 |
+
+---
+
 ## 关键词卡片（Copilot 模块）
 
 | 关键词 | 一句话解释 |
@@ -881,7 +1189,10 @@ data: {
 | **Evals** | Agent 自动化评测，量化工具准确率、完成率等 6 项指标 |
 | **Self-Reflection** | 每 5 步触发的自我评估，防止无效循环 |
 | **6 种终止条件** | 完成/步数/Token/HITL/重复工具/无工具可用 |
+| **Auto-Compact** | 接近 token 预算时压缩早期上下文，保留最近消息继续执行 |
+| **Hybrid RAG** | 向量检索 + BM25 + RRF + Reranker，兼顾语义召回和关键词精确匹配 |
+| **Model Gateway** | 生产级多模型路由、熔断、降级和成本统计；当前项目是可演进方向 |
 
 ---
 
-*教程版本：2026-05-30 | 对应代码：feat: close 5 critical gaps for true end-to-end Copilot*
+*教程版本：2026-06-11 | 对应代码：test/ci-quality-gates 分支，已融合 2026-06-11 牛客公开面经抓取摘要*
