@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     compact_max_consecutive_failures: int = 2
 
     # ===== 服务 =====
+    service_name: str = "copilot-agent"
+    deploy_env: str = "dev"
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     debug: bool = True

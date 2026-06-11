@@ -20,18 +20,22 @@ LocalLife Copilot Agent Service 入口。
   uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
 """
 import structlog
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
+from structlog.contextvars import bind_contextvars, clear_contextvars
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse
 
+from config.logging import configure_logging
 from api.chat import router as chat_router
 from api.hitl import router as hitl_router
 from api.session import router as session_router
 from config.settings import settings
 
+configure_logging()
 log = structlog.get_logger(__name__)
 
 
@@ -187,8 +191,26 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Session-Id", "X-Thread-Id"],  # 让前端能读取这些响应头
+    expose_headers=["X-Session-Id", "X-Thread-Id", "X-Trace-Id"],  # 让前端能读取这些响应头
 )
+
+
+@app.middleware("http")
+async def observability_context(request, call_next):
+    """Bind request-scoped fields to every structlog line and response header."""
+    trace_id = request.headers.get("X-Trace-Id") or request.headers.get("X-Request-Id") or uuid.uuid4().hex
+    clear_contextvars()
+    bind_contextvars(
+        trace_id=trace_id,
+        http_method=request.method,
+        http_path=request.url.path,
+    )
+    try:
+        response = await call_next(request)
+        response.headers["X-Trace-Id"] = trace_id
+        return response
+    finally:
+        clear_contextvars()
 
 # ---- 路由注册 ----
 app.include_router(session_router)

@@ -1,0 +1,98 @@
+{
+  "uid": "local-life-logs",
+  "title": "LocalLife Logs",
+  "tags": ["local-life", "logs", "loki"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "templating": {
+    "list": [
+      {
+        "name": "env",
+        "type": "query",
+        "datasource": {"type": "loki", "uid": "loki"},
+        "query": "label_values(env)",
+        "current": {"text": "dev", "value": "dev"},
+        "refresh": 1
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": {"type": "loki", "uid": "loki"},
+        "query": "label_values({env=\"$env\"}, service)",
+        "includeAll": true,
+        "current": {"text": "All", "value": "$__all"},
+        "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "logs",
+      "title": "Recent logs",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{env=\"$env\", service=~\"$service\"}"
+        }
+      ],
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 0},
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "dedupStrategy": "none",
+        "enableLogDetails": true
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Error-like logs by service",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service) (count_over_time({env=\"$env\", service=~\"$service\"} |~ \"(?i)(error|exception|failed|失败|异常)\" [5m]))"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12}
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Agent tool failures",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(count_over_time({env=\"$env\", service=\"copilot-agent\"} |= \"tool_failed\" [5m]))"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12}
+    },
+    {
+      "id": 4,
+      "type": "logs",
+      "title": "RAG warnings",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{env=\"$env\", service=\"copilot-agent\"} |~ \"milvus_unavailable|knowledge_base_ingest_failed|embedding_service_error|reranker_service_error|rag_no_candidates|rag_below_threshold\""
+        }
+      ],
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 20},
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "enableLogDetails": true
+      }
+    }
+  ]
+}

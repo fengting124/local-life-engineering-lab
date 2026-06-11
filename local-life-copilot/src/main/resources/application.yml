@@ -95,4 +95,4 @@ logging:
     com.personalprojections.locallife.copilot: DEBUG
     org.springframework: INFO
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%level] [%thread] %logger{36} - %msg%n"
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%level] [%thread] [%X{traceId}/%X{spanId}] %logger{36} - %msg%n"

@@ -1,0 +1,43 @@
+groups:
+  - name: local-life-log-alerts
+    interval: 30s
+    rules:
+      - alert: LocalLifeErrorLogsHigh
+        expr: sum by (env, service) (count_over_time({job="docker", env=~".+"} |~ "(?i)(error|exception|failed|失败|异常)" [5m])) > 5
+        for: 2m
+        labels:
+          severity: warning
+          category: logs
+        annotations:
+          summary: "High error log rate for {{ $labels.service }}"
+          description: "{{ $labels.service }} produced more than 5 error-like log lines in 5 minutes."
+
+      - alert: CopilotAgentToolFailures
+        expr: sum by (env, service) (count_over_time({job="docker", env=~".+", service="copilot-agent"} |= "tool_failed" [5m])) > 2
+        for: 1m
+        labels:
+          severity: warning
+          category: agent
+        annotations:
+          summary: "Copilot Agent tool failures detected"
+          description: "The Agent emitted multiple tool_failed events in the last 5 minutes."
+
+      - alert: CopilotRagUnavailable
+        expr: sum by (env, service) (count_over_time({job="docker", env=~".+", service="copilot-agent"} |~ "milvus_unavailable|knowledge_base_ingest_failed|embedding_service_error|reranker_service_error" [10m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+          category: rag
+        annotations:
+          summary: "RAG dependency warning"
+          description: "Milvus, embedding, reranker, or knowledge ingestion warning appeared in Agent logs."
+
+      - alert: HitlApprovalWriteFailed
+        expr: sum by (env, service) (count_over_time({job="docker", env=~".+", service="copilot-agent"} |= "hitl_approval_write_failed" [10m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          category: hitl
+        annotations:
+          summary: "HITL approval persistence failed"
+          description: "The Agent failed to persist a high-risk action approval request."

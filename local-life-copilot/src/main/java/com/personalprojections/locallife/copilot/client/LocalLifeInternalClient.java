@@ -3,6 +3,7 @@ package com.personalprojections.locallife.copilot.client;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -115,6 +116,10 @@ public class LocalLifeInternalClient {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set("X-Internal-Key", internalKey);
+        String traceId = MDC.get("traceId");
+        if (traceId != null && !traceId.isBlank()) {
+            headers.set("X-Trace-Id", traceId);
+        }
 
         try {
             // 用 String 接收再手动解析，避免 raw Map 类型警告

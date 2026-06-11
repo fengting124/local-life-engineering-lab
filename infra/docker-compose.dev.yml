@@ -123,6 +123,8 @@ services:
     ports:
       - "${AGENT_PORT:-8000}:8000"
     environment:
+      DEPLOY_ENV: "${DEPLOY_ENV:-dev}"
+      SERVICE_NAME: "copilot-agent"
       MCP_SERVER_URL: "http://locallife-copilot:8081"
       DB_URL: "mysql+aiomysql://root:${MYSQL_ROOT_PASSWORD:-123456}@mysql:3306/local_life"
       REDIS_URL: "redis://redis:6379/2"
@@ -301,6 +303,64 @@ services:
     networks:
       - local-life-net
 
+  loki:
+    image: grafana/loki:3.3.2
+    container_name: local-life-loki
+    profiles: ["observability"]
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    environment:
+      DEPLOY_ENV: ${DEPLOY_ENV:-dev}
+      LOKI_RETENTION_PERIOD: ${LOKI_RETENTION_PERIOD:-168h}
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - ./loki/rules.yml:/etc/loki/rules/fake/local-life-rules.yml:ro
+      - loki_data:/loki
+    command:
+      - "-config.file=/etc/loki/loki-config.yml"
+      - "-config.expand-env=true"
+    depends_on:
+      - alertmanager
+    networks:
+      - local-life-net
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:3.3.2
+    container_name: local-life-promtail
+    profiles: ["observability"]
+    environment:
+      DEPLOY_ENV: ${DEPLOY_ENV:-dev}
+    volumes:
+      - ./promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - promtail_positions:/var/lib/promtail
+    command:
+      - "-config.file=/etc/promtail/promtail-config.yml"
+      - "-config.expand-env=true"
+    depends_on:
+      - loki
+    networks:
+      - local-life-net
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.0
+    container_name: local-life-alertmanager
+    profiles: ["observability"]
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    networks:
+      - local-life-net
+    restart: unless-stopped
+
   grafana:
     image: grafana/grafana:11.4.0
     container_name: local-life-grafana
@@ -312,8 +372,12 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
+      - loki
+      - zipkin
     networks:
       - local-life-net
 
@@ -491,6 +555,9 @@ volumes:
   elastic_data:
   prometheus_data:
   grafana_data:
+  loki_data:
+  promtail_positions:
+  alertmanager_data:
   etcd_data:
   minio_data:
   milvus_data:

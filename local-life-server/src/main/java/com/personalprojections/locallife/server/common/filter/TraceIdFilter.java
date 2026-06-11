@@ -12,6 +12,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.util.UUID;
 
 /**
  * 链路追踪 ID 注入过滤器。
@@ -95,6 +96,16 @@ public class TraceIdFilter implements Filter {
         if (currentSpan != null) {
             traceId = currentSpan.context().traceId();
             spanId = currentSpan.context().spanId();
+        }
+        String upstreamTraceId = request.getHeader(RESPONSE_HEADER_TRACE_ID);
+        if (upstreamTraceId != null && !upstreamTraceId.isBlank()) {
+            traceId = upstreamTraceId;
+        }
+        if (traceId.isBlank()) {
+            traceId = UUID.randomUUID().toString().replace("-", "");
+        }
+        if (spanId.isBlank()) {
+            spanId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         }
 
         try {
