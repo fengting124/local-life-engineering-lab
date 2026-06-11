@@ -12,7 +12,7 @@
 
 本轮整理使用了三类来源：
 
-- 本仓库已有抓取数据：`data/nowcoder_posts.jsonl`、`data/nowcoder_research_posts.jsonl`、`data/nowcoder_resume_posts.jsonl`，以及 `scripts/nowcoder_search_urls.py`、`scripts/nowcoder_fetch_posts.py`。
+- 本机已有抓取数据：`data/nowcoder_posts.jsonl`、`data/nowcoder_research_posts.jsonl`、`data/nowcoder_resume_posts.jsonl`；抓取工具已从主仓库移到 `../local-life-tools/nowcoder-research/`，避免和主服务运行脚本混在一起。
 - 2026-06-11 最新公开抓取：`data/nowcoder_latest_candidate_urls_2026-06-11.txt` 共 80 个候选链接，`data/nowcoder_latest_posts_2026-06-11.jsonl` 共 80 条渲染结果，其中 69 条可用正文，正文约 19 万字。抓取正文属于本地研究数据，按 `.gitignore` 不提交进仓库。
 - 公开面经和题库资料：
   - [牛客：大模型 Agent 面试全攻略](https://www.nowcoder.com/discuss/871718560224112640)
@@ -363,7 +363,7 @@ Agent 场景题的完整项目化答法已融合到 [LocalLife Copilot 全链路
 
 ## 11. 继续拉取最新面经需要什么
 
-当前脚本在 `scripts/` 下已经具备搜索和正文抓取能力，本机已安装 Playwright Python 包和 Chromium 浏览器缓存。若在新机器上重建环境，执行：
+当前脚本在 `../local-life-tools/nowcoder-research/` 下已经具备搜索和正文抓取能力，本机已安装 Playwright Python 包和 Chromium 浏览器缓存。若在新机器上重建环境，执行：
 
 ```bash
 pip install playwright
@@ -378,7 +378,7 @@ python -m playwright install chromium
 2. 牛客 Cookie，放到环境变量 `NOWCODER_COOKIE` 后执行：
 
 ```bash
-python3 scripts/nowcoder_fetch_posts.py \
+python3 ../local-life-tools/nowcoder-research/nowcoder_fetch_posts.py \
   --urls-file data/nowcoder_latest_candidate_urls_2026-06-11.txt \
   --out data/nowcoder_latest_posts_with_cookie.jsonl \
   --cookie-env NOWCODER_COOKIE

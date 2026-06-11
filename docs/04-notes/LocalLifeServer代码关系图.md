@@ -1,6 +1,6 @@
 # LocalLife Server 代码关系图
 
-> 本文档由 `python3 scripts/java_code_graph.py` 自动生成。它用于学习 `local-life-server` 的接口入口、类依赖和方法调用关系。
+> 本文档由 `python3 ../local-life-tools/code-analysis/java_code_graph.py` 自动生成。它用于学习 `local-life-server` 的接口入口、类依赖和方法调用关系。
 
 ## 1. 当前扫描结果
 
@@ -689,7 +689,7 @@ flowchart LR
 重新生成：
 
 ```bash
-python3 scripts/java_code_graph.py
+python3 ../local-life-tools/code-analysis/java_code_graph.py
 ```
 
 局限：这是轻量静态分析，不是完整 Java AST。它能稳定识别 Spring 接口、字段依赖和常见方法调用；但对反射、AOP、MyBatis 动态 SQL、Lombok 生成方法、链式泛型推断和运行时代理只能做近似。所以它适合学习和面试梳理，真正排障仍要结合 Swagger、日志、断点和测试。
