@@ -2,6 +2,7 @@ package com.personalprojections.locallife.copilot.tool.impl;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.personalprojections.locallife.copilot.domain.dto.OrderSnapshot;
 import com.personalprojections.locallife.copilot.domain.mapper.CopilotOrderMapper;
 import com.personalprojections.locallife.copilot.rbac.RbacContext;
 import com.personalprojections.locallife.copilot.tool.McpTool.ToolNotFoundException;
@@ -10,7 +11,6 @@ import com.personalprojections.locallife.copilot.tool.McpTool.ToolPermissionExce
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -108,10 +108,10 @@ class QueryOrderToolTest {
     @Test
     void execute_orderRowEmpty_alsoTreatedAsNotFound() throws Exception {
         RbacContext.set(RbacContext.builder().userId(90001L).role("admin").build());
-        when(orderMapper.selectOrderByOrderNo("1234567890123456789")).thenReturn(new HashMap<>());
+        when(orderMapper.selectOrderByOrderNo("1234567890123456789")).thenReturn(new OrderSnapshot());
 
         assertThatThrownBy(() -> tool.execute(args("{\"order_id\": \"1234567890123456789\"}")))
-                .as("空 Map（row.isEmpty()）和 null 一样被当作『查无此单』，SQL 层 JOIN 过滤后两者都可能出现")
+                .as("空 DTO（orderId=null）和 null 一样被当作『查无此单』，SQL 层 JOIN 过滤后两者都可能出现")
                 .isInstanceOf(ToolNotFoundException.class)
                 .hasMessage("订单不存在或无权查询: 1234567890123456789");
     }
@@ -124,24 +124,24 @@ class QueryOrderToolTest {
     void execute_orderFound_returnsStructuredResult_withNestedPaymentAndCouponMaps() throws Exception {
         RbacContext.set(RbacContext.builder().userId(90001L).role("admin").build());
 
-        Map<String, Object> row = new HashMap<>();
-        row.put("order_id", 1L);
-        row.put("order_no", "1234567890123456789");
-        row.put("user_id", 20001L);
-        row.put("shop_id", 30001L);
-        row.put("original_amount", 5990);
-        row.put("coupon_discount", 1000);
-        row.put("order_amount", 4990);
-        row.put("order_status", "PAID");
-        row.put("pay_status", "SUCCESS");
-        row.put("channel", "wechat");
-        row.put("trade_no", "TRADE_001");
-        row.put("paid_amount", 4990);
-        row.put("paid_at", "2026-06-01T10:00:00");
-        row.put("coupon_status", "UNUSED");
-        row.put("coupon_name", "满50减10");
-        row.put("discount_type", "FIXED");
-        row.put("discount_value", 1000);
+        OrderSnapshot row = OrderSnapshot.builder()
+                .orderId(1L)
+                .orderNo("1234567890123456789")
+                .userId(20001L)
+                .shopId(30001L)
+                .originalAmount(5990)
+                .couponDiscount(1000)
+                .orderAmount(4990)
+                .orderStatus("PAID")
+                .payStatus("SUCCESS")
+                .channel("wechat")
+                .tradeNo("TRADE_001")
+                .paidAmount(4990)
+                .couponStatus("UNUSED")
+                .couponName("满50减10")
+                .discountType("FIXED")
+                .discountValue(1000)
+                .build();
         when(orderMapper.selectOrderByOrderNo("1234567890123456789")).thenReturn(row);
 
         Object result = tool.execute(args("{\"order_id\": \"1234567890123456789\"}"));
@@ -176,12 +176,13 @@ class QueryOrderToolTest {
         // 情况4：pay_status=null —— 该订单从未发起过支付，行里完全没有 payment/coupon 相关列
         RbacContext.set(RbacContext.builder().userId(90001L).role("cs").build());
 
-        Map<String, Object> row = new HashMap<>();
-        row.put("order_id", 2L);
-        row.put("order_no", "9999999999999999999");
-        row.put("user_id", 20002L);
-        row.put("shop_id", 30002L);
-        row.put("order_status", "WAIT_PAY");
+        OrderSnapshot row = OrderSnapshot.builder()
+                .orderId(2L)
+                .orderNo("9999999999999999999")
+                .userId(20002L)
+                .shopId(30002L)
+                .orderStatus("WAIT_PAY")
+                .build();
         // 不填 pay_status / channel / trade_no / paid_at / coupon_status 等——模拟数据库里这些列为 NULL
         when(orderMapper.selectOrderByOrderNo("9999999999999999999")).thenReturn(row);
 
@@ -213,11 +214,12 @@ class QueryOrderToolTest {
         // 不应改变返回结果——这条用例确认那个分支不会意外抛出或修改数据
         RbacContext.set(RbacContext.builder().userId(20001L).role("merchant").merchantId(30001L).build());
 
-        Map<String, Object> row = new HashMap<>();
-        row.put("order_id", 3L);
-        row.put("order_no", "1111111111111111111");
-        row.put("shop_id", 40001L);
-        row.put("order_status", "PAID");
+        OrderSnapshot row = OrderSnapshot.builder()
+                .orderId(3L)
+                .orderNo("1111111111111111111")
+                .shopId(40001L)
+                .orderStatus("PAID")
+                .build();
         when(orderMapper.selectOrderByOrderNo("1111111111111111111")).thenReturn(row);
 
         Object result = tool.execute(args("{\"order_id\": \"1111111111111111111\"}"));

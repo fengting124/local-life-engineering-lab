@@ -3,6 +3,8 @@ package com.personalprojections.locallife.copilot.tool.impl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.personalprojections.locallife.copilot.domain.dto.OrderSnapshot;
+import com.personalprojections.locallife.copilot.domain.dto.OutboxMessageSnapshot;
 import com.personalprojections.locallife.copilot.domain.mapper.CopilotOrderMapper;
 import com.personalprojections.locallife.copilot.mcp.dto.ToolDefinition;
 import com.personalprojections.locallife.copilot.tool.McpTool;
@@ -85,32 +87,31 @@ public class QueryCouponIssueLogTool implements McpTool {
         log.info("[QueryCouponIssueLogTool] 查询券发放日志: orderNo={}", orderNo);
 
         // ---- Step 2：先查订单确认存在 ----
-        Map<String, Object> order = orderMapper.selectOrderByOrderNo(orderNo);
-        if (order == null || order.isEmpty()) {
+        OrderSnapshot order = orderMapper.selectOrderByOrderNo(orderNo);
+        if (order == null || order.getOrderId() == null) {
             throw new ToolNotFoundException("订单不存在: " + orderNo);
         }
 
-        String orderId = String.valueOf(order.get("order_id"));
+        String orderId = String.valueOf(order.getOrderId());
 
         // ---- Step 3：查询 Outbox 投递状态 ----
         // outbox_message.event_id 格式："{orderId}_paid"（PaymentService 写入时设置）
-        List<Map<String, Object>> outboxLogs = orderMapper.selectOutboxByOrderId(orderId);
+        List<OutboxMessageSnapshot> outboxLogs = orderMapper.selectOutboxByOrderId(orderId);
 
         // ---- Step 4：整理结果 ----
-        Map<String, Object> couponInfo = Map.of(
-                "coupon_status",   order.getOrDefault("coupon_status", "NOT_USED"),
-                "coupon_name",     order.getOrDefault("coupon_name", ""),
-                "coupon_discount", order.getOrDefault("coupon_discount", 0)
-        );
+        Map<String, Object> couponInfo = new java.util.LinkedHashMap<>();
+        couponInfo.put("coupon_status", order.getCouponStatus() != null ? order.getCouponStatus() : "NOT_USED");
+        couponInfo.put("coupon_name", order.getCouponName() != null ? order.getCouponName() : "");
+        couponInfo.put("coupon_discount", order.getCouponDiscount() != null ? order.getCouponDiscount() : 0);
 
         return Map.of(
                 "order_id",         orderNo,
-                "order_status",     order.getOrDefault("order_status", "UNKNOWN"),
+                "order_status",     order.getOrderStatus() != null ? order.getOrderStatus() : "UNKNOWN",
                 "coupon",           couponInfo,
                 "outbox_messages",  outboxLogs.isEmpty()
                         ? List.of(Map.of("status", "NO_RECORD",
                                 "hint", "未找到 Outbox 记录，支付回调事务可能未完成"))
-                        : outboxLogs,
+                        : outboxLogs.stream().map(this::toOutboxMap).toList(),
                 "diagnosis",        diagnose(order, outboxLogs)
         );
     }
@@ -121,9 +122,9 @@ public class QueryCouponIssueLogTool implements McpTool {
      * <p>减少 Agent 推理步数：Agent 看到 diagnosis 字段后可以直接决策下一步，
      * 而不需要再次调用 LLM 分析原始数据。
      */
-    private String diagnose(Map<String, Object> order, List<Map<String, Object>> outboxLogs) {
-        String couponStatus = String.valueOf(order.getOrDefault("coupon_status", ""));
-        String orderStatus  = String.valueOf(order.getOrDefault("order_status", ""));
+    private String diagnose(OrderSnapshot order, List<OutboxMessageSnapshot> outboxLogs) {
+        String couponStatus = order.getCouponStatus() != null ? order.getCouponStatus() : "";
+        String orderStatus  = order.getOrderStatus() != null ? order.getOrderStatus() : "";
 
         if (!"PAID".equals(orderStatus)) {
             return "订单状态为 " + orderStatus + "，不是 PAID，无需查券发放。";
@@ -135,9 +136,9 @@ public class QueryCouponIssueLogTool implements McpTool {
             return "未找到 Outbox 记录，可能是支付回调事务未提交，建议查看 PaymentService 日志。";
         }
 
-        Map<String, Object> latest = outboxLogs.get(0);
-        String outboxStatus = String.valueOf(latest.getOrDefault("status", ""));
-        int retryCount = ((Number) latest.getOrDefault("retry_count", 0)).intValue();
+        OutboxMessageSnapshot latest = outboxLogs.get(0);
+        String outboxStatus = latest.getStatus() != null ? latest.getStatus() : "";
+        int retryCount = latest.getRetryCount() != null ? latest.getRetryCount() : 0;
 
         if ("FAILED".equals(outboxStatus)) {
             return "Outbox 消息投递失败（重试 " + retryCount + " 次后放弃），" +
@@ -152,6 +153,18 @@ public class QueryCouponIssueLogTool implements McpTool {
         }
 
         return "状态异常：outbox=" + outboxStatus + ", coupon=" + couponStatus + "，需人工排查。";
+    }
+
+    private Map<String, Object> toOutboxMap(OutboxMessageSnapshot message) {
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("event_id", message.getEventId());
+        result.put("topic", message.getTopic());
+        result.put("tag", message.getTag());
+        result.put("status", message.getStatus());
+        result.put("retry_count", message.getRetryCount() != null ? message.getRetryCount() : 0);
+        result.put("next_retry_at", message.getNextRetryAt() != null ? message.getNextRetryAt().toString() : null);
+        result.put("created_at", message.getCreatedAt() != null ? message.getCreatedAt().toString() : null);
+        return result;
     }
 
     private String extractRequiredString(JsonNode args, String key) {

@@ -3,6 +3,7 @@ package com.personalprojections.locallife.copilot.tool.impl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.personalprojections.locallife.copilot.domain.dto.ShopMetricsSnapshot;
 import com.personalprojections.locallife.copilot.domain.mapper.CopilotOrderMapper;
 import com.personalprojections.locallife.copilot.mcp.dto.ToolDefinition;
 import com.personalprojections.locallife.copilot.rbac.RbacContext;
@@ -127,17 +128,11 @@ public class ShopMetricsQueryTool implements McpTool {
         // ---- Step 3：查询数据库 ----
         // 如果 merchantId 为 null（cs/admin 不限商家），
         // 当前 SQL 会查所有商家的数据，面试时可以说「生产环境需要加商家权限过滤」
-        Map<String, Object> metrics = orderMapper.selectShopMetrics(merchantId, actualDate, shopId);
+        ShopMetricsSnapshot metrics = orderMapper.selectShopMetrics(merchantId, actualDate, shopId);
 
         if (metrics == null) {
             // 数据库无数据时返回全零（正常情况，该日期没有订单）
-            metrics = Map.of(
-                    "order_count", 0L,
-                    "gmv", 0L,
-                    "cancel_count", 0L,
-                    "coupon_used_count", 0L,
-                    "total_coupon_discount", 0L
-            );
+            metrics = new ShopMetricsSnapshot(0L, 0L, 0L, 0L, 0L);
         }
 
         // ---- Step 4：整理结果 ----
@@ -145,11 +140,11 @@ public class ShopMetricsQueryTool implements McpTool {
                 "date",                  actualDate,
                 "merchant_id",           merchantId != null ? merchantId.toString() : "all",
                 "shop_id",               shopId != null ? shopId.toString() : "all",
-                "order_count",           metrics.getOrDefault("order_count", 0),
-                "gmv",                   metrics.getOrDefault("gmv", 0),
-                "cancel_count",          metrics.getOrDefault("cancel_count", 0),
-                "coupon_used_count",     metrics.getOrDefault("coupon_used_count", 0),
-                "total_coupon_discount", metrics.getOrDefault("total_coupon_discount", 0)
+                "order_count",           metrics.getOrderCount() != null ? metrics.getOrderCount() : 0L,
+                "gmv",                   metrics.getGmv() != null ? metrics.getGmv() : 0L,
+                "cancel_count",          metrics.getCancelCount() != null ? metrics.getCancelCount() : 0L,
+                "coupon_used_count",     metrics.getCouponUsedCount() != null ? metrics.getCouponUsedCount() : 0L,
+                "total_coupon_discount", metrics.getTotalCouponDiscount() != null ? metrics.getTotalCouponDiscount() : 0L
         );
     }
 

@@ -3,6 +3,8 @@ package com.personalprojections.locallife.copilot.tool.impl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.personalprojections.locallife.copilot.domain.dto.OrderSnapshot;
+import com.personalprojections.locallife.copilot.domain.dto.PaymentSnapshot;
 import com.personalprojections.locallife.copilot.domain.mapper.CopilotOrderMapper;
 import com.personalprojections.locallife.copilot.mcp.dto.ToolDefinition;
 import com.personalprojections.locallife.copilot.tool.McpTool;
@@ -84,28 +86,35 @@ public class QueryPaymentTool implements McpTool {
         log.info("[QueryPaymentTool] 查询支付单: orderNo={}", orderNo);
 
         // 先查订单拿到 order_id（数据库主键）
-        Map<String, Object> order = orderMapper.selectOrderByOrderNo(orderNo);
-        if (order == null || order.isEmpty()) {
+        OrderSnapshot order = orderMapper.selectOrderByOrderNo(orderNo);
+        if (order == null || order.getOrderId() == null) {
             throw new ToolNotFoundException("订单不存在: " + orderNo);
         }
 
-        Long orderId = toLong(order.get("order_id"));
-        List<Map<String, Object>> payments = orderMapper.selectPaymentsByOrderId(orderId);
+        List<PaymentSnapshot> payments = orderMapper.selectPaymentsByOrderId(order.getOrderId());
 
         return Map.of(
                 "order_no",    orderNo,
-                "order_status", order.getOrDefault("order_status", "UNKNOWN"),
+                "order_status", order.getOrderStatus() != null ? order.getOrderStatus() : "UNKNOWN",
                 "payments",    payments.isEmpty()
                         ? List.of(Map.of("note", "该订单从未发起过支付"))
-                        : payments,
+                        : payments.stream().map(this::toPaymentMap).toList(),
                 "payment_count", payments.size()
         );
     }
 
-    private Long toLong(Object val) {
-        if (val == null) return null;
-        if (val instanceof Number n) return n.longValue();
-        return Long.parseLong(val.toString());
+    private Map<String, Object> toPaymentMap(PaymentSnapshot payment) {
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("payment_id", payment.getPaymentId());
+        result.put("payment_no", payment.getPaymentNo());
+        result.put("pay_status", payment.getPayStatus());
+        result.put("channel", payment.getChannel());
+        result.put("trade_no", payment.getTradeNo());
+        result.put("pay_amount", payment.getPayAmount() != null ? payment.getPayAmount() : 0);
+        result.put("paid_amount", payment.getPaidAmount() != null ? payment.getPaidAmount() : 0);
+        result.put("paid_at", payment.getPaidAt() != null ? payment.getPaidAt().toString() : null);
+        result.put("created_at", payment.getCreatedAt() != null ? payment.getCreatedAt().toString() : null);
+        return result;
     }
 
     private String extractRequiredString(JsonNode args, String key) {
