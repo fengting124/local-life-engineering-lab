@@ -3,6 +3,7 @@ package com.personalprojections.locallife.copilot.tool.impl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.personalprojections.locallife.copilot.domain.dto.CouponTemplateSnapshot;
 import com.personalprojections.locallife.copilot.domain.mapper.CopilotCouponMapper;
 import com.personalprojections.locallife.copilot.mcp.dto.ToolDefinition;
 import com.personalprojections.locallife.copilot.rbac.RbacContext;
@@ -99,27 +100,45 @@ public class CouponPolicyLookupTool implements McpTool {
 
         if (couponTemplateId != null && !couponTemplateId.isBlank()) {
             // 查询单个券模板
-            Map<String, Object> coupon = couponMapper.selectCouponTemplateById(Long.parseLong(couponTemplateId));
+            CouponTemplateSnapshot coupon = couponMapper.selectCouponTemplateById(Long.parseLong(couponTemplateId));
             if (coupon == null) {
                 throw new ToolNotFoundException("券模板不存在: " + couponTemplateId);
             }
             // merchant 角色：校验该券是否属于自己（通过关联门店的 merchant_id）
             if (ctx.isMerchant() && merchantId != null) {
-                Object cmid = coupon.get("merchant_id");
-                if (cmid != null && !merchantId.toString().equals(cmid.toString())) {
+                Long couponMerchantId = coupon.getMerchantId();
+                if (couponMerchantId != null && !merchantId.equals(couponMerchantId)) {
                     throw new ToolPermissionException("无权查询该券模板（不属于当前商家）");
                 }
             }
-            return coupon;
+            return toCouponMap(coupon);
         } else {
             // 查询商家所有券模板（merchant 角色强制过滤自己的）
-            List<Map<String, Object>> coupons = couponMapper.selectCouponTemplatesByMerchant(merchantId, status);
+            List<CouponTemplateSnapshot> coupons = couponMapper.selectCouponTemplatesByMerchant(merchantId, status);
             return Map.of(
                     "merchant_id", merchantId != null ? merchantId.toString() : "all",
                     "status_filter", status != null ? status : "all",
                     "count",        coupons.size(),
-                    "coupons",      coupons
+                    "coupons",      coupons.stream().map(this::toCouponMap).toList()
             );
         }
+    }
+
+    private Map<String, Object> toCouponMap(CouponTemplateSnapshot coupon) {
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("coupon_template_id", coupon.getCouponTemplateId());
+        result.put("coupon_name", coupon.getCouponName());
+        result.put("discount_type", coupon.getDiscountType());
+        result.put("discount_value", coupon.getDiscountValue() != null ? coupon.getDiscountValue() : 0);
+        result.put("min_order_amount", coupon.getMinOrderAmount() != null ? coupon.getMinOrderAmount() : 0);
+        result.put("total_stock", coupon.getTotalStock() != null ? coupon.getTotalStock() : 0);
+        result.put("remaining_stock", coupon.getRemainingStock() != null ? coupon.getRemainingStock() : 0);
+        result.put("status", coupon.getStatus());
+        result.put("start_time", coupon.getStartTime() != null ? coupon.getStartTime().toString() : null);
+        result.put("end_time", coupon.getEndTime() != null ? coupon.getEndTime().toString() : null);
+        result.put("shop_id", coupon.getShopId());
+        result.put("shop_name", coupon.getShopName());
+        result.put("merchant_id", coupon.getMerchantId());
+        return result;
     }
 }

@@ -12,9 +12,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.util.AntPathMatcher;
 import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.HandlerInterceptor;
 
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -86,6 +88,90 @@ public class AuthInterceptor implements HandlerInterceptor {
      */
     private static final String REQUEST_ID_KEY = "requestId";
 
+    private static final AntPathMatcher PATH_MATCHER = new AntPathMatcher();
+
+    /**
+     * 公开端点白名单：按 (HTTP 方法, 路径模式) 匹配，命中则跳过鉴权直接放行。
+     *
+     * <h3>为什么白名单要按「方法 + 路径」匹配，而不是像以前那样在
+     * {@link com.personalprojections.locallife.server.config.WebMvcConfig} 里用
+     * {@code excludePathPatterns} 按路径排除？</h3>
+     * <p>excludePathPatterns 只能按路径排除，无法区分 HTTP 方法——而本项目大量接口
+     * 是典型 RESTful 设计：同一资源路径下「读」公开、「增删改」需要登录。例如：
+     * <ul>
+     *   <li>{@code GET /api/v1/shops/{shopId}} 公开（门店详情），
+     *       但 {@code PUT /api/v1/shops/{shopId}} 需要商家登录（更新门店）</li>
+     *   <li>{@code GET /api/v1/posts/{postId}} 公开（笔记详情），
+     *       但 {@code DELETE /api/v1/posts/{postId}} 需要作者登录（删除笔记）</li>
+     *   <li>{@code GET .../comments} 公开（评论列表），
+     *       但 {@code POST .../comments} 需要登录（发评论）</li>
+     * </ul>
+     * 旧版本在 WebMvcConfig 用纯路径排除（如 {@code "/api/v1/shops/*"}），
+     * 结果把同路径的 PUT/POST/DELETE 也一并放过了拦截器——UserContext 从未被写入，
+     * Service 层 {@code UserContext.get().getUserId()} 直接抛 NullPointerException
+     * （历史 Bug：对未登录调用方表现为「鉴权被静默绕过」，对已登录调用方表现为
+     * 「带着合法 Token 也 500」）。把白名单收敛到此处、按 (方法, 路径) 精确匹配，
+     * 才能表达「只放行 GET，不放行同路径写操作」这个真实意图。
+     *
+     * <p>{@code method} 为 {@code null} 表示不限方法（整条路径都公开，如登录接口、内部接口）。
+     */
+    private static final List<PublicEndpoint> PUBLIC_ENDPOINTS = List.of(
+            // 登录相关：登录前显然没有 Token，不限方法。
+            // （/logout 语义上需要登录态，但它故意留在白名单里——由 Controller 自行解析
+            //  Authorization Header 调用 authService.logout(token)，见 AuthController#logout
+            //  的注释「/logout 在白名单，拦截器不会填充 UserContext」，是有意为之、非疏漏）
+            PublicEndpoint.anyMethod("/api/v1/auth/**"),
+
+            // 公开内容：仅放行 GET，同路径的写操作仍需登录
+            PublicEndpoint.of("GET", "/api/v1/shops"),
+            PublicEndpoint.of("GET", "/api/v1/shops/*"),
+            PublicEndpoint.of("GET", "/api/v1/shops/*/posts"),
+            PublicEndpoint.of("GET", "/api/v1/posts/*"),
+            PublicEndpoint.of("GET", "/api/v1/posts/*/comments"),
+
+            // 可抢券列表：当前只有 GET，语义上就是公开列表
+            PublicEndpoint.anyMethod("/api/v1/coupons/templates"),
+
+            // 支付回调 / Mock 支付触发：渠道方调用，用验签代替鉴权（mock-pay 生产环境通过 @Profile 关闭）
+            PublicEndpoint.anyMethod("/api/v1/payments/callback"),
+            PublicEndpoint.anyMethod("/api/v1/payments/mock-pay"),
+
+            // 全文搜索：游客可搜索
+            PublicEndpoint.anyMethod("/api/v1/search/shops"),
+            PublicEndpoint.anyMethod("/api/v1/search/posts"),
+
+            // 内部服务接口：仅 Copilot MCP Server 调用，走 X-Internal-Key 验证，不用 JWT
+            PublicEndpoint.anyMethod("/internal/**"),
+
+            // 运维 / 文档
+            PublicEndpoint.anyMethod("/actuator/**"),
+            PublicEndpoint.anyMethod("/swagger-ui.html"),
+            PublicEndpoint.anyMethod("/swagger-ui/**"),
+            PublicEndpoint.anyMethod("/v3/api-docs/**")
+    );
+
+    /**
+     * 白名单条目：HTTP 方法 + Ant 风格路径模式。
+     *
+     * @param method      限定的 HTTP 方法（大小写不敏感）；{@code null} 表示不限方法
+     * @param pathPattern Ant 风格路径模式，如 {@code "/api/v1/shops/*"}
+     */
+    private record PublicEndpoint(String method, String pathPattern) {
+
+        static PublicEndpoint of(String method, String pathPattern) {
+            return new PublicEndpoint(method, pathPattern);
+        }
+
+        static PublicEndpoint anyMethod(String pathPattern) {
+            return new PublicEndpoint(null, pathPattern);
+        }
+
+        boolean matches(String requestMethod, String requestPath) {
+            return (method == null || method.equalsIgnoreCase(requestMethod))
+                    && PATH_MATCHER.match(pathPattern, requestPath);
+        }
+    }
+
     // StringRedisTemplate：存 Token 时 Value 是 JSON 字符串，用 String 模板读取
     private final StringRedisTemplate stringRedisTemplate;
 
@@ -107,6 +193,14 @@ public class AuthInterceptor implements HandlerInterceptor {
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response,
                              Object handler) {
+        // 0. 命中公开端点白名单 → 直接放行，不生成 requestId、不查 Token、不写 UserContext
+        //    （与旧版 excludePathPatterns 的可观测行为保持一致：白名单请求的日志中不会
+        //    出现本拦截器的 requestId，只是判断条件从「路径」改成了「方法 + 路径」，
+        //    详见 PUBLIC_ENDPOINTS 的注释——这正是本次修复的核心）
+        if (isPublicEndpoint(request)) {
+            return true;
+        }
+
         // 1. 生成本次请求的唯一 ID，写入 MDC，使该请求所有日志都携带此 ID
         String requestId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         MDC.put(REQUEST_ID_KEY, requestId);
@@ -173,6 +267,18 @@ public class AuthInterceptor implements HandlerInterceptor {
         // 清除 MDC，防止 requestId 污染下一个请求的日志
         MDC.remove(REQUEST_ID_KEY);
         log.debug("请求结束 [{} {}]，已清除上下文", request.getMethod(), request.getRequestURI());
+    }
+
+    /**
+     * 判断当前请求是否命中 {@link #PUBLIC_ENDPOINTS} 白名单（按 HTTP 方法 + 路径精确匹配）。
+     *
+     * @param request HTTP 请求
+     * @return true = 公开端点，无需鉴权
+     */
+    private boolean isPublicEndpoint(HttpServletRequest request) {
+        String method = request.getMethod();
+        String path = request.getRequestURI();
+        return PUBLIC_ENDPOINTS.stream().anyMatch(endpoint -> endpoint.matches(method, path));
     }
 
     /**

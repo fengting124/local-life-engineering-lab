@@ -3,14 +3,13 @@ package com.personalprojections.locallife.copilot.client;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.HttpClientErrorException;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.util.Map;
 
@@ -48,7 +47,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class LocalLifeInternalClient {
 
-    private final RestTemplate restTemplate;
+    private final RestClient localLifeRestClient;
     private final ObjectMapper objectMapper;
 
     @Value("${locallife.server.url:http://localhost:8080}")
@@ -115,15 +114,21 @@ public class LocalLifeInternalClient {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set("X-Internal-Key", internalKey);
+        String traceId = MDC.get("traceId");
+        if (traceId != null && !traceId.isBlank()) {
+            headers.set("X-Trace-Id", traceId);
+        }
 
         try {
-            // 用 String 接收再手动解析，避免 raw Map 类型警告
-            ResponseEntity<String> response = restTemplate.postForEntity(
-                    url,
-                    new HttpEntity<>(body, headers),
-                    String.class);
+            // 用 String 接收再手动解析，避免 raw Map 类型警告，并保留统一响应格式处理。
+            String responseBody = localLifeRestClient.post()
+                    .uri(url)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .headers(httpHeaders -> httpHeaders.addAll(headers))
+                    .body(body)
+                    .retrieve()
+                    .body(String.class);
 
-            String responseBody = response.getBody();
             if (responseBody == null || responseBody.isBlank()) {
                 throw new RuntimeException(operation + " 返回空响应");
             }
@@ -148,18 +153,20 @@ public class LocalLifeInternalClient {
             }
             return Map.of("status", "SUCCESS", "raw", String.valueOf(data));
 
-        } catch (HttpClientErrorException e) {
-            // 4xx 错误：解析业务错误码
+        } catch (RestClientResponseException e) {
+            // 4xx/5xx 错误：优先解析 LocalLife 统一错误码，解析失败再作为内部调用失败。
+            Map<String, Object> errorBody;
             try {
-                Map<String, Object> errorBody = parseJsonToMap(e.getResponseBodyAsString());
-                if (errorBody != null) {
-                    String code = (String) errorBody.getOrDefault("code", "UNKNOWN");
-                    String msg  = (String) errorBody.getOrDefault("message", e.getMessage());
-                    translateError(code, msg);
-                }
-            } catch (Exception parseEx) {
-                throw new RuntimeException(operation + " 请求失败: " + e.getMessage());
+                errorBody = parseJsonToMap(e.getResponseBodyAsString());
+            } catch (RuntimeException parseEx) {
+                throw new RuntimeException(operation + " 请求失败: " + e.getMessage(), e);
             }
+            if (errorBody != null) {
+                String code = (String) errorBody.getOrDefault("code", "UNKNOWN");
+                String msg  = (String) errorBody.getOrDefault("message", e.getMessage());
+                translateError(code, msg);
+            }
+            throw new RuntimeException(operation + " 请求失败: " + e.getMessage(), e);
         } catch (com.personalprojections.locallife.copilot.tool.McpTool.ToolNotFoundException
                 | com.personalprojections.locallife.copilot.tool.McpTool.ToolParameterException
                 | com.personalprojections.locallife.copilot.tool.McpTool.ToolBusinessException e) {
@@ -169,7 +176,6 @@ public class LocalLifeInternalClient {
             log.error("[InternalClient] {} 调用失败: {}", operation, e.getMessage(), e);
             throw new RuntimeException(operation + " 内部服务调用失败: " + e.getMessage());
         }
-        return Map.of();
     }
 
     /**

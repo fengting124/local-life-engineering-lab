@@ -1,10 +1,14 @@
 package com.personalprojections.locallife.copilot.domain.mapper;
 
+import com.personalprojections.locallife.copilot.domain.dto.OrderSnapshot;
+import com.personalprojections.locallife.copilot.domain.dto.OutboxMessageSnapshot;
+import com.personalprojections.locallife.copilot.domain.dto.PaymentSnapshot;
+import com.personalprojections.locallife.copilot.domain.dto.ShopMetricsSnapshot;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
-import java.util.Map;
+import java.util.List;
 
 /**
  * Copilot 专用只读 Order Mapper。
@@ -12,8 +16,8 @@ import java.util.Map;
  * <p>MCP 工具需要查询订单、支付、券数据，但不能修改业务数据。
  * 此 Mapper 只声明 SELECT 操作，且映射到与 LocalLife Server 相同的表（共享 DB）。
  *
- * <p>返回 Map 而不是实体类，避免 Copilot 模块依赖 LocalLife 的领域实体。
- * Map key 与数据库列名一致（MyBatis-Plus 驼峰映射会自动处理）。
+ * <p>返回 Copilot 自己定义的只读 DTO，而不是 LocalLife 主服务领域实体。
+ * 这样既避免跨模块复用实体造成强耦合，又比 {@code Map<String, Object>} 更类型安全。
  *
  * <h2>为什么不复用 LocalLife 的 Mapper</h2>
  * <p>两个模块是独立的 Spring Boot 应用，无法跨 JVM 注入 Bean。
@@ -69,7 +73,7 @@ public interface CopilotOrderMapper {
             WHERE o.order_no = #{orderNo}
               AND o.deleted = 0
             """)
-    Map<String, Object> selectOrderByOrderNo(@Param("orderNo") String orderNo);
+    OrderSnapshot selectOrderByOrderNo(@Param("orderNo") String orderNo);
 
     /**
      * 按订单 ID 查询（PaymentService 回调场景用，支持 user_id 精准路由）。
@@ -87,7 +91,7 @@ public interface CopilotOrderMapper {
                 AND p.id = (SELECT MAX(pp.id) FROM payment_order pp WHERE pp.order_id = o.id)
             WHERE o.id = #{orderId} AND o.deleted = 0
             """)
-    Map<String, Object> selectOrderById(@Param("orderId") Long orderId);
+    OrderSnapshot selectOrderById(@Param("orderId") Long orderId);
 
     /**
      * 查询门店经营数据（GMV / 订单数 / 退款数 / 券核销数）。
@@ -111,7 +115,7 @@ public interface CopilotOrderMapper {
               AND o.deleted = 0
               AND (#{shopId} IS NULL OR o.shop_id = #{shopId})
             """)
-    Map<String, Object> selectShopMetrics(
+    ShopMetricsSnapshot selectShopMetrics(
             @Param("merchantId") Long merchantId,
             @Param("date") String date,
             @Param("shopId") Long shopId);
@@ -123,14 +127,14 @@ public interface CopilotOrderMapper {
      * @return outbox_message 记录
      */
     @Select("""
-            SELECT event_id, topic, tag, status, retry_count,
+            SELECT event_id, topic, tag, status, retry_count, payload,
                    next_retry_at, created_at
             FROM outbox_message
             WHERE event_id LIKE CONCAT(#{orderId}, '%')
             ORDER BY created_at DESC
             LIMIT 5
             """)
-    java.util.List<Map<String, Object>> selectOutboxByOrderId(@Param("orderId") String orderId);
+    List<OutboxMessageSnapshot> selectOutboxByOrderId(@Param("orderId") String orderId);
 
     /**
      * 查询支付单列表（按订单 ID，倒序）。
@@ -145,5 +149,5 @@ public interface CopilotOrderMapper {
             WHERE order_id = #{orderId}
             ORDER BY created_at DESC
             """)
-    java.util.List<Map<String, Object>> selectPaymentsByOrderId(@Param("orderId") Long orderId);
+    List<PaymentSnapshot> selectPaymentsByOrderId(@Param("orderId") Long orderId);
 }

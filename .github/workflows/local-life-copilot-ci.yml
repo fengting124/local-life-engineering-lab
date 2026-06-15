@@ -1,0 +1,116 @@
+# local-life-copilot 持续集成：每次改动都跑一遍完整测试套件
+# （RBAC 单测 + McpController 切片测试 + 9 个工具中已覆盖的单元测试 +
+#  ToolAuditService 异步审计集成测试），在 PR 合并前拦住
+# "看起来能编译、实际跑不起来/行为不对"的改动。
+#
+# 复刻 local-life-server-ci.yml 的整体模式（同一套 MySQL + Redis 服务、
+# 同一个 init-db.sh 迁移步骤）——两个子项目共享同一个 MySQL 实例/数据库
+# （local_life）和同一个 Redis 实例（copilot 用 DB 1，server 用 DB 0，
+# 详见 local-life-copilot/src/main/resources/application.yml），
+# 在 CI runner 上原样复刻这一拓扑，与本地联调方式保持一致。
+name: local-life-copilot CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'local-life-copilot/**'
+      - 'infra/scripts/init-db.sh'
+      - '.github/workflows/local-life-copilot-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'local-life-copilot/**'
+      - 'infra/scripts/init-db.sh'
+      - '.github/workflows/local-life-copilot-ci.yml'
+
+# 同一分支/PR 有新提交时，取消还在跑的旧一轮——没必要为已经过时的代码占用 CI 资源
+concurrency:
+  group: local-life-copilot-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Maven 解析器 HTTP 重试：吃掉拉取依赖时的瞬时网络抖动（GitHub runner → Maven Central
+# 一般很稳，但偶发 5xx / 超时仍会发生）。只在「单个构件下载」层面重试，不重跑测试，
+# 所以真正的用例失败不会被错误地反复重试。CI 直连 Maven Central（海外 runner 最快最稳），
+# 不用 Docker 那套面向国内网络的阿里云镜像。
+env:
+  MAVEN_OPTS: >-
+    -Daether.connector.http.retryHandler.count=5
+    -Daether.connector.http.retryHandler.requestSentEnabled=true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # ============================================================
+    # 测试依赖的中间件：MySQL + Redis
+    #
+    # local-life-copilot 的数据源/Redis 连接串硬编码在 application.yml 里
+    # （jdbc:mysql://localhost:3306/local_life、localhost:6379），不是通过
+    # Spring 的 @DynamicPropertySource 可覆盖的占位符——和 local-life-server
+    # 用 ShardingSphere 静态 sharding.yaml 是同一种处境（同样的原因，同样
+    # 不适合 Testcontainers）。最贴近现状、改动量最小的方案是把这两个连接串
+    # 已经指向的 localhost:3306 / localhost:6379 原样在 CI runner 上跑起来。
+    # ============================================================
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: 123456
+          MYSQL_DATABASE: local_life
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -p123456"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # 一次脚本调用同时把 server（V1~V9）和 copilot（V1）两套迁移都跑掉——
+      # tool_audit_log 等 copilot 专属表正是后者建出来的，复用的也是本地
+      # 开发用的同一个幂等脚本（schema_migrations 表防重复执行）。
+      - name: Apply database migrations
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: 3306
+          MYSQL_USER: root
+          MYSQL_PASSWORD: 123456
+          MYSQL_DATABASE: local_life
+        run: bash infra/scripts/init-db.sh
+
+      # -B：批处理模式，禁用交互式输出和进度条刷屏，CI 日志更干净
+      - name: Run test suite
+        working-directory: local-life-copilot
+        run: mvn -B test
+
+      # 测试失败时把 surefire 报告留存为 Artifact，不需要本地复现就能看到
+      # 具体哪个用例、哪个断言失败——比翻几千行控制台日志快得多。
+      - name: Upload surefire reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: local-life-copilot/target/surefire-reports/
+          retention-days: 7

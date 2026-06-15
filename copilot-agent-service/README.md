@@ -28,7 +28,7 @@ cd copilot-agent-service
 
 # 1. 配置环境变量
 cp .env.example .env
-# 编辑 .env，至少填写 ANTHROPIC_API_KEY
+# 编辑 .env，至少填写 LLM_API_KEY；默认 provider/model 是 deepseek/deepseek-v4-flash
 
 # 2. 安装依赖（建议用 Python 3.11+）
 pip install -r requirements.txt
@@ -42,6 +42,13 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 # 验证
 curl http://localhost:8000/health
 ```
+
+在线接口文档：
+
+- FastAPI 原生 Swagger：`http://localhost:8000/docs`
+- OpenAPI JSON：`http://localhost:8000/openapi.json`
+- Java/Springdoc 兼容入口：`http://localhost:8000/swagger-ui.html`
+- Java/Springdoc 兼容 JSON：`http://localhost:8000/v3/api-docs`
 
 **最低运行环境**：只需 MySQL + Redis + local-life-copilot（:8081）。
 Milvus 非必须（不可用时 knowledge_search 返回 Mock 结果，其他功能正常）。
@@ -270,7 +277,7 @@ copilot-agent-service/
 # Mock 模式（验证评测框架本身，不调用真实 LLM）
 python -m evals.metrics
 
-# 真实模式（需启动完整服务 + ANTHROPIC_API_KEY，会产生 API 费用）
+# 真实模式（需启动完整服务 + LLM_API_KEY，会产生 API 费用）
 python -m evals.metrics --real
 
 # 只跑订单异常排查（15 条用例）

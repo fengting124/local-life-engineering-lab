@@ -12,6 +12,10 @@ import com.personalprojections.locallife.copilot.mcp.dto.ToolDefinition;
 import com.personalprojections.locallife.copilot.rbac.RbacContext;
 import com.personalprojections.locallife.copilot.tool.McpTool;
 import com.personalprojections.locallife.copilot.tool.ToolRegistry;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.enums.ParameterIn;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -56,6 +60,7 @@ import java.util.Optional;
  */
 @Slf4j
 @RestController
+@Tag(name = "MCP", description = "JSON-RPC 2.0 over HTTP 工具入口")
 @RequiredArgsConstructor
 public class McpController {
 
@@ -78,6 +83,21 @@ public class McpController {
      * @param threadId  LangGraph thread ID（来自 X-Thread-Id Header，用于审计）
      * @return JSON-RPC 响应体
      */
+    @Operation(
+            summary = "MCP JSON-RPC 入口",
+            description = "支持 initialize、tools/list、tools/call。真实链路中身份 Header 由 Python Agent Service 注入。",
+            parameters = {
+                    @Parameter(name = "X-User-Id", in = ParameterIn.HEADER, required = true,
+                            description = "当前用户 ID，例如 10001"),
+                    @Parameter(name = "X-User-Role", in = ParameterIn.HEADER, required = true,
+                            description = "角色：merchant / cs / admin"),
+                    @Parameter(name = "X-Merchant-Id", in = ParameterIn.HEADER,
+                            description = "merchant 角色必填，其他角色可不填"),
+                    @Parameter(name = "X-Session-Id", in = ParameterIn.HEADER,
+                            description = "会话 ID，用于工具审计"),
+                    @Parameter(name = "X-Thread-Id", in = ParameterIn.HEADER,
+                            description = "LangGraph thread ID，用于工具审计")
+            })
     @PostMapping("/mcp")
     public McpResponse handle(
             @RequestBody McpRequest request,
@@ -202,7 +222,7 @@ public class McpController {
             auditService.recordSuccess(sessionId, threadId, toolName, args, result, costMs);
 
             // MCP content 格式：content 数组，每个元素为 {type, text}
-            return McpResponse.success(id, buildContentResult(result));
+            return buildContentResult(id, result);
 
         } catch (McpTool.ToolParameterException e) {
             long costMs = System.currentTimeMillis() - startMs;
@@ -233,22 +253,35 @@ public class McpController {
     }
 
     /**
-     * 将工具执行结果包装为 MCP content 格式。
+     * 将工具执行结果包装为 MCP content 格式，返回完整的 {@link McpResponse}。
      *
      * <p>MCP 规范要求 result 为 {@code {"content": [{"type": "text", "text": "..."}]}}。
      * Agent 解析 content[0].text 获取工具返回值。
      *
-     * <p>如果工具返回的不是字符串，序列化为 JSON 字符串后放入 text 字段。
+     * <h2>序列化策略</h2>
+     * <ul>
+     *   <li>{@code String} 结果直接放入 text，不做额外 JSON 编码</li>
+     *   <li>其余类型（{@code Map}、{@code JsonNode}、DTO、{@code List}、{@code null} 等）
+     *       统一走 {@link com.fasterxml.jackson.databind.ObjectMapper#writeValueAsString}，
+     *       序列化后再用 {@code readTree} 复核一遍，确保 text 字段是合法 JSON</li>
+     *   <li>任何序列化失败（如 {@code FAIL_ON_EMPTY_BEANS}、循环引用等）
+     *       直接返回标准 MCP internal_error，不做 {@code .toString()} 兜底——
+     *       兜底产出不保证合法 JSON，会让 Agent 端解析炸掉</li>
+     * </ul>
      */
-    private Map<String, Object> buildContentResult(Object toolResult) {
+    private McpResponse buildContentResult(String id, Object toolResult) {
         String text;
         if (toolResult instanceof String s) {
             text = s;
         } else {
             try {
                 text = objectMapper.writeValueAsString(toolResult);
+                objectMapper.readTree(text);  // defensive: verify output is valid JSON
             } catch (Exception e) {
-                text = toolResult.toString();
+                log.warn("[MCP] 工具返回值序列化失败: type={}, error={}",
+                        toolResult == null ? "null" : toolResult.getClass().getSimpleName(),
+                        e.getMessage());
+                return McpResponse.error(id, McpError.internalError("工具返回值序列化失败：" + e.getMessage()));
             }
         }
         ArrayNode content = objectMapper.createArrayNode();
@@ -256,6 +289,6 @@ public class McpController {
         item.put("type", "text");
         item.put("text", text);
         content.add(item);
-        return Map.of("content", content);
+        return McpResponse.success(id, Map.of("content", content));
     }
 }

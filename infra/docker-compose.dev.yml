@@ -58,15 +58,11 @@ services:
     environment:
       # 使用 Docker 网络内部地址访问 MySQL/Redis
       SPRING_DATASOURCE_URL: "jdbc:shardingsphere:classpath:sharding-docker.yaml"
-      # ShardingSphere 内的 jdbcUrl 需要指向 Docker 网络中的 MySQL
-      # 通过 JAVA_OPTS 传入，覆盖 sharding.yaml 的默认 localhost
-      # ShardingSphere 读取 MYSQL_HOST 等系统属性（见 sharding.yaml 的 ${MYSQL_HOST:-localhost}）
+      # ShardingSphere Driver 直接读取 sharding-docker.yaml，不经过 Spring 占位符替换；
+      # Docker MySQL 连接信息固定写在 sharding-docker.yaml 中。JAVA_OPTS 只保留
+      # Redis / ES / RocketMQ / Zipkin 等 Spring 能正常读取的运行期覆盖。
       JAVA_OPTS: >-
         -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0
-        -DMYSQL_HOST=mysql
-        -DMYSQL_PORT=3306
-        -DMYSQL_USER=root
-        -DMYSQL_PASSWORD=${MYSQL_ROOT_PASSWORD:-123456}
         -Dspring.data.redis.host=redis
         -Dspring.elasticsearch.uris=http://elasticsearch:9200
         -Drocketmq.name-server=rocketmq-namesrv:9876
@@ -81,7 +77,7 @@ services:
       - local-life-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health >/dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -112,7 +108,7 @@ services:
       - local-life-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8081/actuator/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health >/dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -127,12 +123,22 @@ services:
     ports:
       - "${AGENT_PORT:-8000}:8000"
     environment:
+      DEPLOY_ENV: "${DEPLOY_ENV:-dev}"
+      SERVICE_NAME: "copilot-agent"
       MCP_SERVER_URL: "http://locallife-copilot:8081"
       DB_URL: "mysql+aiomysql://root:${MYSQL_ROOT_PASSWORD:-123456}@mysql:3306/local_life"
       REDIS_URL: "redis://redis:6379/2"
       MILVUS_URI: "http://milvus:19530"
+      MILVUS_HOST: "milvus"
+      MILVUS_PORT: "19530"
+      MILVUS_COLLECTION: "${MILVUS_COLLECTION:-local_life_kb}"
+      EMBEDDING_SERVICE_URL: "http://embedding-service:8100"
+      RERANKER_SERVICE_URL: "http://reranker-service:8101"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
-      LLM_MODEL: "${LLM_MODEL:-claude-sonnet-4-6}"
+      LLM_PROVIDER: "${LLM_PROVIDER:-deepseek}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LLM_MODEL: "${LLM_MODEL:-deepseek-v4-flash}"
+      LLM_BASE_URL: "${LLM_BASE_URL:-}"
       DEBUG: "false"
     depends_on:
       locallife-copilot:
@@ -141,7 +147,7 @@ services:
       - local-life-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5).read()\""]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -297,6 +303,64 @@ services:
     networks:
       - local-life-net
 
+  loki:
+    image: grafana/loki:3.3.2
+    container_name: local-life-loki
+    profiles: ["observability"]
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    environment:
+      DEPLOY_ENV: ${DEPLOY_ENV:-dev}
+      LOKI_RETENTION_PERIOD: ${LOKI_RETENTION_PERIOD:-168h}
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - ./loki/rules.yml:/etc/loki/rules/fake/local-life-rules.yml:ro
+      - loki_data:/loki
+    command:
+      - "-config.file=/etc/loki/loki-config.yml"
+      - "-config.expand-env=true"
+    depends_on:
+      - alertmanager
+    networks:
+      - local-life-net
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:3.3.2
+    container_name: local-life-promtail
+    profiles: ["observability"]
+    environment:
+      DEPLOY_ENV: ${DEPLOY_ENV:-dev}
+    volumes:
+      - ./promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - promtail_positions:/var/lib/promtail
+    command:
+      - "-config.file=/etc/promtail/promtail-config.yml"
+      - "-config.expand-env=true"
+    depends_on:
+      - loki
+    networks:
+      - local-life-net
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.0
+    container_name: local-life-alertmanager
+    profiles: ["observability"]
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    networks:
+      - local-life-net
+    restart: unless-stopped
+
   grafana:
     image: grafana/grafana:11.4.0
     container_name: local-life-grafana
@@ -308,8 +372,12 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
+      - loki
+      - zipkin
     networks:
       - local-life-net
 
@@ -487,6 +555,9 @@ volumes:
   elastic_data:
   prometheus_data:
   grafana_data:
+  loki_data:
+  promtail_positions:
+  alertmanager_data:
   etcd_data:
   minio_data:
   milvus_data:

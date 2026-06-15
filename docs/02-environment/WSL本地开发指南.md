@@ -93,7 +93,7 @@ sudo apt install -y openjdk-17-jdk maven python3.11 python3.11-venv python3.11-d
 
 ```bash
 cd ~/projects/local-life/infra
-cp .env.example .env       # 填写 DEEPSEEK_API_KEY 或 ANTHROPIC_API_KEY
+cp .env.example .env       # 填写 LLM_API_KEY，默认 deepseek-v4-flash
 bash scripts/start-local.sh
 ```
 

@@ -1,6 +1,6 @@
 # LocalLife 性能测试指南
 
-> 基于 Locust 的端到端性能测试，覆盖 LocalLife Server 和 LocalLife Copilot 两条链路。
+> 基于 Locust + k6 的端到端性能测试，覆盖 LocalLife Server 和 LocalLife Copilot 两条链路。
 
 ---
 
@@ -73,6 +73,29 @@ locust -f locustfile_locallife_server.py \
   --users 500 --spawn-rate 50 --run-time 30s \
   --headless --only-summary SeckillUser
 ```
+
+### 3.4 k6 秒杀专项
+
+```bash
+# 安装 k6 后再运行；WSL/Ubuntu 可参考：
+# sudo gpg -k || true
+# curl https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+# echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+# sudo apt update && sudo apt install k6
+
+# 先准备压测账号、验证码和 Redis 秒杀库存
+bash scripts/seed-perf-data.sh
+
+# 从仓库根目录运行，报告会写到 performance-tests/reports/
+k6 run performance-tests/k6/seckill.js
+
+# 常用参数：用户数、运行时间、库存、场次
+USERS=500 RUN_TIME=60s EXPECTED_STOCK=1000 \
+SECKILL_SESSIONS=1:1,2:2 \
+k6 run performance-tests/k6/seckill.js
+```
+
+k6 脚本会给登录请求带不同的 `X-Forwarded-For`，避免 `/auth/login` 的 IP 限流把压测入口先打红；秒杀接口本身仍然按真实用户限流执行。报告中的 `claimed_success` 必须小于等于 `EXPECTED_STOCK * 场次数`，否则就是超卖。
 
 ---
 

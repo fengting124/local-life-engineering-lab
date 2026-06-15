@@ -12,6 +12,7 @@ import uuid
 import httpx
 import structlog
 from typing import Any
+from structlog.contextvars import get_contextvars
 
 from config.settings import settings
 
@@ -83,6 +84,9 @@ class McpClient:
             h["X-Session-Id"] = str(session_id)
         if thread_id:
             h["X-Thread-Id"] = thread_id
+        trace_id = get_contextvars().get("trace_id")
+        if trace_id:
+            h["X-Trace-Id"] = str(trace_id)
         return h
 
     async def initialize(self) -> dict:

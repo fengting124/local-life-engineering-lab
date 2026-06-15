@@ -1,0 +1,54 @@
+name: full-stack release smoke
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: full-stack-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_DATABASE: local_life
+      INTERNAL_API_KEY: local-life-internal-secret
+      LLM_PROVIDER: local
+      LLM_API_KEY: dummy-smoke-key
+      LLM_MODEL: qwen2.5:7b
+      LLM_BASE_URL: http://localhost:11434/v1
+      ANTHROPIC_API_KEY: ''
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start infrastructure
+        run: |
+          docker compose -f infra/docker-compose.dev.yml --profile search --profile mq up -d \
+            mysql redis elasticsearch rocketmq-namesrv rocketmq-broker
+
+      - name: Apply database migrations
+        run: docker compose -f infra/docker-compose.dev.yml --profile app run --rm db-init
+
+      - name: Build and start application services
+        run: |
+          docker compose -f infra/docker-compose.dev.yml --profile app --profile search --profile mq up -d --build \
+            locallife-server locallife-copilot copilot-agent
+
+      - name: Run cross-process smoke test
+        run: bash scripts/e2e-smoke.sh
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose -f infra/docker-compose.dev.yml logs --no-color --tail=300
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose -f infra/docker-compose.dev.yml --profile app --profile search --profile mq down -v --remove-orphans

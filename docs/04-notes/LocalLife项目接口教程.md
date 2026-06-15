@@ -108,7 +108,7 @@ Controller 拿到 VO
 
 ### 2.3 代码在哪里，干了什么
 
-看 [Result.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/common/result/Result.java)，核心是三个静态工厂方法：
+看 [Result.java](../../local-life-server/src/main/java/com/personalprojections/locallife/server/common/result/Result.java)，核心是三个静态工厂方法：
 
 ```java
 // 有数据的成功响应 → 比如返回用户信息
@@ -178,7 +178,7 @@ POST_PUBLISH_TOO_FREQUENT  → 发布过于频繁
 
 ### 3.4 全局异常处理器：错误码是怎么变成响应的
 
-当 Service 层抛出异常，Controller 不需要 try-catch，由 [GlobalExceptionHandler.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/common/exception/GlobalExceptionHandler.java) 统一兜底：
+当 Service 层抛出异常，Controller 不需要 try-catch，由 [GlobalExceptionHandler.java](../../local-life-server/src/main/java/com/personalprojections/locallife/server/common/exception/GlobalExceptionHandler.java) 统一兜底：
 
 ```java
 // Service 层这样抛异常
@@ -280,7 +280,7 @@ JWT（JSON Web Token）是另一种常见的登录 Token 方案。我们选 UUID
 
 ### 5.2 每次请求的执行流程
 
-看 [AuthInterceptor.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/common/interceptor/AuthInterceptor.java)：
+看 [AuthInterceptor.java](../../local-life-server/src/main/java/com/personalprojections/locallife/server/common/interceptor/AuthInterceptor.java)：
 
 ```
 前端发请求，Header 里有：Authorization: Bearer abc123xxx
@@ -648,7 +648,7 @@ private void ensureFollowSetLoaded(Long userId, String followSetKey) {
 
 提示词：前端发什么请求？→ Controller 调了什么？→ Service 做了哪几件事？→ Redis 里发生了什么变化？→ 数据库发生了什么变化？→ 前端拿到什么？
 
-**答案检查点**（对照 [AuthService.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/module/auth/service/AuthService.java)）：
+**答案检查点**（对照 [AuthService.java](../../local-life-server/src/main/java/com/personalprojections/locallife/server/module/auth/service/AuthService.java)）：
 - [ ] 验证码对比，比完即删（一次性，防重放）
 - [ ] 手机号不存在则自动注册（手机号即账户）
 - [ ] 检查用户状态（DISABLED 拒绝）
@@ -661,7 +661,7 @@ private void ensureFollowSetLoaded(Long userId, String followSetKey) {
 
 提示词：Token 在哪？→ 拦截器做了什么？→ Controller 怎么知道当前用户是谁？→ Service 里做了哪两层校验？
 
-**答案检查点**（对照 [AuthInterceptor.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/common/interceptor/AuthInterceptor.java) 和 [ShopService.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/module/shop/service/ShopService.java)）：
+**答案检查点**（对照 [AuthInterceptor.java](../../local-life-server/src/main/java/com/personalprojections/locallife/server/common/interceptor/AuthInterceptor.java) 和 [ShopService.java](../../local-life-server/src/main/java/com/personalprojections/locallife/server/module/shop/service/ShopService.java)）：
 - [ ] Header: Authorization: Bearer {token}
 - [ ] 拦截器从 Redis 取用户信息，存入 UserContext（ThreadLocal）
 - [ ] Service 通过 UserContext.getUserId() 取当前用户
@@ -674,7 +674,7 @@ private void ensureFollowSetLoaded(Long userId, String followSetKey) {
 
 提示词：用到了哪两个 Redis Key？→ 点赞时 Redis 发生什么变化？→ 取消点赞时呢？→ 查「我有没有点赞」用的哪个命令？→ Redis 挂了怎么办？
 
-**答案检查点**（对照 [PostService.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/module/post/service/PostService.java)）：
+**答案检查点**（对照 [PostService.java](../../local-life-server/src/main/java/com/personalprojections/locallife/server/module/post/service/PostService.java)）：
 - [ ] 两个 Key：count（String）和 users（Set）
 - [ ] 点赞：SADD users + INCR count
 - [ ] 幂等：先 SISMEMBER 检查，已点赞直接返回
@@ -686,7 +686,7 @@ private void ensureFollowSetLoaded(Long userId, String followSetKey) {
 
 提示词：用的什么 Redis 数据结构？→ 为什么不用普通 Set？→ ZINTERSTORE 是什么操作？→ 临时 Key 为什么要删掉？
 
-**答案检查点**（对照 [FollowService.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/module/follow/service/FollowService.java)）：
+**答案检查点**（对照 [FollowService.java](../../local-life-server/src/main/java/com/personalprojections/locallife/server/module/follow/service/FollowService.java)）：
 - [ ] ZSet，Score 是关注时间戳
 - [ ] ZSet 比 Set 多了排序能力（按关注时间展示）
 - [ ] ZINTERSTORE 把两个 ZSet 取交集，写入临时 Key
@@ -699,7 +699,7 @@ private void ensureFollowSetLoaded(Long userId, String followSetKey) {
 
 提示词：门店有哪几个状态？→ 合法流转路径是什么？→ 代码在哪里做保护？→ 权限校验分几层？
 
-**答案检查点**（对照 [ShopService.java](../local-life-server/src/main/java/com/personalprojections/locallife/server/module/shop/service/ShopService.java)）：
+**答案检查点**（对照 [ShopService.java](../../local-life-server/src/main/java/com/personalprojections/locallife/server/module/shop/service/ShopService.java)）：
 - [ ] DRAFT → ONLINE ↔ OFFLINE → CLOSED
 - [ ] CLOSED 是终态，不可再次上线
 - [ ] requireOwnShop 同时校验商家身份 + 门店归属
@@ -870,7 +870,7 @@ Authorization: Bearer {token}
 **为什么回调接口不需要用户登录？**
 
 因为不是用户在调用，是支付宝/微信的服务器在调用。它们没有用户的 Token。
-所以这个接口在 `WebMvcConfig` 白名单中跳过了 JWT 鉴权，
+所以这个接口在 `WebMvcConfig` 白名单中跳过了用户 token 鉴权，
 改用**验签（Sign Verification）**来确认请求来自合法渠道。
 
 **验签逻辑**：

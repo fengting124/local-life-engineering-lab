@@ -3,6 +3,7 @@ package com.personalprojections.locallife.copilot.tool.impl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.personalprojections.locallife.copilot.domain.dto.OrderSnapshot;
 import com.personalprojections.locallife.copilot.domain.mapper.CopilotOrderMapper;
 import com.personalprojections.locallife.copilot.mcp.dto.ToolDefinition;
 import com.personalprojections.locallife.copilot.rbac.RbacContext;
@@ -104,9 +105,9 @@ public class QueryOrderTool implements McpTool {
         }
 
         // ---- Step 3：查询数据库 ----
-        Map<String, Object> row = orderMapper.selectOrderByOrderNo(orderNo);
+        OrderSnapshot order = orderMapper.selectOrderByOrderNo(orderNo);
 
-        if (row == null || row.isEmpty()) {
+        if (order == null || order.getOrderId() == null) {
             // merchant 角色：订单存在但不属于自己 → 统一返回 not_found（防枚举攻击）
             // admin/cs 角色：订单确实不存在
             log.info("[QueryOrderTool] 订单不存在: orderNo={}, role={}", orderNo, ctx.getRole());
@@ -117,52 +118,62 @@ public class QueryOrderTool implements McpTool {
         // 通过 SQL 已经用 JOIN shop + merchant_id 过滤，
         // 但万一 SQL 写法有问题，这里再做一层应用层校验
         if (ctx.isMerchant() && ctx.getMerchantId() != null) {
-            Object shopIdObj = row.get("shop_id");
-            if (shopIdObj != null) {
+            Long shopId = order.getShopId();
+            if (shopId != null) {
                 // 此处简化：实际需要 SELECT merchant_id FROM shop WHERE id = shopId
                 // 由于 SQL 已经做了 JOIN 过滤，这里仅做日志记录
-                log.debug("[QueryOrderTool] merchant={} 查询订单 shopId={}", ctx.getMerchantId(), shopIdObj);
+                log.debug("[QueryOrderTool] merchant={} 查询订单 shopId={}", ctx.getMerchantId(), shopId);
             }
         }
 
         // ---- Step 5：整理返回结果 ----
         // 返回给 Agent 的数据格式清晰，字段含义明确
         // Agent 根据 x-business-hint 的提示判断下一步动作
-        return buildResult(row);
+        return buildResult(order);
     }
 
     /**
      * 整理查询结果，过滤无关字段，格式化时间。
      * 返回的 Map 结构即为工具文档中 outputSchema 约定的格式。
      */
-    private Map<String, Object> buildResult(Map<String, Object> row) {
-        return Map.of(
-                "order_id",        safeStr(row.get("order_id")),
-                "order_no",        safeStr(row.get("order_no")),
-                "user_id",         safeStr(row.get("user_id")),
-                "shop_id",         safeStr(row.get("shop_id")),
-                "original_amount", row.getOrDefault("original_amount", 0),
-                "coupon_discount",  row.getOrDefault("coupon_discount", 0),
-                "order_amount",    row.getOrDefault("order_amount", 0),
-                "order_status",    safeStr(row.get("order_status")),
-                "payment",         Map.of(
-                        "pay_status",   safeStr(row.get("pay_status")),
-                        "channel",      safeStr(row.get("channel")),
-                        "trade_no",     safeStr(row.get("trade_no")),
-                        "paid_amount",  row.getOrDefault("paid_amount", 0),
-                        "paid_at",      safeStr(row.get("paid_at"))
-                ),
-                "coupon",          Map.of(
-                        "coupon_status",  safeStr(row.get("coupon_status")),
-                        "coupon_name",    safeStr(row.get("coupon_name")),
-                        "discount_type",  safeStr(row.get("discount_type")),
-                        "discount_value", row.getOrDefault("discount_value", 0)
-                )
-        );
+    private Map<String, Object> buildResult(OrderSnapshot order) {
+        // 注意：这里不能用 Map.of(...) —— 它在任何一个 value 为 null 时都会抛 NullPointerException，
+        // 而 safeStr() 在对应数据库列为 NULL 时就是要返回 null（这正是 x-business-hint 里
+        // "情况4：pay_status=null → 该订单未发起过支付" 所依赖的数据形状：未支付/无券的订单
+        // 是完全正常的业务状态，不是异常）。LinkedHashMap 允许 null 值，且保留写入顺序方便阅读。
+        Map<String, Object> payment = new java.util.LinkedHashMap<>();
+        payment.put("pay_status",  safeStr(order.getPayStatus()));
+        payment.put("channel",     safeStr(order.getChannel()));
+        payment.put("trade_no",    safeStr(order.getTradeNo()));
+        payment.put("paid_amount", defaultZero(order.getPaidAmount()));
+        payment.put("paid_at",     safeStr(order.getPayAt()));
+
+        Map<String, Object> coupon = new java.util.LinkedHashMap<>();
+        coupon.put("coupon_status",  safeStr(order.getCouponStatus()));
+        coupon.put("coupon_name",    safeStr(order.getCouponName()));
+        coupon.put("discount_type",  safeStr(order.getDiscountType()));
+        coupon.put("discount_value", defaultZero(order.getDiscountValue()));
+
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("order_id",        safeStr(order.getOrderId()));
+        result.put("order_no",        safeStr(order.getOrderNo()));
+        result.put("user_id",         safeStr(order.getUserId()));
+        result.put("shop_id",         safeStr(order.getShopId()));
+        result.put("original_amount", defaultZero(order.getOriginalAmount()));
+        result.put("coupon_discount", defaultZero(order.getCouponDiscount()));
+        result.put("order_amount",    defaultZero(order.getOrderAmount()));
+        result.put("order_status",    safeStr(order.getOrderStatus()));
+        result.put("payment", payment);
+        result.put("coupon", coupon);
+        return result;
     }
 
     private String safeStr(Object val) {
         return val != null ? val.toString() : null;
+    }
+
+    private int defaultZero(Integer val) {
+        return val != null ? val : 0;
     }
 
     private String extractRequiredString(JsonNode args, String key, String hint) {

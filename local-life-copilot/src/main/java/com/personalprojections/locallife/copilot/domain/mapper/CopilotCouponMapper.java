@@ -1,11 +1,11 @@
 package com.personalprojections.locallife.copilot.domain.mapper;
 
+import com.personalprojections.locallife.copilot.domain.dto.CouponTemplateSnapshot;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
-import java.util.Map;
 
 /**
  * Copilot 专用只读 Coupon Mapper。
@@ -23,7 +23,7 @@ public interface CopilotCouponMapper {
      * 用于 RBAC 校验（merchant 角色只能看自己门店的券）。
      *
      * @param id 券模板 ID
-     * @return 券模板信息 Map，不存在时返回 null
+     * @return 券模板只读快照，不存在时返回 null
      */
     @Select("""
             SELECT
@@ -45,7 +45,7 @@ public interface CopilotCouponMapper {
             WHERE ct.id = #{id}
               AND ct.deleted = 0
             """)
-    Map<String, Object> selectCouponTemplateById(@Param("id") Long id);
+    CouponTemplateSnapshot selectCouponTemplateById(@Param("id") Long id);
 
     /**
      * 查询商家所有券模板（可按状态过滤）。
@@ -77,7 +77,7 @@ public interface CopilotCouponMapper {
             ORDER BY ct.created_at DESC
             LIMIT 50
             """)
-    List<Map<String, Object>> selectCouponTemplatesByMerchant(
+    List<CouponTemplateSnapshot> selectCouponTemplatesByMerchant(
             @Param("merchantId") Long merchantId,
             @Param("status") String status);
 }

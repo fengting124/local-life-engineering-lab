@@ -1,46 +1,39 @@
-# local-life-server 持续集成：每次改动都跑一遍完整测试套件
-# （AuthInterceptor 白名单单测 + Controller 切片测试 + 鉴权全链路集成测试），
-# 在 PR 合并前就拦住"看起来能编译、实际跑不起来/行为不对"的改动。
-#
-# 当前只覆盖 local-life-server 一个子项目——这是仓库里测试基础设施最完善的部分
-# （见 src/test/ 下的分层测试），其余子项目（local-life-copilot、copilot-agent-service）
-# 的 CI 计划在它们各自补齐测试之后再加，避免"画了流水线但其实什么也没测"。
+# local-life-server CI:
+# - MySQL/Redis services keep ShardingSphere's localhost-based test config working on GitHub runners.
+# - JaCoCo and PIT keep coverage and mutation-quality gates visible before merge.
 name: local-life-server CI
 
 on:
   push:
     branches: [main]
     paths:
+      - 'pom.xml'
       - 'local-life-server/**'
       - 'infra/scripts/init-db.sh'
       - '.github/workflows/local-life-server-ci.yml'
   pull_request:
     branches: [main]
     paths:
+      - 'pom.xml'
       - 'local-life-server/**'
       - 'infra/scripts/init-db.sh'
       - '.github/workflows/local-life-server-ci.yml'
 
-# 同一分支/PR 有新提交时，取消还在跑的旧一轮——没必要为已经过时的代码占用 CI 资源
 concurrency:
   group: local-life-server-ci-${{ github.ref }}
   cancel-in-progress: true
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+# Retry only transient Maven artifact downloads, not the whole test/gate command.
+env:
+  MAVEN_OPTS: >-
+    -Daether.connector.http.retryHandler.count=5
+    -Daether.connector.http.retryHandler.requestSentEnabled=true
 
-    # ============================================================
-    # 测试依赖的中间件：MySQL + Redis
-    #
-    # 为什么不用 Testcontainers：local-life-server 的数据源由 ShardingSphere
-    # 接管，连接串硬编码在 classpath 下的 sharding.yaml 里（jdbc:mysql://localhost:3306/...），
-    # 不是 Spring 的 spring.datasource.* 属性——Testcontainers 惯用的
-    # @DynamicPropertySource 改不到这个静态文件内部的连接串。最贴近现状、改动量
-    # 最小的方案是把 sharding.yaml 已经硬编码指向的 localhost:3306 / localhost:6379
-    # 原样在 CI runner 上跑起来，与本地开发联调时的方式完全一致。
-    # ============================================================
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
     services:
       mysql:
         image: mysql:8.4
@@ -76,9 +69,6 @@ jobs:
           java-version: '17'
           cache: maven
 
-      # sharding.yaml 里的库名固定是 local_life，建库本身已经由 mysql 服务的
-      # MYSQL_DATABASE 环境变量完成；这一步只负责把 V1~V9 迁移脚本跑完，
-      # 复用的正是本地开发用的同一个幂等脚本（schema_migrations 表防重复执行）。
       - name: Apply database migrations
         env:
           MYSQL_HOST: 127.0.0.1
@@ -88,17 +78,82 @@ jobs:
           MYSQL_DATABASE: local_life
         run: bash infra/scripts/init-db.sh
 
-      # -B：批处理模式，禁用交互式输出和进度条刷屏，CI 日志更干净
-      - name: Run test suite
-        working-directory: local-life-server
-        run: mvn -B test
+      - name: Unit + integration tests with JaCoCo gate
+        run: mvn -B -pl local-life-server clean verify
 
-      # 测试失败时把 surefire 报告留存为 Artifact，不需要本地复现就能看到
-      # 具体哪个用例、哪个断言失败——比翻几千行控制台日志快得多。
-      - name: Upload surefire reports on failure
+      - name: Upload JaCoCo report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-life-server-jacoco
+          path: local-life-server/target/site/jacoco/
+          retention-days: 7
+
+      - name: Upload test reports on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: surefire-reports
-          path: local-life-server/target/surefire-reports/
+          name: local-life-server-test-reports
+          path: |
+            local-life-server/target/surefire-reports/
+            local-life-server/target/failsafe-reports/
+          retention-days: 7
+
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: 123456
+          MYSQL_DATABASE: local_life
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -p123456"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Apply database migrations
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: 3306
+          MYSQL_USER: root
+          MYSQL_PASSWORD: 123456
+          MYSQL_DATABASE: local_life
+        run: bash infra/scripts/init-db.sh
+
+      - name: PIT mutation gate
+        run: mvn -B -pl local-life-server test-compile org.pitest:pitest-maven:mutationCoverage
+
+      - name: Upload PIT report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-life-server-pit
+          path: local-life-server/target/pit-reports/
           retention-days: 7

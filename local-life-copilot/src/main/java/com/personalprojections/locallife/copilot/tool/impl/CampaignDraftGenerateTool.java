@@ -3,6 +3,7 @@ package com.personalprojections.locallife.copilot.tool.impl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.personalprojections.locallife.copilot.domain.dto.ShopMetricsSnapshot;
 import com.personalprojections.locallife.copilot.domain.mapper.CopilotOrderMapper;
 import com.personalprojections.locallife.copilot.mcp.dto.ToolDefinition;
 import com.personalprojections.locallife.copilot.rbac.RbacContext;
@@ -132,13 +133,12 @@ public class CampaignDraftGenerateTool implements McpTool {
         // 查近期经营数据（自动推算使用门槛）
         int suggestedMinAmount = 0;
         if (!arguments.has("min_order_amount") || arguments.get("min_order_amount").isNull()) {
-            Map<String, Object> metrics = orderMapper.selectShopMetrics(
+            ShopMetricsSnapshot metrics = orderMapper.selectShopMetrics(
                     merchantId, LocalDate.now().minusDays(7).format(DATE_FMT), null);
             if (metrics != null) {
-                Number orderCount = (Number) metrics.getOrDefault("order_count", 0L);
-                Number gmv        = (Number) metrics.getOrDefault("gmv", 0L);
-                long avgOrder = orderCount.longValue() > 0
-                        ? gmv.longValue() / orderCount.longValue() : 0L;
+                long orderCount = metrics.getOrderCount() != null ? metrics.getOrderCount() : 0L;
+                long gmv = metrics.getGmv() != null ? metrics.getGmv() : 0L;
+                long avgOrder = orderCount > 0 ? gmv / orderCount : 0L;
                 // 建议门槛 = 近7天平均订单金额的 80%（取整到百）
                 suggestedMinAmount = (int) (avgOrder * 0.8 / 100) * 100;
             }

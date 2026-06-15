@@ -19,6 +19,7 @@
     <properties>
         <java.version>17</java.version>
         <spring.boot.version>3.5.14</spring.boot.version>
+        <springdoc.version>2.8.14</springdoc.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>${java.version}</maven.compiler.release>
     </properties>
@@ -44,6 +45,15 @@
                     <version>3.13.0</version>
                     <configuration>
                         <release>${java.version}</release>
+                        <!--
+                            必须显式开启：本项目父 POM 是自定义的 local-life-parent（只 import
+                            spring-boot-dependencies BOM 做依赖管理），并未继承 spring-boot-starter-parent
+                            ——而 -parameters 正是后者默认开启的编译参数。缺少它会导致编译产物不带
+                            MethodParameters class 文件属性，Spring MVC 在反射解析 @RequestParam /
+                            @PathVariable 等隐式参数名时抛出 IllegalArgumentException: Name for
+                            argument of type [...] not specified（运行期才暴露，编译期无报错）。
+                        -->
+                        <parameters>true</parameters>
                     </configuration>
                 </plugin>
                 <plugin>

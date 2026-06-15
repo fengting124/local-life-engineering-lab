@@ -106,7 +106,7 @@ public class IssueCompensationCouponTool implements McpTool {
     public Object execute(JsonNode arguments) {
         String userId            = extractRequiredString(arguments, "user_id");
         String orderId           = extractRequiredString(arguments, "order_id");
-        int    compensationAmount = arguments.get("compensation_amount").asInt(0);
+        int    compensationAmount = extractInt(arguments, "compensation_amount");
         String reason            = extractRequiredString(arguments, "reason");
         String approvalId        = extractRequiredString(arguments, "approval_id");
 
@@ -127,5 +127,18 @@ public class IssueCompensationCouponTool implements McpTool {
             throw new ToolParameterException(key + " 不能为空", null);
         }
         return node.asText().trim();
+    }
+
+    // 修复点：原先直接 arguments.get("compensation_amount").asInt(0) ——
+    // get() 在 key 缺失时返回 Java null（不是 MissingNode），对 null 调用 asInt()
+    // 会抛 NullPointerException，asInt(0) 的默认值机制形同虚设。
+    // 与 extractRequiredString 同样的 null 防护，再交给下面已有的 <= 0 业务校验
+    // （它的提示文案"单位为分，如 2000 表示 20 元"更具体，保留不重复）。
+    private int extractInt(JsonNode args, String key) {
+        JsonNode node = args.get(key);
+        if (node == null || node.isNull()) {
+            throw new ToolParameterException(key + " 不能为空", null);
+        }
+        return node.asInt(0);
     }
 }

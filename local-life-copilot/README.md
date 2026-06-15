@@ -40,11 +40,14 @@ curl -X POST http://localhost:8081/mcp \
   -d '{"jsonrpc":"2.0","id":"1","method":"tools/list","params":{}}'
 
 # 测试查询订单
+# 注意：query_order 当前 schema 参数名为 order_id，
+# 但实现按业务订单号 order_no 查询，例如 BULK2026061000000000。
 curl -X POST http://localhost:8081/mcp \
   -H "Content-Type: application/json" \
-  -H "X-User-Id: 99999" \
-  -H "X-User-Role: cs" \
-  -d '{"jsonrpc":"2.0","id":"2","method":"tools/call","params":{"name":"query_order","arguments":{"order_id":"1234567890"}}}'
+  -H "X-User-Id: 881000000000" \
+  -H "X-User-Role: merchant" \
+  -H "X-Merchant-Id: 881100000000" \
+  -d '{"jsonrpc":"2.0","id":"2","method":"tools/call","params":{"name":"query_order","arguments":{"order_id":"BULK2026061000000000"}}}'
 ```
 
 ---
@@ -83,7 +86,7 @@ curl -X POST http://localhost:8081/mcp \
     "data": {
       "reason": "parameter_error",
       "detail": "order_id 不能为空",
-      "hint": "order_id 格式：纯数字字符串（雪花 ID）"
+      "hint": "query_order 当前传业务订单号 order_no，如 BULK2026061000000000"
     }
   }
 }

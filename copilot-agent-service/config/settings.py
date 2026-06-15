@@ -14,7 +14,7 @@ Agent Service 全局配置。
 切换示例（.env）：
   LLM_PROVIDER=deepseek
   LLM_API_KEY=sk-xxxxxxxx
-  LLM_MODEL=deepseek-chat
+  LLM_MODEL=deepseek-v4-flash
   # LLM_BASE_URL 不填则用各 provider 默认地址
 """
 from pydantic_settings import BaseSettings
@@ -26,18 +26,13 @@ class Settings(BaseSettings):
     # ===== LLM Provider 配置 =====
     # 支持：anthropic | deepseek | openai | qwen | local
     # 日常开发推荐 deepseek（¥2/百万 token），面试演示可切 anthropic
+    #
+    # 统一用下面四个字段配置——_create_llm() 只读这四个（按 llm_provider 套用
+    # 各家默认 base_url/model），不要拆成 deepseek_xxx/qwen_xxx 等专属字段，
+    # 那样配了也不会被读取（历史上踩过这个坑）。
     llm_provider: str = "deepseek"
 
-    # ── DeepSeek ──
-    deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-v4-flash"
-
-    # ── Anthropic Claude ──
-    anthropic_api_key: str = ""
-    anthropic_model: str = "claude-sonnet-4-6"
-
-    # ── 通用 OpenAI 兼容接口（qwen / local / openai）──
+    anthropic_api_key: str = ""   # llm_api_key 留空时的兼容回退（早期仅支持 Claude 时遗留的字段名）
     llm_api_key: str = ""
     llm_model: str = ""
     llm_base_url: str = ""
@@ -75,6 +70,8 @@ class Settings(BaseSettings):
     compact_max_consecutive_failures: int = 2
 
     # ===== 服务 =====
+    service_name: str = "copilot-agent"
+    deploy_env: str = "dev"
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     debug: bool = True

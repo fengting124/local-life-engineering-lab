@@ -1,0 +1,86 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /var/lib/promtail/positions.yml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    batchwait: 1s
+    batchsize: 1048576
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+
+    relabel_configs:
+      - source_labels: ['__meta_docker_container_id']
+        target_label: '__path__'
+        replacement: /var/lib/docker/containers/$1/$1-json.log
+
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: container
+
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: compose_service
+
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: compose_project
+
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        regex: 'locallife-server'
+        replacement: 'local-life-server'
+        target_label: service
+
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        regex: 'locallife-copilot'
+        replacement: 'local-life-copilot'
+        target_label: service
+
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        regex: 'copilot-agent'
+        replacement: 'copilot-agent'
+        target_label: service
+
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        regex: '(embedding-service|reranker-service|mysql|redis|elasticsearch|rocketmq-.*|milvus|etcd|minio|prometheus|grafana|zipkin|loki|promtail|alertmanager)'
+        target_label: service
+
+      - target_label: env
+        replacement: ${DEPLOY_ENV}
+
+      - target_label: job
+        replacement: docker
+
+    pipeline_stages:
+      - docker: {}
+
+      - multiline:
+          firstline: '(^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})|(^\{.*"timestamp")|(^\{.*"event")|(^INFO:)|(^WARNING:)|(^ERROR:)'
+          max_wait_time: 3s
+
+      - replace:
+          expression: '(?i)(api[_-]?key|authorization|password|passwd|secret|token)(["''\s:=]+)([^,"''\s}]+)'
+          replace: '${1}${2}***'
+
+      - replace:
+          expression: '(?i)(sk-[A-Za-z0-9_\-]{12,}|Bearer\s+[A-Za-z0-9._\-]+)'
+          replace: '***'
+
+      - replace:
+          expression: '\b(13|14|15|16|17|18|19)\d{9}\b'
+          replace: '1**********'
+
+      - regex:
+          expression: '^(?P<time>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d{3}).*\[(?P<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\].*'
+
+      - labels:
+          level:
+
+      - labeldrop:
+          - filename
+

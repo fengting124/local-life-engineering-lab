@@ -3,6 +3,8 @@ package com.personalprojections.locallife.copilot.tool.impl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.personalprojections.locallife.copilot.domain.dto.OrderSnapshot;
+import com.personalprojections.locallife.copilot.domain.dto.OutboxMessageSnapshot;
 import com.personalprojections.locallife.copilot.domain.mapper.CopilotOrderMapper;
 import com.personalprojections.locallife.copilot.mcp.dto.ToolDefinition;
 import com.personalprojections.locallife.copilot.tool.McpTool;
@@ -86,17 +88,17 @@ public class QueryMqDeadLetterTool implements McpTool {
         log.info("[QueryMqDeadLetterTool] 查询死信消息: orderNo={}", orderNo);
 
         // 先查订单确认存在
-        Map<String, Object> order = orderMapper.selectOrderByOrderNo(orderNo);
-        if (order == null || order.isEmpty()) {
+        OrderSnapshot order = orderMapper.selectOrderByOrderNo(orderNo);
+        if (order == null || order.getOrderId() == null) {
             throw new ToolNotFoundException("订单不存在: " + orderNo);
         }
 
-        String orderId = String.valueOf(order.get("order_id"));
+        String orderId = String.valueOf(order.getOrderId());
 
         // 查 FAILED 状态的 Outbox 消息（近似死信）
-        List<Map<String, Object>> failedMessages = orderMapper.selectOutboxByOrderId(orderId);
-        List<Map<String, Object>> deadLetters = failedMessages.stream()
-                .filter(m -> "FAILED".equals(String.valueOf(m.get("status"))))
+        List<OutboxMessageSnapshot> failedMessages = orderMapper.selectOutboxByOrderId(orderId);
+        List<OutboxMessageSnapshot> deadLetters = failedMessages.stream()
+                .filter(m -> "FAILED".equals(m.getStatus()))
                 .toList();
 
         String diagnosis = deadLetters.isEmpty()
@@ -105,22 +107,34 @@ public class QueryMqDeadLetterTool implements McpTool {
 
         return Map.of(
                 "order_id",     orderNo,
-                "dead_letters", deadLetters,
+                "dead_letters", deadLetters.stream().map(this::toOutboxMap).toList(),
                 "count",        deadLetters.size(),
                 "diagnosis",    diagnosis,
                 "note",         "当前基于 outbox_message 近似，生产应对接 RocketMQ Admin API 获取真实死信"
         );
     }
 
-    private String analyzeDl(Map<String, Object> dl) {
-        String eventId  = String.valueOf(dl.getOrDefault("event_id", ""));
-        int retryCount  = ((Number) dl.getOrDefault("retry_count", 0)).intValue();
-        String payload  = String.valueOf(dl.getOrDefault("payload", ""));
+    private String analyzeDl(OutboxMessageSnapshot dl) {
+        String eventId  = dl.getEventId() != null ? dl.getEventId() : "";
+        int retryCount  = dl.getRetryCount() != null ? dl.getRetryCount() : 0;
+        String payload  = dl.getPayload() != null ? dl.getPayload() : "";
 
         if (payload.contains("stock")) {
             return "【库存不足】券库存耗尽，无法发券。建议：退款 或 issue_compensation_coupon（补发等额优惠）。";
         }
         return "消息投递失败（重试 " + retryCount + " 次），eventId=" + eventId + "。需人工介入处理。";
+    }
+
+    private Map<String, Object> toOutboxMap(OutboxMessageSnapshot message) {
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("event_id", message.getEventId());
+        result.put("topic", message.getTopic());
+        result.put("tag", message.getTag());
+        result.put("status", message.getStatus());
+        result.put("retry_count", message.getRetryCount() != null ? message.getRetryCount() : 0);
+        result.put("next_retry_at", message.getNextRetryAt() != null ? message.getNextRetryAt().toString() : null);
+        result.put("created_at", message.getCreatedAt() != null ? message.getCreatedAt().toString() : null);
+        return result;
     }
 
     private String extractRequiredString(JsonNode args, String key) {

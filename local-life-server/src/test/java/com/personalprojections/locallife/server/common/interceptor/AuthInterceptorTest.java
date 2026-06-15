@@ -376,4 +376,19 @@ class AuthInterceptorTest {
                 .isNull();
         assertThat(MDC.get("requestId")).as("afterCompletion 后必须清空 MDC 中的 requestId").isNull();
     }
+
+    @Test
+    void afterCompletion_clearsUserContextAndMdc_evenWhenControllerThrows() throws Exception {
+        UserContext.set(LoginUserDTO.builder().userId(77L).status("ENABLED").build());
+        MDC.put("requestId", "request-with-controller-error");
+
+        interceptor.afterCompletion(
+                new MockHttpServletRequest("POST", "/api/v1/shops"),
+                new MockHttpServletResponse(),
+                new Object(),
+                new RuntimeException("controller boom"));
+
+        assertThat(UserContext.get()).as("Controller 抛异常后也必须清空 UserContext").isNull();
+        assertThat(MDC.get("requestId")).as("Controller 抛异常后也必须清空 MDC").isNull();
+    }
 }

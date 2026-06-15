@@ -2,6 +2,7 @@ package com.personalprojections.locallife.copilot.audit;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.TextNode;
 import com.personalprojections.locallife.copilot.rbac.RbacContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -92,12 +93,33 @@ public class ToolAuditService {
     }
 
     private String toJson(Object obj) {
-        if (obj == null) return null;
-        if (obj instanceof String s) return s;
+        if (obj == null) {
+            return null;
+        }
+        if (obj instanceof String raw && isValidJson(raw)) {
+            // 已经是合法 JSON 文本（如工具直接透传上游返回的原始 JSON）——原样存，不重复编码
+            return raw;
+        }
+        // 其余情况——含"长得像字符串、其实不是合法 JSON"的裸字符串——统一走正常序列化：
+        // Jackson 会把 String 序列化成带引号转义的 JSON 字符串字面量，天然合法
         try {
             return objectMapper.writeValueAsString(obj);
         } catch (JsonProcessingException e) {
-            return obj.toString();
+            // tool_input/tool_output 是 JSON NOT NULL 列：序列化失败时绝不能像旧实现那样
+            // 直接 return obj.toString()——那同样不保证是合法 JSON，会在落库这一关报错。
+            // 退化成一个保证合法的 JSON 字符串字面量，把原始内容连同失败原因一并留痕。
+            log.warn("[ToolAudit] 序列化为 JSON 失败，退化为字符串字面量: type={}, error={}",
+                    obj.getClass().getSimpleName(), e.getMessage());
+            return TextNode.valueOf(String.valueOf(obj)).toString();
+        }
+    }
+
+    private boolean isValidJson(String text) {
+        try {
+            objectMapper.readTree(text);
+            return true;
+        } catch (JsonProcessingException e) {
+            return false;
         }
     }
 }

@@ -11,12 +11,14 @@ import com.personalprojections.locallife.server.domain.mapper.CouponTemplateMapp
 import com.personalprojections.locallife.server.domain.mapper.SeckillSessionMapper;
 import com.personalprojections.locallife.server.domain.mapper.UserCouponMapper;
 import com.personalprojections.locallife.server.common.metrics.BusinessMetrics;
+import com.personalprojections.locallife.server.module.mq.constant.MqTopics;
+import com.personalprojections.locallife.server.module.mq.event.SeckillSuccessEvent;
+import com.personalprojections.locallife.server.module.mq.service.OutboxService;
 import com.personalprojections.locallife.server.module.seckill.dto.SeckillRequest;
 import com.personalprojections.locallife.server.module.seckill.dto.SeckillResultVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.ClassPathResource;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.scripting.support.ResourceScriptSource;
@@ -27,6 +29,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 秒杀抢券 Service，是整个项目最有技术深度的模块。
@@ -45,8 +48,9 @@ import java.util.List;
  *       SADD user Set（记录此用户已抢到）
  *       → 返回 0（成功）
  * 3. Lua 脚本返回非 0 → 直接拒绝，不进数据库
- *    Lua 脚本返回 0 → 执行数据库写入（同步，后续升级为 MQ）
- * 4. 返回秒杀结果给用户
+ *    Lua 脚本返回 0 → 写本地消息表 outbox_message（与「预扣成功」语义同一事务），
+ *                     由 Relay 异步投递 MQ，消费者异步 INSERT user_coupon
+ * 4. 返回秒杀结果给用户（无需等待 DB 写入完成）
  * </pre>
  *
  * <h2>为什么必须用 Lua 脚本？</h2>
@@ -65,11 +69,23 @@ import java.util.List;
  * <p>Lua 脚本在 Redis 里是原子执行的（单线程模型），执行期间不会被其他命令打断，
  * 从根本上消除了竞争条件。这是 Redis 秒杀去并发的核心原理。
  *
- * <h2>当前阶段简化说明</h2>
+ * <h2>异步写库架构（Outbox 复用）</h2>
  * <p>生产级秒杀应该是「Lua 预扣 → 发 MQ → MQ 消费者写 DB」的异步架构，
- * 把 DB 写入从秒杀主链路上解耦出去。当前阶段为了简化，Lua 预扣成功后
- * 直接同步写 DB（SeckillService 里调 userCouponMapper.insert），
- * 代码注释里标记了「后续升级为 MQ」的位置和方法。
+ * 把 DB 写入从秒杀主链路上解耦出去。本模块没有为此另起一套 MQ 机制，
+ * 而是直接复用项目里已经验证过的 {@link OutboxService} 可靠消息基础设施
+ * （与 {@code PaymentService} 走的是同一条路径：业务事务内写 outbox_message
+ * → Relay 任务异步投递 RocketMQ → 消费者幂等消费）：
+ * <pre>
+ * Lua 预扣成功（原子防超卖/防重复）
+ *     ↓
+ * 同事务内写 outbox_message（PENDING，事务提交即保证不丢）
+ *     ↓
+ * OutboxService.relayMessages() 异步投递到 seckill-success-topic
+ *     ↓
+ * SeckillSuccessConsumer 幂等消费 → 异步 INSERT user_coupon
+ * </pre>
+ * <p>好处：秒杀主链路里只剩「Redis 原子操作 + 写一行 outbox_message」，
+ * 响应极快；DB 写入压力被 Relay+消费者削峰填谷，不会在抢购瞬间打满连接池。
  *
  * <h2>Lua 脚本位置</h2>
  * <p>脚本文件：resources/lua/seckill.lua
@@ -85,13 +101,31 @@ public class SeckillService {
     private final UserCouponMapper userCouponMapper;
     private final StringRedisTemplate stringRedisTemplate;
     private final BusinessMetrics businessMetrics;
+    private final OutboxService outboxService;
 
     /** Redis Key 模板 */
     private static final String STOCK_KEY = "seckill:stock:%d:%d";   // sessionId:templateId
     private static final String USER_SET_KEY = "seckill:user:%d:%d"; // sessionId:templateId
-    // RESULT_KEY = "seckill:result:%d:%d" 预留给 MQ 异步场景：
-    //   POST 接口发 MQ 后写入「PENDING」，消费者写 DB 后更新为「SUCCESS」，
-    //   前端轮询 GET /seckill/result 读此 Key。当前同步写 DB，暂不需要。
+
+    /**
+     * 秒杀结果 Key：seckill:result:{sessionId}:{templateId}:{userId}（按用户区分，
+     * 同一场次/同一券模板下不同用户的结果各不相同，必须带上 userId 才能定位）。
+     *
+     * <p>异步写库流程中标记「领取请求」当前所处的状态，供 {@link #querySeckillResult} 轮询：
+     * <ul>
+     *   <li>doSeckill 预扣成功 → 写入「PENDING」</li>
+     *   <li>SeckillSuccessConsumer 异步写库成功 → 更新为「SUCCESS」</li>
+     * </ul>
+     * TTL 与幂等消费 Key 保持一致（24 小时），覆盖 MQ 最大重试窗口。
+     */
+    private static final String RESULT_KEY = "seckill:result:%d:%d:%d"; // sessionId:templateId:userId
+
+    /** 秒杀结果 Key 的取值。 */
+    private static final String RESULT_PENDING = "PENDING";
+    private static final String RESULT_SUCCESS = "SUCCESS";
+
+    /** 结果 Key TTL（秒）：24 小时，与 {@code SeckillSuccessConsumer} 幂等 Key TTL 保持一致。 */
+    private static final long RESULT_KEY_TTL_SECONDS = 86_400L;
 
     /**
      * Lua 脚本对象，应用启动时加载，运行时复用。
@@ -134,7 +168,10 @@ public class SeckillService {
         Long couponTemplateId = request.getCouponTemplateId();
 
         // 1. 校验场次（存在性 + 状态 + 时间窗）
-        SeckillSession session = validateSession(sessionId, couponTemplateId);
+        // 返回值此前用于同步创建 user_coupon 时计算 expire_at；
+        // 现已改为发布事件异步写库，expire_at 改由 validDays 在事件中冗余传递（见 publishSeckillSuccessEvent），
+        // 此处只需校验场次合法性，不再需要持有 session 对象
+        validateSession(sessionId, couponTemplateId);
 
         // Metrics：记录一次秒杀尝试（无论成功与否，帮助分析热度）
         // Metrics：使用 couponTemplateId 区分不同秒杀活动（SeckillSession 无 shopId 字段）
@@ -165,20 +202,26 @@ public class SeckillService {
             throw new BizException(ErrorCode.COUPON_ALREADY_RECEIVED);
         }
 
-        // 4. Lua 脚本返回 0：预扣成功，同步写 DB
-        // 【后续升级点】这里应该改为：发 MQ 消息，由消费者异步 INSERT user_coupon
-        // 改法：stringRedisTemplate 存一个 result Key 标记「等待处理」，
-        //       MQ 消费成功后更新为「已完成」，「查询结果」接口读这个 Key
-        createUserCoupon(userId, couponTemplateId, sessionId, session);
+        // 4. Lua 脚本返回 0：预扣成功（防超卖/防重复已在 Redis 层原子保证）
+        //    发布「秒杀成功事件」到 Outbox（与本方法同一事务），交由 Relay 异步投递 MQ，
+        //    SeckillSuccessConsumer 异步完成真正的 user_coupon INSERT —— DB 写入
+        //    从秒杀主链路上彻底解耦，响应只剩 Redis 操作 + 一行 outbox_message 写入
+        publishSeckillSuccessEvent(userId, couponTemplateId, sessionId);
 
-        // Metrics：记录秒杀成功（用于计算成功率：success / attempts）
+        // 标记「领取请求」当前状态为 PENDING：消费者写库成功后会更新为 SUCCESS，
+        // 前端轮询 GET /seckill/result 据此判断是否已真正出券
+        String resultKey = String.format(RESULT_KEY, sessionId, couponTemplateId, userId);
+        stringRedisTemplate.opsForValue().set(resultKey, RESULT_PENDING, RESULT_KEY_TTL_SECONDS, TimeUnit.SECONDS);
+
+        // Metrics：记录秒杀成功（用于计算成功率：success / attempts；
+        // 此处「成功」指 Redis 预扣成功——用户已经锁定名额，DB 落库是异步保证，不影响这个口径）
         businessMetrics.recordSeckillSuccess(couponTemplateId);
 
-        log.info("秒杀成功，userId: {}, sessionId: {}, couponTemplateId: {}",
+        log.info("秒杀预扣成功（已发布异步写库事件），userId: {}, sessionId: {}, couponTemplateId: {}",
                 userId, sessionId, couponTemplateId);
         return SeckillResultVO.builder()
                 .success(true)
-                .message("抢券成功！请到「我的券包」查看")
+                .message("抢券成功！正在为您出券，请稍后到「我的券包」查看")
                 .build();
     }
 
@@ -187,15 +230,20 @@ public class SeckillService {
     // =========================================================
 
     /**
-     * 查询秒杀结果（当前简化：直接查 DB，异步 MQ 场景用 Redis 缓存状态）。
+     * 查询秒杀结果（异步写库架构下，前端据此轮询「是否已真正出券」）。
      *
-     * <p>生产级异步流程（升级后）：
+     * <p>判断顺序（由「最终一致」到「过程态」分层兜底）：
      * <ol>
-     *   <li>秒杀成功 → 发 MQ → 存 Redis result Key 为「PENDING」</li>
-     *   <li>MQ 消费成功 → 更新 Redis result Key 为「SUCCESS」</li>
-     *   <li>前端轮询此接口 → 读 Redis result Key → 返回当前状态</li>
+     *   <li>查数据库 user_coupon：有记录 → 已最终落库，直接返回成功（最权威依据）</li>
+     *   <li>查 Redis RESULT_KEY：
+     *     <ul>
+     *       <li>PENDING → 预扣已成功，消费者正在异步写库，让前端稍后重试</li>
+     *       <li>SUCCESS → 消费者已标记完成，但 DB 查询因主从延迟暂未读到（极少见），按成功返回</li>
+     *     </ul>
+     *   </li>
+     *   <li>RESULT_KEY 不存在（如 TTL 过期）→ 退回判断 USER_SET_KEY（SISMEMBER）兜底，
+     *     仍命中说明预扣成功但状态 Key 已过期，提示「处理中」；否则视为未抢到</li>
      * </ol>
-     * <p>当前阶段简化：直接查数据库判断是否有记录。
      *
      * @param sessionId         秒杀场次 ID
      * @param couponTemplateId  券模板 ID
@@ -204,7 +252,7 @@ public class SeckillService {
     public SeckillResultVO querySeckillResult(Long sessionId, Long couponTemplateId) {
         Long userId = UserContext.getUserId();
 
-        // 查数据库：该用户是否已有这张券
+        // 1. 查数据库：该用户是否已有这张券（最终一致的权威依据）
         UserCoupon coupon = userCouponMapper.selectOne(
                 new LambdaQueryWrapper<UserCoupon>()
                         .eq(UserCoupon::getUserId, userId)
@@ -219,14 +267,32 @@ public class SeckillService {
                     .build();
         }
 
-        // 还没有记录：要么还在 MQ 处理中，要么没抢到
-        // 判断 Redis 里有没有这个用户（SISMEMBER）
+        // 2. DB 还没有记录：读 Redis RESULT_KEY 判断当前处于哪个过程态
+        String resultKey = String.format(RESULT_KEY, sessionId, couponTemplateId, userId);
+        String resultStatus = stringRedisTemplate.opsForValue().get(resultKey);
+
+        if (RESULT_PENDING.equals(resultStatus)) {
+            // 预扣已成功，消费者正在异步写库（Outbox Relay 投递 / MQ 消费中）
+            return SeckillResultVO.builder()
+                    .success(false)
+                    .message("抢券成功！正在为您出券，请稍后刷新查看")
+                    .build();
+        }
+        if (RESULT_SUCCESS.equals(resultStatus)) {
+            // 消费者已标记完成，但本次 DB 查询暂未读到（主从延迟等），按成功处理
+            return SeckillResultVO.builder()
+                    .success(true)
+                    .message("已抢到！请到「我的券包」查看")
+                    .build();
+        }
+
+        // 3. RESULT_KEY 不存在（如 TTL 过期）：退回判断 USER_SET_KEY 兜底
         String userSetKey = String.format(USER_SET_KEY, sessionId, couponTemplateId);
         Boolean inSet = stringRedisTemplate.opsForSet()
                 .isMember(userSetKey, String.valueOf(userId));
 
         if (Boolean.TRUE.equals(inSet)) {
-            // Redis 里有记录但 DB 还没写入（MQ 处理中）
+            // Redis 判重 Set 里有记录，但 RESULT_KEY 已过期且 DB 还没写入（理论上极少出现）
             return SeckillResultVO.builder()
                     .success(false)
                     .message("正在处理中，请稍后刷新")
@@ -307,22 +373,23 @@ public class SeckillService {
     }
 
     /**
-     * 同步创建用户券记录（Lua 预扣成功后调用）。
+     * 发布「秒杀成功事件」到本地消息表（Lua 预扣成功后、同一事务内调用）。
      *
-     * <p>幂等处理：捕获 DuplicateKeyException（唯一索引冲突），说明 MQ 重复消费或并发重试，
-     * 直接忽略，不是真正的错误（用户已经领到了）。
+     * <p>复用 {@link OutboxService}：与 outbox_message 同一事务写入，保证
+     * 「Redis 预扣成功」与「事件落表」原子绑定——事务提交后 Relay 任务负责
+     * 异步投递到 RocketMQ，真正的 user_coupon INSERT 由
+     * {@link com.personalprojections.locallife.server.module.mq.consumer.SeckillSuccessConsumer}
+     * 异步幂等执行（即使 MQ 当时不可用，消息也不会丢，Relay 会在恢复后重试）。
      *
-     * <p>【升级方向】此方法应该改为：发一条 MQ 消息，由 CouponConsumer 异步执行 INSERT。
-     * 消费者里同样需要捕获 DuplicateKeyException 做幂等处理。
+     * <p>事件中冗余了 validDays（来自 coupon_template），消费者据此直接计算
+     * expire_at，无需在异步链路上再回查券模板表。
      *
      * @param userId           领取用户 ID
      * @param couponTemplateId 券模板 ID
      * @param sessionId        秒杀场次 ID
-     * @param session          场次实体（用于计算 expire_at）
      */
-    private void createUserCoupon(Long userId, Long couponTemplateId,
-                                  Long sessionId, SeckillSession session) {
-        // 查询券模板，获取有效天数（用于计算过期时间）
+    private void publishSeckillSuccessEvent(Long userId, Long couponTemplateId, Long sessionId) {
+        // 查询券模板，获取有效天数（事件冗余字段，供消费者直接使用，无需异步链路回查）
         CouponTemplate template = couponTemplateMapper.selectById(couponTemplateId);
         if (template == null) {
             log.error("券模板不存在，couponTemplateId: {}", couponTemplateId);
@@ -330,24 +397,26 @@ public class SeckillService {
         }
 
         LocalDateTime now = LocalDateTime.now();
-        LocalDateTime expireAt = now.plusDays(template.getValidDays());
+        // eventId 全局唯一，格式：{sessionId}_{userId}_seckill
+        // 注：couponTemplateId 不参与拼接——validateSession 已校验「一个场次唯一对应一个券模板」，
+        // 所以 (sessionId, userId) 已足以唯一标识一次领取，无需再加 couponTemplateId。
+        // 这样做还有现实考量：三个雪花 ID（各最长 19 位）全部拼接可能超过
+        // outbox_message.event_id 的 VARCHAR(64) 长度上限，去掉冗余字段更安全。
+        // 与 outbox_message.uk_event_id 唯一索引配合，杜绝重复落表
+        String eventId = sessionId + "_" + userId + "_seckill";
 
-        UserCoupon userCoupon = UserCoupon.builder()
-                .userId(userId)
+        SeckillSuccessEvent event = SeckillSuccessEvent.builder()
+                .eventId(eventId)
+                .sessionId(sessionId)
                 .couponTemplateId(couponTemplateId)
-                .seckillSessionId(sessionId)
-                .couponStatus("UNUSED")
-                .receivedAt(now)
-                .expireAt(expireAt)
+                .userId(userId)
+                .validDays(template.getValidDays())
+                .succeededAt(now)
+                .eventAt(now)
                 .build();
 
-        try {
-            userCouponMapper.insert(userCoupon);
-        } catch (DuplicateKeyException e) {
-            // 唯一索引冲突：说明该用户已经领过这张券（Redis Set 判重漏了或重试导致）
-            // 幂等处理：直接忽略，用户已经有这张券了，不算错误
-            log.warn("用户券重复创建（唯一索引冲突，幂等处理），userId: {}, couponTemplateId: {}",
-                    userId, couponTemplateId);
-        }
+        outboxService.saveToOutbox(event, eventId, MqTopics.SECKILL_SUCCESS_TOPIC, MqTopics.TAG_SECKILL_SUCCESS);
+        log.debug("[Seckill] 已写入 Outbox，等待异步落库: eventId={}, userId={}, couponTemplateId={}",
+                eventId, userId, couponTemplateId);
     }
 }
