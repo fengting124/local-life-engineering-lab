@@ -21,6 +21,7 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage
+from structlog.contextvars import get_contextvars
 
 from agent.graph import agent_graph
 from agent.state import AgentState
@@ -179,6 +180,7 @@ async def chat(
     user_id     = int(x_user_id)
     user_role   = x_user_role
     merchant_id = int(x_merchant_id) if x_merchant_id else None
+    request_trace_id = get_contextvars().get("trace_id")
 
     # ---- Guardrails 输入检查（Prompt Injection / 越权尝试）----
     from guardrails.input_checker import check_input, GuardLevel
@@ -242,6 +244,7 @@ async def chat(
             yield _sse("session_started", {
                 "session_id": str(actual_session_id),
                 "thread_id":  fp_thread_id,
+                "trace_id":   request_trace_id,
             })
             yield _sse("final_answer", {
                 "content":    fast_path_result,
@@ -284,6 +287,7 @@ async def chat(
         yield _sse("session_started", {
             "session_id": str(actual_session_id),
             "thread_id":  thread_id,
+            "trace_id":   request_trace_id,
         })
         try:
             # astream_events 以事件流形式输出每个节点的执行过程

@@ -15,10 +15,11 @@
 9. [后端与 Agent 链路架构图](./01-project/12-后端与Agent链路架构图.md)
 10. [Copilot 企业级 Agent 设计](./01-project/07-Copilot企业级Agent设计.md)
 11. [企业级日志系统](./04-notes/企业级日志系统.md)
-12. [测试总览与结果汇总](./04-notes/测试总览与结果汇总.md)
-13. [面试演示脚本](./demo/面试演示脚本.md)
-14. [后端 + Agent 面试高频题库](./04-notes/面试高频题库-后端Agent.md)
-15. [深度拷打与面试指南](./04-notes/深度拷打与面试指南.md)
+12. [AgentOps 评测与 GenAI 追踪](./04-notes/AgentOps评测与GenAI追踪.md)
+13. [测试总览与结果汇总](./04-notes/测试总览与结果汇总.md)
+14. [面试演示脚本](./demo/面试演示脚本.md)
+15. [后端 + Agent 面试高频题库](./04-notes/面试高频题库-后端Agent.md)
+16. [深度拷打与面试指南](./04-notes/深度拷打与面试指南.md)
 
 ## 目录说明
 

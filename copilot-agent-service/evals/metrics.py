@@ -45,9 +45,12 @@ Evals 六项指标计算脚本。
 """
 import asyncio
 import json
+import sys
 import time
 import statistics
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from evals.eval_cases import EvalCase, ALL_CASES, QUERY_CASES, DIAGNOSIS_CASES, KNOWLEDGE_CASES
@@ -72,7 +75,7 @@ class EvalResult:
     faithfulness_score:     float = -1.0   # -1 = 未评测；0~1 = 忠实度分数
     relevance_score:        float = -1.0   # -1 = 未评测；0~1 = 相关性分数
     hallucination_detected: bool  = False  # LLM judge 是否检测到幻觉
-    tool_results:           list[str] = None  # 工具原始返回（用于 judge）
+    tool_results:           list[str] = field(default_factory=list)  # 工具原始返回（用于 judge）
 
 
 @dataclass
@@ -359,6 +362,64 @@ class EvalRunner:
         print("=" * 55 + "\n")
 
 
+def write_report_artifacts(report: EvalReport, output_dir: str | Path, run_name: str) -> tuple[Path, Path]:
+    """Write JSON + Markdown eval artifacts for CI and interview review."""
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    safe_name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in run_name).strip("-")
+    safe_name = safe_name or "agentops-eval"
+
+    payload = asdict(report)
+    payload["generated_at"] = datetime.now().isoformat(timespec="seconds")
+    payload["run_name"] = safe_name
+
+    json_path = out / f"{safe_name}.json"
+    md_path = out / f"{safe_name}.md"
+
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    lines = [
+        "# LocalLife Copilot AgentOps Eval Report",
+        "",
+        f"- Run: `{safe_name}`",
+        f"- Generated: `{payload['generated_at']}`",
+        f"- Total cases: `{report.total}`",
+        "",
+        "| Metric | Value |",
+        "| --- | ---: |",
+        f"| Tool Call Accuracy | {report.tool_call_accuracy:.3f} |",
+        f"| Task Completion Rate | {report.task_completion_rate:.3f} |",
+        f"| Recall@5 | {report.recall_at_5:.3f} |",
+        f"| Factual Consistency | {report.factual_consistency:.3f} |",
+        f"| Latency P50 | {report.p50_latency_ms:.0f} ms |",
+        f"| Latency P99 | {report.p99_latency_ms:.0f} ms |",
+        f"| Avg Tokens / Session | {report.avg_tokens:.0f} |",
+    ]
+    if report.avg_faithfulness >= 0:
+        lines.extend([
+            f"| Judge Faithfulness | {report.avg_faithfulness:.3f} |",
+            f"| Judge Relevance | {report.avg_relevance:.3f} |",
+            f"| Hallucination Rate | {report.hallucination_rate:.1%} |",
+        ])
+
+    lines.extend([
+        "",
+        "## Case Results",
+        "",
+        "| Case | Category | Done | Tools | Keyword | Latency | Error |",
+        "| ---: | --- | --- | ---: | ---: | ---: | --- |",
+    ])
+    for r in report.results:
+        error = (r.error_msg or "").replace("|", "\\|")[:80]
+        lines.append(
+            f"| {r.case_id} | {r.category} | {'yes' if r.task_completed else 'no'} | "
+            f"{r.tool_seq_match:.2f} | {r.keyword_coverage:.2f} | {r.latency_ms:.0f} ms | {error} |"
+        )
+
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return json_path, md_path
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(
@@ -374,6 +435,14 @@ if __name__ == "__main__":
                         help="使用真实 Agent（通过 HTTP SSE 调用本地 8000 端口）")
     parser.add_argument("--agent-url", default=None,
                         help="覆盖 Agent 服务地址（默认 http://localhost:8000）")
+    parser.add_argument("--case-id", type=int, default=None,
+                        help="只运行单个用例，便于排障和面试演示")
+    parser.add_argument("--output-dir", default="evals/reports",
+                        help="写入 JSON/Markdown 报告的目录")
+    parser.add_argument("--run-name", default=None,
+                        help="报告文件名前缀，默认按模式和分类生成")
+    parser.add_argument("--fail-under-task-rate", type=float, default=None,
+                        help="任务完成率低于该值时退出码为 1，可用于 CI 门禁")
     parser.add_argument("--judge", action="store_true",
                         help="启用 LLM-as-Judge 评测（需要 ANTHROPIC_API_KEY，会产生 API 费用）")
     args = parser.parse_args()
@@ -410,5 +479,24 @@ if __name__ == "__main__":
     )
 
     cat = None if args.category == "all" else args.category
-    report = asyncio.run(runner.run(category=cat))
+    selected_cases = ALL_CASES
+    if args.case_id is not None:
+        selected_cases = [case for case in ALL_CASES if case.id == args.case_id]
+        if not selected_cases:
+            print(f"未找到 case_id={args.case_id}")
+            sys.exit(2)
+
+    report = asyncio.run(runner.run(cases=selected_cases, category=cat))
     runner.print_report(report)
+
+    mode = "real" if args.real else "mock"
+    run_name = args.run_name or f"{mode}-{args.category}" + (f"-case-{args.case_id}" if args.case_id else "")
+    json_path, md_path = write_report_artifacts(report, args.output_dir, run_name)
+    print(f"📎 Eval artifacts written: {json_path} / {md_path}")
+
+    if args.fail_under_task_rate is not None and report.task_completion_rate < args.fail_under_task_rate:
+        print(
+            f"❌ task_completion_rate {report.task_completion_rate:.3f} "
+            f"< gate {args.fail_under_task_rate:.3f}"
+        )
+        sys.exit(1)

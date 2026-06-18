@@ -17,6 +17,7 @@ from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, Human
 from langchain_core.language_models import BaseChatModel
 
 from agent.state import AgentState
+from agent.trace import genai_span
 from mcp.mcp_client import McpClient, McpToolError
 from config.settings import settings
 
@@ -243,7 +244,16 @@ async def llm_node(state: AgentState) -> dict:
     messages = [system_msg] + state["messages"]
 
     # 调用 LLM
-    response = await llm_with_tools.ainvoke(messages)
+    async with genai_span(
+        "llm.invoke",
+        "llm",
+        provider=settings.llm_provider,
+        model=settings.llm_model or "provider-default",
+        step=state["step_count"],
+        session_id=state.get("session_id"),
+        thread_id=state.get("thread_id"),
+    ):
+        response = await llm_with_tools.ainvoke(messages)
 
     log.info(
         "llm_response",
@@ -419,17 +429,25 @@ async def tool_node(state: AgentState) -> dict:
         start = _time.time()
 
         try:
-            if tool_name == "knowledge_search":
-                from rag.knowledge_tool import make_knowledge_search_tool
-                native_tool = make_knowledge_search_tool(merchant_id=state.get("merchant_id"))
-                result = await native_tool.ainvoke(tool_args)
-            else:
-                result = await mcp.call_tool(
-                    tool_name=tool_name,
-                    arguments=tool_args,
-                    session_id=state.get("session_id"),
-                    thread_id=state.get("thread_id"),
-                )
+            async with genai_span(
+                f"tool.{tool_name}",
+                "tool",
+                tool_name=tool_name,
+                step=state["step_count"],
+                session_id=state.get("session_id"),
+                thread_id=state.get("thread_id"),
+            ):
+                if tool_name == "knowledge_search":
+                    from rag.knowledge_tool import make_knowledge_search_tool
+                    native_tool = make_knowledge_search_tool(merchant_id=state.get("merchant_id"))
+                    result = await native_tool.ainvoke(tool_args)
+                else:
+                    result = await mcp.call_tool(
+                        tool_name=tool_name,
+                        arguments=tool_args,
+                        session_id=state.get("session_id"),
+                        thread_id=state.get("thread_id"),
+                    )
             record_tool_call(tool_name, "success", _time.time() - start)
             log.info("tool_success", tool=tool_name, elapsed_ms=int((_time.time()-start)*1000))
             return ToolMessage(content=result, tool_call_id=call_id, name=tool_name)
