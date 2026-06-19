@@ -42,6 +42,45 @@ def ai_with_tool_call(name, args, call_id="c1"):
 
 class TestToolNode:
     @pytest.mark.asyncio
+    async def test_high_risk_tool_without_approval_requests_hitl_without_calling_mcp(self, monkeypatch):
+        mock_mcp = MagicMock()
+        mock_mcp.call_tool = AsyncMock(return_value="不该被调用")
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+
+        args = {"order_id": "123", "amount": 100, "reason": "用户要求退款"}
+        state = make_state(
+            [ai_with_tool_call("execute_refund", args)],
+            user_role="cs",
+        )
+
+        result = await nodes.tool_node(state)
+
+        assert result["pending_hitl"] is True
+        assert result["pending_action"]["action_type"] == "execute_refund"
+        assert result["pending_action"]["payload"] == args
+        mock_mcp.call_tool.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_high_risk_tool_with_approval_executes_mcp(self, monkeypatch):
+        mock_mcp = MagicMock()
+        mock_mcp.call_tool = AsyncMock(return_value="退款成功")
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+
+        args = {"order_id": "123", "amount": 100, "reason": "用户要求退款"}
+        state = make_state(
+            [ai_with_tool_call("execute_refund", args)],
+            user_role="cs",
+            pending_action={"action_type": "execute_refund", "approval_id": "APPROVAL_1"},
+        )
+
+        result = await nodes.tool_node(state)
+
+        assert result["last_tool_failed"] is False
+        mock_mcp.call_tool.assert_awaited_once()
+        _, kwargs = mock_mcp.call_tool.await_args
+        assert kwargs["arguments"]["approval_id"] == "APPROVAL_1"
+
+    @pytest.mark.asyncio
     async def test_success_returns_tool_message(self, monkeypatch):
         mock_mcp = MagicMock()
         mock_mcp.call_tool = AsyncMock(return_value="订单状态：已支付")

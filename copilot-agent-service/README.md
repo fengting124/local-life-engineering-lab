@@ -282,6 +282,9 @@ python -m evals.metrics --real
 
 # 只跑订单异常排查（15 条用例）
 python -m evals.metrics --real --category diagnosis
+
+# RAG 专项：真实 Milvus + embedding + reranker
+python -m evals.rag_benchmark --real --run-name rag-quality-real
 ```
 
 输出示例：
@@ -292,4 +295,10 @@ Metric 3 | Recall@5 (knowledge): 0.733
 Metric 4 | Factual Consistency:  0.867
 Metric 5 | Latency P50/P99:      3200ms / 18500ms
 Metric 6 | Avg Tokens/Session:   2840
+```
+
+RAG 专项最近一次真实链路结果：
+
+```json
+{"recall_at_5_before": 1.0, "recall_at_5_after": 1.0, "citation_accuracy": 1.0, "refusal_accuracy": 1.0}
 ```

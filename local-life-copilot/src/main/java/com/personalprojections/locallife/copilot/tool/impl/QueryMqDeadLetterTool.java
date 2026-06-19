@@ -78,7 +78,7 @@ public class QueryMqDeadLetterTool implements McpTool {
                         "error 含 'template not found' → 券模板已被删除，无法补发，需退款。" +
                         "没有死信记录 → MQ 消费尚未失败或已成功，检查其他环节。")
                 .xRequiresHitl(false)
-                .xAllowedRoles(List.of("cs", "admin"))
+                .xAllowedRoles(List.of("admin"))
                 .build();
     }
 

@@ -78,7 +78,7 @@ public class CouponPolicyLookupTool implements McpTool {
                         "min_order_amount=0 表示无使用门槛。" +
                         "total_stock 和 remaining_stock 之差为已发放数量。")
                 .xRequiresHitl(false)
-                .xAllowedRoles(List.of("merchant", "cs", "admin"))
+                .xAllowedRoles(List.of("merchant", "admin"))
                 .build();
     }
 

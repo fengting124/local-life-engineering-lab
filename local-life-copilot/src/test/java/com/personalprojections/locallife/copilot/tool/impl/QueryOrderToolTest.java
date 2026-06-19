@@ -116,6 +116,23 @@ class QueryOrderToolTest {
                 .hasMessage("订单不存在或无权查询: 1234567890123456789");
     }
 
+    @Test
+    void execute_merchantRoleForAnotherMerchantOrder_throwsNotFoundToAvoidEnumeration() throws Exception {
+        RbacContext.set(RbacContext.builder().userId(20001L).role("merchant").merchantId(30001L).build());
+        OrderSnapshot row = OrderSnapshot.builder()
+                .orderId(4L)
+                .orderNo("2222222222222222222")
+                .shopId(40001L)
+                .merchantId(99999L)
+                .orderStatus("PAID")
+                .build();
+        when(orderMapper.selectOrderByOrderNo("2222222222222222222")).thenReturn(row);
+
+        assertThatThrownBy(() -> tool.execute(args("{\"order_id\": \"2222222222222222222\"}")))
+                .isInstanceOf(ToolNotFoundException.class)
+                .hasMessage("订单不存在或无权查询: 2222222222222222222");
+    }
+
     // =====================================================================
     // 4. 成功路径：整理结果 —— 验证 buildResult() 的整体形状与 safeStr() 的 null 防护
     // =====================================================================
@@ -218,6 +235,7 @@ class QueryOrderToolTest {
                 .orderId(3L)
                 .orderNo("1111111111111111111")
                 .shopId(40001L)
+                .merchantId(30001L)
                 .orderStatus("PAID")
                 .build();
         when(orderMapper.selectOrderByOrderNo("1111111111111111111")).thenReturn(row);

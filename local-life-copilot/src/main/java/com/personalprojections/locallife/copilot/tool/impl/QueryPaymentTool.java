@@ -76,7 +76,7 @@ public class QueryPaymentTool implements McpTool {
                         "pay_status=FAILED 且只有一条记录 → 用户支付失败，让用户重新支付。" +
                         "trade_no 非空 → 渠道有真实扣款记录，可以用 trade_no 去渠道后台核对。")
                 .xRequiresHitl(false)
-                .xAllowedRoles(List.of("cs", "admin"))
+                .xAllowedRoles(List.of("admin"))
                 .build();
     }
 

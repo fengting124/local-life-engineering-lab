@@ -390,6 +390,8 @@ def is_tool_concurrency_safe(tool_name: str) -> bool:
     return tool_name in TOOL_CONCURRENCY_SAFE
 ```
 
+注意：并发安全名单表示“这个工具本身是只读、可并发”，不等于所有角色都能看到它。当前 RBAC 中，`cs` 的普通只读工具只开放 `query_order`；`query_payment`、券发放日志和 MQ 死信日志属于内部排障读工具，仅 `admin` 直连可用。退款/补券仍是 L4 高风险工具，必须 HITL。
+
 > **fail-closed 原则**：`execute_refund` / `issue_compensation_coupon` /
 > `campaign_draft_generate`（连同未来任何新增的工具）都不在这张名单里——
 > 没有显式登记 = 一律按"不安全"处理，自动退化为单独串行执行。
@@ -516,13 +518,22 @@ LLM 生成含引用来源的回答
 
 ```
 向量相似度（Bi-Encoder）：把 Query 和 Document 分别编码再算相似度
-→ 速度快，但精度一般（Recall@5 约 0.65）
+→ 速度快，但对精确业务词和切分质量敏感
 
 Cross-Encoder Reranker：把 Query + Document 拼在一起输入模型，联合打分
-→ 速度慢（只用在精排），但精度更高（Recall@5 约 0.82）
+→ 速度慢（只用在精排），但能把更相关的文档提到前面
 
 组合方案：先用 Bi-Encoder 召回 Top 20（快），再用 Reranker 精排到 Top 5（准）
 ```
+
+当前小型 RAG golden set 实测：
+
+```bash
+cd copilot-agent-service
+DEBUG=false ./.venv/bin/python -m evals.rag_benchmark --real --run-name rag-quality-real
+```
+
+结果：Recall@5 before rerank = 1.0，Recall@5 after rerank = 1.0，Citation accuracy = 1.0，Refusal accuracy = 1.0。这个数字只代表当前 4 条小型评测集，不代表生产规模；它的价值是证明 Milvus/Reranker 不是“接了就算”，而是有可重复评测入口。
 
 ### 8.4 知识库入库
 
@@ -979,7 +990,7 @@ data: {
 | --- | --- | --- |
 | 知识库热更新 | 启动时/脚本式 ingest，BM25 内存索引随进程重建 | 已有入库链路，生产可接文档变更事件或管理后台触发增量 upsert。 |
 | 多格式解析 | 当前更偏 Markdown/文本知识库 | 生产可加 PDF/Word parser，再按标题层级和段落做结构化 chunk。 |
-| 召回指标 | Evals 有 Recall@5 框架 | 要用 golden set 固定问题-正确文档，不能只靠人工感觉。 |
+| 召回指标 | `evals/rag_benchmark.py` 已有 4 条小型 golden set，真实链路 Recall@5=1.0 | 生产要扩充到 50-200 条问题-正确文档，不能只靠人工感觉。 |
 
 面试一句话：
 
@@ -1161,7 +1172,7 @@ data: {
 | --- | --- |
 | 你的 Agent 和普通 Chatbot 区别？ | Chatbot 只生成文本；本项目 Agent 能通过 MCP 查询订单/支付/券，能多步诊断，写操作 HITL，所有工具审计。 |
 | 为什么后端转 Agent 有优势？ | Agent 落地难点不是 prompt，而是业务边界、幂等、权限、审计、数据库、MQ 和故障恢复，这些正是后端能力。 |
-| RAG 做了三个月，召回率多少？ | 不虚报商业指标；项目有 Recall@5 评测框架，检索链路是 Hybrid Recall + RRF + Reranker，后续用 golden set 固定量化。 |
+| RAG 做了三个月，召回率多少？ | 不虚报商业指标；当前小型 golden set 真实链路 Recall@5=1.0，检索链路是 Hybrid Recall + RRF + Reranker。生产规模要继续扩充评测集。 |
 | Agent 失败会不会导致资损？ | 不会让模型直接执行资金动作；退款/补券必须 HITL，Java 主服务做最终状态机和幂等。 |
 | 多 Agent 为什么没做？ | 当前业务单 Agent 足够，多 Agent 会增加复杂度；如果扩展，会按 Triage/Data/Knowledge/Risk/Response 拆分并由 Orchestrator 控制。 |
 | MCP 和 REST 有什么区别？ | REST 是用户接口；MCP 是 Agent 工具协议，统一工具发现、schema、权限、审计和跨语言边界。 |

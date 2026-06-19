@@ -17,10 +17,13 @@ from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, Human
 from langchain_core.language_models import BaseChatModel
 
 from agent.state import AgentState
+from agent.trace import genai_span
 from mcp.mcp_client import McpClient, McpToolError
 from config.settings import settings
 
 log = structlog.get_logger(__name__)
+
+HITL_TOOLS = {"execute_refund", "issue_compensation_coupon"}
 
 # =========================================================
 # LLM 工厂（支持多 Provider 切换）
@@ -243,7 +246,16 @@ async def llm_node(state: AgentState) -> dict:
     messages = [system_msg] + state["messages"]
 
     # 调用 LLM
-    response = await llm_with_tools.ainvoke(messages)
+    async with genai_span(
+        "llm.invoke",
+        "llm",
+        provider=settings.llm_provider,
+        model=settings.llm_model or "provider-default",
+        step=state["step_count"],
+        session_id=state.get("session_id"),
+        thread_id=state.get("thread_id"),
+    ):
+        response = await llm_with_tools.ainvoke(messages)
 
     log.info(
         "llm_response",
@@ -390,6 +402,32 @@ async def tool_node(state: AgentState) -> dict:
     if not tool_calls:
         return {"messages": []}
 
+    pending_action = state.get("pending_action") or {}
+    for tool_call in tool_calls:
+        tool_name = tool_call["name"]
+        if tool_name not in HITL_TOOLS:
+            continue
+        approval_id = pending_action.get("approval_id")
+        if not approval_id or pending_action.get("action_type") != tool_name:
+            log.warning(
+                "hitl_required_before_tool",
+                tool=tool_name,
+                session_id=state.get("session_id"),
+                thread_id=state.get("thread_id"),
+            )
+            return {
+                "messages": [],
+                "pending_hitl": True,
+                "pending_action": {
+                    "action_type": tool_name,
+                    "payload": tool_call.get("args", {}),
+                    "reason": "高风险工具调用必须先经过人工审批",
+                },
+                "stop_reason": "pending_approval",
+            }
+        # ponytail: copy only when needed; avoid mutating LangChain's original tool_call args.
+        tool_call["args"] = {**tool_call.get("args", {}), "approval_id": str(approval_id)}
+
     mcp = McpClient(
         user_id=state["user_id"],
         user_role=state["user_role"],
@@ -419,17 +457,25 @@ async def tool_node(state: AgentState) -> dict:
         start = _time.time()
 
         try:
-            if tool_name == "knowledge_search":
-                from rag.knowledge_tool import make_knowledge_search_tool
-                native_tool = make_knowledge_search_tool(merchant_id=state.get("merchant_id"))
-                result = await native_tool.ainvoke(tool_args)
-            else:
-                result = await mcp.call_tool(
-                    tool_name=tool_name,
-                    arguments=tool_args,
-                    session_id=state.get("session_id"),
-                    thread_id=state.get("thread_id"),
-                )
+            async with genai_span(
+                f"tool.{tool_name}",
+                "tool",
+                tool_name=tool_name,
+                step=state["step_count"],
+                session_id=state.get("session_id"),
+                thread_id=state.get("thread_id"),
+            ):
+                if tool_name == "knowledge_search":
+                    from rag.knowledge_tool import make_knowledge_search_tool
+                    native_tool = make_knowledge_search_tool(merchant_id=state.get("merchant_id"))
+                    result = await native_tool.ainvoke(tool_args)
+                else:
+                    result = await mcp.call_tool(
+                        tool_name=tool_name,
+                        arguments=tool_args,
+                        session_id=state.get("session_id"),
+                        thread_id=state.get("thread_id"),
+                    )
             record_tool_call(tool_name, "success", _time.time() - start)
             log.info("tool_success", tool=tool_name, elapsed_ms=int((_time.time()-start)*1000))
             return ToolMessage(content=result, tool_call_id=call_id, name=tool_name)

@@ -133,7 +133,7 @@ async def ingest_file(file_path: Path, override_scope: str | None = None,
         source=source,
         scope=scope,
         merchant_id=merchant_id,
-        chunk_size=500,
+        chunk_size=900,
         overlap=50,
     )
 

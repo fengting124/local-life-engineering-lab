@@ -13,7 +13,7 @@ agent/graph.py + agent/nodes.py 的「纯逻辑」单元测试 —— ReAct 循�
 import types
 import pytest
 
-from agent.graph import route_after_llm, build_graph, agent_graph
+from agent.graph import route_after_llm, route_after_tool, build_graph, agent_graph
 from agent import nodes
 from config.settings import settings
 
@@ -77,6 +77,14 @@ class TestRouteAfterLlm:
             messages=[msg_without_tool_calls()] * (settings.compact_keep_recent_messages + 2),
         )
         assert route_after_llm(state) == "final_node"
+
+
+class TestRouteAfterTool:
+    def test_pending_hitl_goes_hitl(self):
+        assert route_after_tool(base_state(pending_hitl=True)) == "hitl_node"
+
+    def test_default_goes_llm(self):
+        assert route_after_tool(base_state()) == "llm_node"
 
     def test_reflection_when_needs_reflection_flag(self):
         assert route_after_llm(base_state(needs_reflection=True)) == "reflection_node"

@@ -193,6 +193,7 @@ curl -X POST http://localhost:8000/chat \
 | [Copilot 全链路教程](docs/04-notes/LocalLifeCopilot项目教程.md) | 12 章 MCP/LangGraph/RAG/HITL 教程 | 面试准备 |
 | [后端 + Agent 面试高频题库](docs/04-notes/面试高频题库-后端Agent.md) | 结合面经趋势整理高频问题、追问链和项目答法 | 面试准备 |
 | [企业级日志系统](docs/04-notes/企业级日志系统.md) | Loki/Promtail/Grafana 集中日志、trace 关联、告警和排障 | 工程化准备 |
+| [AgentOps 评测与 GenAI 追踪](docs/04-notes/AgentOps评测与GenAI追踪.md) | Evals 报告产物、任务完成率门禁、GenAI/MCP span 排障 | 工程化准备 |
 | [环境搭建](docs/02-environment/01-环境搭建.md) | 工具链版本固定 | 初次配置 |
 | [测试总览](docs/04-notes/测试总览与结果汇总.md) | 测试数量、覆盖率、变异测试、CI 门禁 | 工程化准备 |
 

@@ -29,16 +29,16 @@ log = structlog.get_logger(__name__)
 TOOL_ROLE_MAP: dict[str, list[str]] = {
     # === Java MCP 工具 ===
     "query_order":               ["merchant", "cs", "admin"],
-    "query_payment":             ["cs", "admin"],
-    "query_coupon_issue_log":    ["cs", "admin"],
-    "query_mq_dead_letter":      ["cs", "admin"],
-    "shop_metrics_query":        ["merchant", "cs", "admin"],
-    "coupon_policy_lookup":      ["merchant", "cs", "admin"],
+    "query_payment":             ["admin"],
+    "query_coupon_issue_log":    ["admin"],
+    "query_mq_dead_letter":      ["admin"],
+    "shop_metrics_query":        ["merchant", "admin"],
+    "coupon_policy_lookup":      ["merchant", "admin"],
     "campaign_draft_generate":   ["merchant", "admin"],
     "execute_refund":            ["cs", "admin"],
     "issue_compensation_coupon": ["cs", "admin"],
     # === Python 原生工具（RAG） ===
-    "knowledge_search":          ["merchant", "cs", "admin"],
+    "knowledge_search":          ["merchant", "admin"],
 }
 
 # =========================================================

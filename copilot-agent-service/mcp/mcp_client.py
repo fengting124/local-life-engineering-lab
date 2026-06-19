@@ -15,6 +15,7 @@ from typing import Any
 from structlog.contextvars import get_contextvars
 
 from config.settings import settings
+from agent.trace import genai_span
 
 log = structlog.get_logger(__name__)
 
@@ -161,15 +162,22 @@ class McpClient:
         }
 
         try:
-            # trust_env=False：MCP Server 是内部服务，不走 WSL 代理
-            async with httpx.AsyncClient(timeout=self._timeout, trust_env=False) as client:
-                response = await client.post(
-                    f"{self._base_url}/mcp",
-                    json=payload,
-                    headers=self._headers(session_id, thread_id),
-                )
-                response.raise_for_status()
-                body = response.json()
+            async with genai_span(
+                "mcp.rpc",
+                "client",
+                rpc_method=method,
+                session_id=session_id,
+                thread_id=thread_id,
+            ):
+                # trust_env=False：MCP Server 是内部服务，不走 WSL 代理
+                async with httpx.AsyncClient(timeout=self._timeout, trust_env=False) as client:
+                    response = await client.post(
+                        f"{self._base_url}/mcp",
+                        json=payload,
+                        headers=self._headers(session_id, thread_id),
+                    )
+                    response.raise_for_status()
+                    body = response.json()
 
         except httpx.TimeoutException:
             raise McpToolError("tool_timeout", f"MCP Server 请求超时（{self._timeout}s）", "可重试一次")

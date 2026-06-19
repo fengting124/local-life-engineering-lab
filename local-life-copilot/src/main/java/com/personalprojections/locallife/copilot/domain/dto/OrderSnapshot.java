@@ -23,6 +23,7 @@ public class OrderSnapshot {
     private String orderNo;
     private Long userId;
     private Long shopId;
+    private Long merchantId;
     private Integer originalAmount;
     private Integer couponDiscount;
     private Integer orderAmount;
