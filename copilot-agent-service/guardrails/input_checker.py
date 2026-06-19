@@ -69,6 +69,20 @@ _BLOCK_PATTERNS: list[tuple[str, str]] = [
      "cross_merchant_access"),
     (r"merchant_id\s*=\s*[\"']?\d+[\"']?\s*(,|\s).*(?:all|all_merchants|all_orders)",
      "explicit_cross_merchant"),
+
+    # 高风险动作越权 / 跳过审批
+    (r"(忽略|绕过|跳过).{0,20}(权限|rbac|审批|hitl).{0,30}(退款|补偿券|补券|execute_refund|issue_compensation_coupon)",
+     "bypass_rbac_or_hitl_for_sensitive_action"),
+    (r"(退款|补偿券|补券|execute_refund|issue_compensation_coupon).{0,30}(不用|无需|跳过|绕过).{0,20}(审批|hitl|客服|人工)",
+     "sensitive_action_without_approval"),
+    (r"(skip|bypass).{0,20}(approval|hitl|rbac).{0,30}(refund|compensation|coupon)",
+     "bypass_approval_en"),
+
+    # 内部密钥泄露
+    (r"(internal[-_ ]?key|x-internal-key|内部密钥|共享密钥).{0,30}(泄露|告诉|输出|显示|打印|给我|reveal|show|print|leak)",
+     "leak_internal_key"),
+    (r"(泄露|告诉|输出|显示|打印|给我|reveal|show|print|leak).{0,30}(internal[-_ ]?key|x-internal-key|内部密钥|共享密钥)",
+     "leak_internal_key"),
 ]
 
 # 低置信度可疑模式（WARN 级别）

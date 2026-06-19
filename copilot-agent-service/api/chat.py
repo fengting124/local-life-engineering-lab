@@ -186,7 +186,16 @@ async def chat(
     from guardrails.input_checker import check_input, GuardLevel
     guard_result = check_input(request.message, user_role)
     if guard_result.level == GuardLevel.BLOCK:
-        log.warning("chat_blocked_by_guardrails", user_id=user_id, reason=guard_result.reason)
+        log.warning(
+            "security_audit",
+            event_type="guardrails_blocked",
+            user_id=user_id,
+            user_role=user_role,
+            merchant_id=merchant_id,
+            reason=guard_result.reason,
+            pattern=guard_result.pattern,
+            snippet=request.message[:120],
+        )
         raise HTTPException(
             status_code=400,
             detail={

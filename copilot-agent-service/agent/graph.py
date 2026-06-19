@@ -96,6 +96,13 @@ def route_after_llm(state: AgentState) -> str:
     return "final_node"
 
 
+def route_after_tool(state: AgentState) -> str:
+    """工具节点之后：高风险动作挂起去 HITL，其余继续回 LLM。"""
+    if state.get("pending_hitl"):
+        return "hitl_node"
+    return "llm_node"
+
+
 def build_graph() -> StateGraph:
     """
     构建 LangGraph ReAct Agent 状态图。
@@ -128,8 +135,15 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # 工具调用完成后回到 LLM 继续推理
-    builder.add_edge("tool_node",       "llm_node")
+    # 工具调用完成后通常回到 LLM；若工具节点拦截到高风险动作，则转 HITL 挂起
+    builder.add_conditional_edges(
+        "tool_node",
+        route_after_tool,
+        {
+            "llm_node": "llm_node",
+            "hitl_node": "hitl_node",
+        },
+    )
 
     # Reflection 完成后回到 LLM（携带反思结果）
     builder.add_edge("reflection_node", "llm_node")

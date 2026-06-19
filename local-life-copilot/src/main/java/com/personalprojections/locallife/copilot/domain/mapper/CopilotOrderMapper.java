@@ -46,6 +46,7 @@ public interface CopilotOrderMapper {
                 o.order_no,
                 o.user_id,
                 o.shop_id,
+                s.merchant_id,
                 o.original_amount,
                 o.coupon_discount,
                 o.order_amount,
@@ -63,6 +64,7 @@ public interface CopilotOrderMapper {
                 ct.discount_type,
                 ct.discount_value
             FROM order_info o
+            LEFT JOIN shop s ON s.id = o.shop_id
             LEFT JOIN payment_order p
                 ON p.order_id = o.id
                 AND p.id = (

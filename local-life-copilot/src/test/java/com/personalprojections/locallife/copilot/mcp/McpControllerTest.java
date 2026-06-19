@@ -283,6 +283,19 @@ class McpControllerTest {
         verify(auditService, never()).recordError(any(), any(), any(), any(), any(), anyLong());
     }
 
+    @Test
+    void toolsCall_csCannotCallShopMetrics_returnsPermissionDenied() throws Exception {
+        stubRegisteredTool("shop_metrics_query", List.of("merchant", "admin"));
+
+        mockMvc.perform(mcpRequest("""
+                {"jsonrpc":"2.0","id":"req-7b","method":"tools/call","params":{"name":"shop_metrics_query","arguments":{"date":"today"}}}
+                """, "cs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.error.message").value("permission_denied"))
+                .andExpect(jsonPath("$.error.data.detail")
+                        .value("角色 cs 无权调用工具 shop_metrics_query，允许角色：[merchant, admin]"));
+    }
+
     // =====================================================================
     // 5. tools/call —— 成功路径：buildContentResult 包装 + 审计成功记录
     // =====================================================================

@@ -91,7 +91,7 @@ public class ShopMetricsQueryTool implements McpTool {
                         "若 order_count=0 且时间是今天，可能是当天尚未有订单，" +
                         "不要误判为数据异常。")
                 .xRequiresHitl(false)
-                .xAllowedRoles(List.of("merchant", "cs", "admin"))
+                .xAllowedRoles(List.of("merchant", "admin"))
                 .build();
     }
 

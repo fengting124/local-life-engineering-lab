@@ -115,15 +115,11 @@ public class QueryOrderTool implements McpTool {
         }
 
         // ---- Step 4：merchant 角色权限验证 ----
-        // 通过 SQL 已经用 JOIN shop + merchant_id 过滤，
-        // 但万一 SQL 写法有问题，这里再做一层应用层校验
         if (ctx.isMerchant() && ctx.getMerchantId() != null) {
-            Long shopId = order.getShopId();
-            if (shopId != null) {
-                // 此处简化：实际需要 SELECT merchant_id FROM shop WHERE id = shopId
-                // 由于 SQL 已经做了 JOIN 过滤，这里仅做日志记录
-                log.debug("[QueryOrderTool] merchant={} 查询订单 shopId={}", ctx.getMerchantId(), shopId);
+            if (!ctx.getMerchantId().equals(order.getMerchantId())) {
+                throw new ToolNotFoundException("订单不存在或无权查询: " + orderNo);
             }
+            log.debug("[QueryOrderTool] merchant={} 查询订单 shopId={}", ctx.getMerchantId(), order.getShopId());
         }
 
         // ---- Step 5：整理返回结果 ----

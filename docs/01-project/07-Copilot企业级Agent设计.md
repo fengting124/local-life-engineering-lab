@@ -213,9 +213,9 @@ Final Answer
 | 工具名 | 类型 | 作用 |
 | --- | --- | --- |
 | `query_order` | 查询 | 查询订单状态、金额、券状态 |
-| `query_payment` | 查询 | 查询支付状态、渠道流水 |
-| `query_coupon_issue_log` | 查询 | 查询券发放日志 |
-| `query_mq_dead_letter` | 查询 | 查询订单相关死信消息 |
+| `query_payment` | 查询 | 查询支付状态、渠道流水，当前仅 `admin` 可直接调用 |
+| `query_coupon_issue_log` | 查询 | 查询券发放日志，当前仅 `admin` 可直接调用 |
+| `query_mq_dead_letter` | 查询 | 查询订单相关死信消息，当前仅 `admin` 可直接调用 |
 | `shop_metrics_query` | 查询 | 查询门店经营数据 |
 | `coupon_policy_lookup` | 查询 | 查询券规则和活动限制 |
 | `knowledge_search` | RAG | 检索商家知识库 |
@@ -619,9 +619,16 @@ Step 6
 
 | 角色 | 工具权限 |
 | --- | --- |
-| `merchant` | 仅可查询自身门店、订单、活动和私有知识 |
-| `cs` | 可查询订单和规则，执行类工具必须审批 |
-| `admin` | 全量查询，高风险动作仍需审计 |
+| `merchant` | 可查自身门店/经营数据/订单/活动规则，订单查询必须受 `merchant_id` 约束 |
+| `cs` | 普通只读工具只开放 `query_order`；退款/补券不是普通直通能力，必须进入 HITL |
+| `admin` | 可使用内部排障读工具；高风险动作仍需 HITL 和审计 |
+
+当前代码落点：
+
+- Python 侧工具可见性：`copilot-agent-service/agent/tool_router.py` 的 `TOOL_ROLE_MAP`。
+- Java MCP 执行边界：各 `McpTool#getDefinition().xAllowedRoles` + `McpController` RBAC。
+- 商家隔离：`QueryOrderTool` 使用 `RbacContext.merchantId` 校验订单所属商家，不信任模型传入的参数。
+- 高风险动作：`agent/nodes.py` 在调用 `execute_refund` / `issue_compensation_coupon` 前生成 `pending_action`，无审批不调用 MCP；Java 工具 schema 也要求 `approval_id`。
 
 工具调用前必须注入身份上下文：
 
@@ -680,6 +687,14 @@ Agent 不能自行生成或覆盖 `merchant_id`。服务端根据登录态注入
 | 编造规则 | RAG 分数低于阈值时拒答 |
 | 高风险动作误执行 | HITL |
 
+已覆盖的注入场景：
+
+- 诱导 Agent 跳过 RBAC/HITL 直接退款或补券。
+- 要求泄露 `X-Internal-Key` / internal key / 内部密钥。
+- 要求跳过审批、伪造审批或绕过权限。
+
+拦截后 `POST /chat` 返回 `BLOCKED_BY_GUARDRAILS`，并写结构化 `security_audit` 日志，可在 Loki 中按 `trace_id` 追踪。
+
 ## 12. Evals 设计
 
 ### 12.1 评测集
@@ -703,6 +718,26 @@ Agent 不能自行生成或覆盖 `merchant_id`。服务端根据登录态注入
 | 平均 token 成本 | 单会话 token 消耗 |
 
 该 6 项指标是 Copilot 评测口径，后续所有设计文档保持一致。
+
+RAG 质量专项评测已经单独落地为 `copilot-agent-service/evals/rag_benchmark.py`：
+
+```bash
+./scripts/run-rag-benchmark.sh --run-name rag-quality-offline
+cd copilot-agent-service
+DEBUG=false ./.venv/bin/python -m evals.rag_benchmark --real --run-name rag-quality-real
+```
+
+当前真实 Docker 链路（Milvus + embedding-service + reranker-service）实测：
+
+| 指标 | 结果 |
+| --- | ---: |
+| Recall@5 before rerank | 1.000 |
+| Recall@5 after rerank | 1.000 |
+| Citation accuracy | 1.000 |
+| Refusal accuracy | 1.000 |
+| Avg rerank delta | 0.000 |
+
+这次评测暴露并修复了一个真实问题：原始 500 字符 chunk 会把“退款/补券处理方案”切断，导致引用准确率下降；当前 `rag.ingest` 将知识库入库 chunk size 调整为 900，保留 50 字符 overlap。
 
 ### 12.3 优化闭环
 

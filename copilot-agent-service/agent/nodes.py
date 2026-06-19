@@ -23,6 +23,8 @@ from config.settings import settings
 
 log = structlog.get_logger(__name__)
 
+HITL_TOOLS = {"execute_refund", "issue_compensation_coupon"}
+
 # =========================================================
 # LLM 工厂（支持多 Provider 切换）
 # =========================================================
@@ -399,6 +401,32 @@ async def tool_node(state: AgentState) -> dict:
 
     if not tool_calls:
         return {"messages": []}
+
+    pending_action = state.get("pending_action") or {}
+    for tool_call in tool_calls:
+        tool_name = tool_call["name"]
+        if tool_name not in HITL_TOOLS:
+            continue
+        approval_id = pending_action.get("approval_id")
+        if not approval_id or pending_action.get("action_type") != tool_name:
+            log.warning(
+                "hitl_required_before_tool",
+                tool=tool_name,
+                session_id=state.get("session_id"),
+                thread_id=state.get("thread_id"),
+            )
+            return {
+                "messages": [],
+                "pending_hitl": True,
+                "pending_action": {
+                    "action_type": tool_name,
+                    "payload": tool_call.get("args", {}),
+                    "reason": "高风险工具调用必须先经过人工审批",
+                },
+                "stop_reason": "pending_approval",
+            }
+        # ponytail: copy only when needed; avoid mutating LangChain's original tool_call args.
+        tool_call["args"] = {**tool_call.get("args", {}), "approval_id": str(approval_id)}
 
     mcp = McpClient(
         user_id=state["user_id"],

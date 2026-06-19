@@ -76,10 +76,28 @@ class TestRbacFilter:
         # 即使上下文有支付确认，merchant 角色也无权看退款工具
         assert len(result) == 0
 
-    def test_cs_can_see_query_payment(self):
-        router = ToolRouter(user_role="cs", user_message="查询支付记录")
-        result = router.route(_tools("query_payment"))
-        assert any(t["name"] == "query_payment" for t in result)
+    def test_cs_read_tools_only_include_query_order(self):
+        router = ToolRouter(user_role="cs", user_message="查询订单")
+        result = router.route(_tools(
+            "query_order",
+            "query_payment",
+            "query_coupon_issue_log",
+            "query_mq_dead_letter",
+            "knowledge_search",
+        ))
+        assert {t["name"] for t in result} == {"query_order"}
+
+    def test_cs_cannot_see_shop_metrics(self):
+        router = ToolRouter(user_role="cs", user_message="昨天 GMV 是多少")
+        result = router.route(_tools("shop_metrics_query", "query_order"))
+        names = {t["name"] for t in result}
+        assert "shop_metrics_query" not in names
+
+    def test_cs_cannot_see_coupon_policy(self):
+        router = ToolRouter(user_role="cs", user_message="优惠券规则是什么")
+        result = router.route(_tools("coupon_policy_lookup", "query_order"))
+        names = {t["name"] for t in result}
+        assert "coupon_policy_lookup" not in names
 
     def test_admin_can_see_all_tools(self):
         router = ToolRouter(user_role="admin", user_message="查询订单")
@@ -157,7 +175,7 @@ class TestContextFilter:
         assert "execute_refund" not in names
 
     def test_refund_shown_after_payment_confirmed(self):
-        """退款工具：对话中有「已付款」确认后才展示。"""
+        """退款工具：对话中有「已付款」确认后才展示；执行前仍必须 HITL。"""
         router = ToolRouter(
             user_role="cs",
             user_message="帮用户退款",
@@ -178,7 +196,7 @@ class TestContextFilter:
         assert len(result) == 0
 
     def test_coupon_tool_shown_after_issue_failure(self):
-        """补券工具：对话中有「未发券」确认后才展示。"""
+        """补券工具：对话中有「未发券」确认后才展示；执行前仍必须 HITL。"""
         router = ToolRouter(
             user_role="cs",
             user_message="给用户补券",
@@ -196,6 +214,4 @@ class TestContextFilter:
         )
         result = router.route(_tools("query_order", "shop_metrics_query", "knowledge_search"))
         names = {t["name"] for t in result}
-        # 这些工具在 diagnosis 或 general 任务里，cs 有权限
-        # 至少 knowledge_search 在 general task 里
-        assert len(result) > 0
+        assert names == {"query_order"}

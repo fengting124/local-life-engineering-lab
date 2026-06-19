@@ -33,8 +33,8 @@ import java.util.Map;
  * 和重试次数，从而判断是投递失败还是消费失败。
  *
  * <h2>权限</h2>
- * <p>此工具只对 cs 和 admin 开放（商家无权查看 MQ 内部状态），
- * 对应订单异常排查是客服/运营的工作场景。
+ * <p>此工具只对 admin 开放；客服只允许查订单摘要，
+ * MQ / Outbox 内部状态保留给管理员排障。
  */
 @Slf4j
 @Component
@@ -76,7 +76,7 @@ public class QueryCouponIssueLogTool implements McpTool {
                         "outbox_status=SENT 且 coupon_status=UNUSED → 消费者处理失败，可能是库存不足或逻辑异常。" +
                         "没有 outbox 记录 → 支付回调事务未完成，Outbox 未写入，需排查 PaymentService 日志。")
                 .xRequiresHitl(false)
-                .xAllowedRoles(List.of("cs", "admin"))  // 商家无权查看 MQ 内部状态
+                .xAllowedRoles(List.of("admin"))
                 .build();
     }
 
