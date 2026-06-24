@@ -1,0 +1,22 @@
+spring:
+  task:
+    scheduling:
+      enabled: false
+  autoconfigure:
+    exclude:
+      - org.apache.rocketmq.spring.autoconfigure.RocketMQAutoConfiguration
+      - org.springframework.boot.autoconfigure.elasticsearch.ElasticsearchClientAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.elasticsearch.ElasticsearchDataAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.elasticsearch.ElasticsearchRepositoriesAutoConfiguration
+
+management:
+  tracing:
+    enabled: false
+
+canal:
+  enabled: false
+
+rocketmq:
+  name-server: ""
+  producer:
+    group: test-disabled

@@ -370,6 +370,8 @@
                 <artifactId>maven-failsafe-plugin</artifactId>
                 <version>3.5.3</version>
                 <configuration>
+                    <!-- Spring Boot repackage runs before failsafe; use target/classes, not the BOOT-INF jar. -->
+                    <classesDirectory>${project.build.outputDirectory}</classesDirectory>
                     <includes>
                         <include>**/*IT.java</include>
                     </includes>
