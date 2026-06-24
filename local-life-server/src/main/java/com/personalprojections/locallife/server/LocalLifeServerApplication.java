@@ -3,7 +3,6 @@ package com.personalprojections.locallife.server;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * LocalLife Server 启动类。
@@ -45,7 +44,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * </pre>
  */
 @SpringBootApplication
-@EnableScheduling
 @MapperScan("com.personalprojections.locallife.server.domain.mapper")
 public class LocalLifeServerApplication {
 
