@@ -189,6 +189,7 @@ curl -X POST http://localhost:8000/chat \
 | [代码级实现地图](docs/01-project/02-代码级实现地图.md) | 接口、类、表、Redis/MQ、测试、面试考点 | 想吃透代码 |
 | [接口规范文档](docs/01-project/10-接口规范文档.md) | 统一响应结构、错误码、鉴权、分页 | 开发时参照 |
 | [Copilot Agent 设计](docs/01-project/07-Copilot企业级Agent设计.md) | MCP+Agent+RAG+HITL 完整设计 | 理解 Copilot |
+| [Agent Runtime 企业化落地计划](docs/01-project/09-AgentRuntime企业化落地计划.md) | 对照当前代码的下一阶段实施路线、优先级和验收标准 | 规划后续工作 |
 | [LocalLife 接口教程](docs/04-notes/LocalLife项目接口教程.md) | 11 章从请求链路到分表的深度教程 | 面试准备 |
 | [Copilot 全链路教程](docs/04-notes/LocalLifeCopilot项目教程.md) | 12 章 MCP/LangGraph/RAG/HITL 教程 | 面试准备 |
 | [后端 + Agent 面试高频题库](docs/04-notes/面试高频题库-后端Agent.md) | 结合面经趋势整理高频问题、追问链和项目答法 | 面试准备 |
