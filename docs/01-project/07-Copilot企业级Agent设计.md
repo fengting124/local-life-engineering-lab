@@ -22,7 +22,7 @@
 | Fast Path | Active | `copilot-agent-service/api/chat.py` |
 | HITL 审批记录 | Partial | `copilot-agent-service/session/hitl.py`、`api/hitl.py` |
 | Checkpoint 持久化 | Partial | `copilot-agent-service/session/checkpointer.py` 已持久化 checkpoint 与 pending writes；仍待真 MySQL 重启恢复 smoke 和官方 interrupt/resume 模式迁移 |
-| RAG + Milvus | Partial | `copilot-agent-service/rag/`；Milvus 故障时仍存在 `Mock 文档` fallback |
+| RAG + Milvus | Partial | `copilot-agent-service/rag/`；Milvus 客户端不可用时返回空候选，知识库无真实候选则拒答；仍待真实故障 smoke 和告警联动 |
 | Guardrails | Active | `copilot-agent-service/guardrails/input_checker.py` |
 | 服务端短时内部 token | Planned | 当前代码仍使用 `X-User-*` 请求头链路 |
 | Agent Run/Event 运行时表 | Planned | 见 `docs/01-project/09-AgentRuntime企业化落地计划.md` |

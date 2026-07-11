@@ -236,7 +236,7 @@
 | MCP 超时 | `McpToolError("tool_timeout")`，可提示重试 | 工具失败恢复 | 按工具设置超时、重试和熔断 |
 | 工具参数错 | 结构化返回 reason/detail/hint | Function Calling 参数修正 | 让 LLM 根据 hint 自动修正一次 |
 | Reranker 服务失败 | fallback 到向量/BM25 分数排序 | RAG 降级 | 增加降级指标和告警 |
-| Milvus 不可用 | 返回 mock 或空结果 | RAG 降级 | 生产应返回不可用或仅 BM25 |
+| Milvus 不可用 | 向量检索返回空候选，不再返回 mock 文档 | RAG 降级 | 无 BM25/真实候选时拒答；生产还应接告警 |
 | Embedding 失败 | 返回零向量 | 工程降级 | 生产改为失败快返或 BM25 only |
 | Checkpointer 失败 | fallback `MemorySaver` | Memory 降级 | 生产启动时强校验 MySQL checkpoint |
 | HITL 拒绝 | 不执行工具，返回拒绝结果 | 安全降级 | 增加拒绝原因沉淀 |

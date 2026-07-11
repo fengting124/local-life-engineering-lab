@@ -13,6 +13,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from rag.pipeline import _rrf_merge, _split_text, _simple_rewrite, retrieve, RagResult
+from rag.vector_store import MilvusVectorStore
 
 
 # =========================================================
@@ -174,6 +175,21 @@ class TestRagResult:
         assert d["doc_count"] == 1
         assert "context_text" in d
         assert d["sources"] == [{"title": "t", "source": "s"}]
+
+
+# =========================================================
+# MilvusVectorStore
+# =========================================================
+
+class TestMilvusVectorStore:
+    def test_search_returns_empty_when_milvus_unavailable(self):
+        """Milvus 不可用时不能返回 Mock 文档，避免 RAG 假成功。"""
+        store = MilvusVectorStore(uri="http://unavailable-milvus:19530", collection_name="local_life_kb")
+
+        with patch.object(store, "_get_client", return_value=None):
+            result = store.search([0.1, 0.2, 0.3], merchant_id=None, top_k=5)
+
+        assert result == []
 
 
 # =========================================================

@@ -188,7 +188,12 @@ class MilvusVectorStore:
         effective_top_k = top_k if top_k is not None else rag_config.top_k_recall
         client = self._get_client()
         if client is None:
-            return self._mock_search()
+            log.warning(
+                "milvus_search_unavailable",
+                reason="Milvus client unavailable",
+                collection=self.collection_name,
+            )
+            return []
 
         if merchant_id is not None:
             filter_expr = (
@@ -221,13 +226,3 @@ class MilvusVectorStore:
         except Exception as e:
             log.error("milvus_search_failed", error=str(e))
             return []
-
-    def _mock_search(self) -> list[dict]:
-        return [{
-            "chunk_id": "mock-001",
-            "doc_id":   "mock-doc-001",
-            "content":  "[Mock] Milvus 未启动，返回 Mock 搜索结果。请检查 MILVUS_URI 配置。",
-            "title":    "Mock 文档",
-            "source":   "mock",
-            "score":    0.5,
-        }]
