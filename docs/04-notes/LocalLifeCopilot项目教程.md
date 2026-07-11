@@ -478,7 +478,7 @@ Step 9: SSE 继续推送，最终 final_answer
 ### 7.3 MySQL Checkpoint 的关键性
 
 如果用默认的 `MemorySaver`（内存），服务重启或崩溃后 thread 状态丢失。
-审批可能需要几小时，期间服务可能重启 → 用 MySQL Checkpoint。
+审批可能需要几小时，期间服务可能重启 → 用 MySQL Checkpoint。当前实现同时保存完整 checkpoint 和 LangGraph pending writes，避免中断附近尚未合并的节点输出在重启后丢失。
 
 ```python
 # session/checkpointer.py
@@ -488,10 +488,14 @@ class AsyncMySQLCheckpointer(BaseCheckpointSaver):
         serialized = self.serde.dumps(checkpoint)
         await db.execute("INSERT INTO langgraph_checkpoint ...")
 
+    async def aput_writes(self, config, writes, task_id, task_path=""):
+        # 把尚未合并到完整 checkpoint 的节点输出存到 langgraph_checkpoint_write 表
+        await db.execute("INSERT INTO langgraph_checkpoint_write ...")
+
     async def aget_tuple(self, config):
-        # 恢复时从数据库读取最新快照
+        # 恢复时从数据库读取最新快照和 pending writes
         row = await db.execute("SELECT ... WHERE thread_id = ?")
-        return CheckpointTuple(checkpoint=self.serde.loads(row.state), ...)
+        return CheckpointTuple(checkpoint=self.serde.loads(row.state), pending_writes=..., ...)
 ```
 
 ---

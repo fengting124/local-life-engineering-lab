@@ -38,8 +38,8 @@
 | 主题 | 当前现象 | 代码入口 |
 | --- | --- | --- |
 | 身份信任链过弱 | Agent 和 MCP 仍直接信任 `X-User-Id/X-User-Role/X-Merchant-Id` | `copilot-agent-service/api/chat.py`、`api/session.py`、`mcp/mcp_client.py`、`local-life-copilot/.../RbacFilter.java` |
-| HITL 恢复绑定不够严 | `/chat/resume` 仍接受客户端 `thread_id`，审批恢复靠前端拼参数 | `copilot-agent-service/api/chat.py`、`api/hitl.py`、`session/hitl.py` |
-| Checkpoint pending writes 未落盘 | `aput_writes()` 仍为空实现 | `copilot-agent-service/session/checkpointer.py` |
+| HITL 恢复绑定 | 当前分支已改为服务端按 `approval_id` 反查 `thread_id`，但还未迁到 LangGraph 官方 `interrupt()/Command(resume=...)` 模式 | `copilot-agent-service/api/chat.py`、`api/hitl.py`、`session/hitl.py` |
+| Checkpoint pending writes | 当前分支已新增 `langgraph_checkpoint_write` 并实现 `aput_writes()` 持久化；仍需真 MySQL 重启恢复 smoke | `copilot-agent-service/session/checkpointer.py`、`local-life-copilot/src/main/resources/db/migration/V102__add_langgraph_checkpoint_writes.sql` |
 | 高风险副作用缺少完整幂等账本 | 退款、补券依赖 `approval_id`，但没有统一 side-effect ledger | `local-life-copilot/.../LocalLifeInternalClient.java`、`local-life-server/.../InternalService.java` |
 | SSE / 错误输出仍有泄露面 | 前端可见工具参数、结果片段和异常文本 | `copilot-agent-service/api/chat.py` |
 | RAG 故障降级不够保守 | 向量检索故障时仍有 “Mock 文档” 兜底路径 | `copilot-agent-service/rag/*` |
@@ -161,7 +161,7 @@
 3. 实现 `agent_run` 和 `agent_event` 两张表：
    - `agent_run` 管状态：`SUBMITTED/RUNNING/WAITING_APPROVAL/COMPLETED/FAILED/CANCELED/EXPIRED`
    - `agent_event` 管事件流：tool call、interrupt、resume、error、final answer
-4. 补齐 `aput_writes()`，让 pending writes 真正持久化。
+4. 补齐 `aput_writes()`，让 pending writes 真正持久化。（当前分支已完成代码、迁移和单元测试）
 5. 捕获 `CancelledError` 和流式断连场景，确保状态和消息成对落盘。
 6. 审批接口改成“条件更新”或版本号更新，避免并发 approve/reject 竞态。
 

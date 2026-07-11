@@ -44,8 +44,19 @@ else
   COPILOT_MIGRATION_DIR="${PROJECT_ROOT}/local-life-copilot/src/main/resources/db/migration"
 fi
 
-# MySQL 命令（带通用参数）
-MYSQL_CMD="mysql -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} --protocol=tcp"
+# MySQL 命令（带通用参数）。
+# 宿主机未安装 mysql CLI 时，优先复用 Compose 里的 local-life-mysql 容器。
+# 这样本地开发者只需要 Docker，不会被一个缺失客户端误导成"MySQL 未就绪"。
+if command -v mysql >/dev/null 2>&1; then
+  MYSQL_CMD="mysql -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} --protocol=tcp"
+elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "local-life-mysql"; then
+  echo "ℹ️  宿主机未安装 mysql CLI，改用 local-life-mysql 容器内 mysql 客户端"
+  MYSQL_CMD="docker exec -i local-life-mysql mysql -u${MYSQL_USER} -p${MYSQL_PASSWORD}"
+else
+  echo "❌ 未找到 mysql CLI，且 local-life-mysql 容器未运行"
+  echo "   请先安装 MySQL 客户端，或执行：docker compose -f infra/docker-compose.dev.yml up -d mysql"
+  exit 1
+fi
 
 echo "================================================"
 echo "  LocalLife 数据库初始化"

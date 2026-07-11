@@ -21,7 +21,7 @@
 | MCP Client 调 Java MCP Server | Active | `copilot-agent-service/mcp/mcp_client.py`、`local-life-copilot/.../McpController.java` |
 | Fast Path | Active | `copilot-agent-service/api/chat.py` |
 | HITL 审批记录 | Partial | `copilot-agent-service/session/hitl.py`、`api/hitl.py` |
-| Checkpoint 持久化 | Partial | `copilot-agent-service/session/checkpointer.py`，`aput_writes()` 仍未完整持久化 pending writes |
+| Checkpoint 持久化 | Partial | `copilot-agent-service/session/checkpointer.py` 已持久化 checkpoint 与 pending writes；仍待真 MySQL 重启恢复 smoke 和官方 interrupt/resume 模式迁移 |
 | RAG + Milvus | Partial | `copilot-agent-service/rag/`；Milvus 故障时仍存在 `Mock 文档` fallback |
 | Guardrails | Active | `copilot-agent-service/guardrails/input_checker.py` |
 | 服务端短时内部 token | Planned | 当前代码仍使用 `X-User-*` 请求头链路 |
@@ -504,7 +504,25 @@ CREATE TABLE langgraph_checkpoint (
 );
 ```
 
-### 9.4 工具调用审计表
+### 9.4 Checkpoint Pending Writes 表
+
+`langgraph_checkpoint_write` 持久化 LangGraph 在节点输出尚未合并到完整 checkpoint 前产生的 pending writes。它解决的是 `interrupt`、并发节点或服务重启场景下“checkpoint 已存在，但部分节点输出还没合并”的恢复缺口。
+
+```sql
+CREATE TABLE langgraph_checkpoint_write (
+  thread_id VARCHAR(64) NOT NULL,
+  checkpoint_id VARCHAR(64) NOT NULL,
+  task_id VARCHAR(128) NOT NULL,
+  task_path VARCHAR(255) NOT NULL DEFAULT '',
+  write_index INT NOT NULL,
+  channel VARCHAR(128) NOT NULL,
+  value LONGTEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (thread_id, checkpoint_id, task_id, write_index)
+);
+```
+
+### 9.5 工具调用审计表
 
 ```sql
 CREATE TABLE tool_audit_log (
