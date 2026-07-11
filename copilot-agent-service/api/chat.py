@@ -26,6 +26,9 @@ from structlog.contextvars import get_contextvars
 from agent.graph import agent_graph
 from agent.state import AgentState
 from config.settings import settings
+from session.hitl import hitl_service
+from session.manager import AsyncSessionLocal, session_manager
+from session.models import AgentSession
 
 log = structlog.get_logger(__name__)
 
@@ -153,9 +156,23 @@ class ChatRequest(BaseModel):
 
 class ResumeRequest(BaseModel):
     """HITL 审批通过后恢复 Agent 的请求体。"""
-    thread_id: str       # 挂起时的 thread ID
+    thread_id: str | None = None   # 挂起时的 thread ID（可选，服务端以 approval 记录为准）
     approval_id: str     # 审批记录 ID
     approved: bool       # True=通过，False=拒绝
+
+
+async def _assert_session_owned_by_user(session_id: int, user_id: int) -> AgentSession:
+    """
+    校验会话归属，防止客户端拿别人的 session_id 污染上下文。
+    """
+    async with AsyncSessionLocal() as db:
+        session = await db.get(AgentSession, session_id)
+
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if session.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权访问此会话")
+    return session
 
 
 # =========================================================
@@ -207,7 +224,6 @@ async def chat(
 
     # ---- Session 自动创建（session_id=0 表示新对话）----
     # 前端可以直接调 /chat 而不必先调 /sessions，更友好
-    from session.manager import session_manager
     actual_session_id = request.session_id
     if actual_session_id == 0:
         actual_session_id = await session_manager.create_session(
@@ -217,6 +233,8 @@ async def chat(
             first_message=request.message,
         )
         log.info("session_auto_created", session_id=actual_session_id)
+    else:
+        await _assert_session_owned_by_user(actual_session_id, user_id)
 
     # ---- Session 持久化：保存用户输入消息（异步，不阻塞 SSE 启动）----
     # 写 agent_message 表（role=user, step_index=0），方便后续会话回放和评测
@@ -395,51 +413,67 @@ async def resume(
       LangGraph 从最新快照恢复，继续执行 hitl_node → END 之后的逻辑。
       这里我们需要额外注入 approval_id 到状态，工具调用时需要它做凭证。
     """
-    from session.hitl import hitl_service
-
     approver_id = int(x_user_id)
+    if x_user_role not in ("cs", "admin"):
+        raise HTTPException(status_code=403, detail="无权恢复审批任务")
+
+    approval = await hitl_service.get_approval(int(request.approval_id))
+    if not approval:
+        raise HTTPException(status_code=404, detail="审批记录不存在")
+    expected_terminal_status = "APPROVED" if request.approved else "REJECTED"
+    if approval.status not in ("PENDING", expected_terminal_status):
+        raise HTTPException(status_code=400, detail=f"审批记录状态为 {approval.status}，无法恢复")
+
+    resolved_thread_id = approval.thread_id
+    if request.thread_id and request.thread_id != resolved_thread_id:
+        log.warning(
+            "resume_thread_mismatch",
+            approval_id=request.approval_id,
+            request_thread_id=request.thread_id,
+            approval_thread_id=resolved_thread_id,
+            approver_id=approver_id,
+        )
+        raise HTTPException(status_code=400, detail="thread_id 与审批记录不匹配")
 
     # ---- Step 1：审批拒绝 ----
     if not request.approved:
-        success = await hitl_service.reject(
-            approval_id=int(request.approval_id),
-            approver_id=approver_id,
-        )
-        if not success:
-            raise HTTPException(status_code=404, detail="审批记录不存在或状态非 PENDING")
+        if approval.status == "PENDING":
+            success = await hitl_service.reject(
+                approval_id=int(request.approval_id),
+                approver_id=approver_id,
+            )
+            if not success:
+                raise HTTPException(status_code=404, detail="审批记录不存在或状态非 PENDING")
 
         # 向前端推送拒绝通知（单次 SSE，不恢复 Agent）
         async def reject_stream():
             yield _sse("final_answer", {
                 "content":    "运营已拒绝此操作，任务终止。如需其他帮助请重新发起会话。",
                 "stop_reason": "hitl_rejected",
-                "thread_id":   request.thread_id,
+                "thread_id":   resolved_thread_id,
             })
 
         return StreamingResponse(reject_stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     # ---- Step 2：查询并通过审批 ----
-    approval = await hitl_service.get_approval(int(request.approval_id))
-    if not approval:
-        raise HTTPException(status_code=404, detail="审批记录不存在")
-    if approval.status != "PENDING":
-        raise HTTPException(status_code=400, detail=f"审批记录状态为 {approval.status}，无法通过")
-
-    ok = await hitl_service.approve(int(request.approval_id), approver_id)
-    if not ok:
-        raise HTTPException(status_code=400, detail="审批操作失败，请重试")
+    if approval.status == "PENDING":
+        ok = await hitl_service.approve(int(request.approval_id), approver_id)
+        if not ok:
+            raise HTTPException(status_code=400, detail="审批操作失败，请重试")
 
     # ---- Step 3：恢复 LangGraph Agent ----
     # 向 Agent state 注入审批结果，Agent 继续执行时可以从 state 获取 approval_id
-    config = {"configurable": {"thread_id": request.thread_id}}
+    config = {"configurable": {"thread_id": resolved_thread_id}}
 
     # LangGraph resume：传入 None 输入（继续执行被 interrupt 挂起的节点）
     # pending_action 中注入 approval_id（工具调用时作为凭证传入）
     resume_input = {
         "pending_hitl":  False,      # 解除挂起
         "pending_action": {
-            **(approval.action_payload or {}),
+            "action_type": approval.action_type,
+            "payload": approval.action_payload or {},
+            "reason": approval.agent_reason,
             "approval_id": str(request.approval_id),
         },
     }
@@ -478,7 +512,7 @@ async def resume(
                         yield _sse("final_answer", {
                             "content":    output["final_answer"],
                             "stop_reason": output.get("stop_reason", "completed"),
-                            "thread_id":   request.thread_id,
+                            "thread_id":   resolved_thread_id,
                         })
 
         except Exception as e:

@@ -123,15 +123,25 @@ Body:
 #### POST /chat/resume — 审批通过后恢复 Agent
 
 ```
+Headers:
+  X-User-Id, X-User-Role        # 必须 cs 或 admin
+
 Body:
   {
-    "thread_id":   "...",    # 挂起时的 thread ID
+    "thread_id":   "...",    # 可选；若传入必须和 approval 记录一致，服务端最终以 approval 记录为准
     "approval_id": "...",    # 审批记录 ID
     "approved":    true      # false = 拒绝，流会推送 final_answer 并结束
   }
 
 Response: SSE 流（同 /chat，继续推送 Agent 后续步骤）
 ```
+
+说明：
+
+- `/chat` 使用已有 `session_id` 时，会先校验该会话是否属于当前用户，防止串写他人会话。
+- `/chat/resume` 不再信任前端单独提供的 `thread_id`，恢复线程以 `approval_id` 对应的审批记录为准。
+- 恢复时会把 `action_type + approval_id + payload` 一起注回 `pending_action`，避免审批通过后再次进入审批循环。
+- `/chat/resume` 兼容两种流程：直接提交 `approved=true/false`，或先由审批工作台调用 `/hitl/{id}/approve|reject` 改状态后再恢复。
 
 ---
 
@@ -157,11 +167,18 @@ Response:
 #### POST /hitl/{id}/approve — 通过审批
 
 ```
+Headers: X-User-Id, X-User-Role（必须 cs 或 admin）
 Body: {"comment": "已核实，退款合理"}
 Response: {"status": "approved", "thread_id": "...", "message": "请调用 /chat/resume 恢复 Agent"}
 ```
 
 #### POST /hitl/{id}/reject — 拒绝审批
+
+```
+Headers: X-User-Id, X-User-Role（必须 cs 或 admin）
+Body: {"comment": "证据不足，拒绝退款"}
+Response: {"status": "rejected", "thread_id": "...", "message": "请调用 /chat/resume（approved=false）通知 Agent"}
+```
 
 ---
 

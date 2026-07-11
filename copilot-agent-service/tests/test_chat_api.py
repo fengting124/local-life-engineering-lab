@@ -16,8 +16,9 @@ import pytest
 from unittest.mock import AsyncMock, patch
 from starlette.testclient import TestClient
 from fastapi import FastAPI
+from fastapi import HTTPException
 
-from api.chat import _sse, _try_fast_path, router as chat_router
+from api.chat import _sse, _try_fast_path, _assert_session_owned_by_user, router as chat_router
 
 
 # =========================================================
@@ -226,3 +227,210 @@ class TestChatEndpointGuardrails:
             headers={"X-User-Id": "1"},  # 缺 X-User-Role
         )
         assert resp.status_code == 422
+
+
+class _FakeAsyncSessionContext:
+    def __init__(self, db):
+        self._db = db
+
+    async def __aenter__(self):
+        return self._db
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeDb:
+    def __init__(self, session_obj):
+        self._session_obj = session_obj
+
+    async def get(self, model, session_id):
+        return self._session_obj
+
+
+class _FakeSession:
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+
+
+class TestSessionOwnership:
+    @pytest.mark.asyncio
+    async def test_assert_session_owned_by_user_rejects_foreign_session(self):
+        fake_db = _FakeDb(_FakeSession(user_id=999))
+        with patch("api.chat.AsyncSessionLocal", return_value=_FakeAsyncSessionContext(fake_db)):
+            with pytest.raises(HTTPException) as exc:
+                await _assert_session_owned_by_user(session_id=123, user_id=1)
+
+        assert exc.value.status_code == 403
+        assert "无权访问此会话" in str(exc.value.detail)
+
+
+class TestResumeEndpoint:
+    def test_resume_rejects_non_cs_admin_role(self):
+        resp = client.post(
+            "/chat/resume",
+            json={"approval_id": "1001", "approved": True},
+            headers={"X-User-Id": "1", "X-User-Role": "merchant"},
+        )
+        assert resp.status_code == 403
+
+    def test_resume_uses_thread_from_approval_and_preserves_action_type(self):
+        approval = type(
+            "Approval",
+            (),
+            {
+                "id": 1001,
+                "status": "PENDING",
+                "thread_id": "thread-from-db",
+                "action_type": "execute_refund",
+                "action_payload": {"order_id": "O-1", "amount": 100, "reason": "用户要求退款"},
+                "agent_reason": "订单异常，需要退款",
+            },
+        )()
+
+        captured = {}
+
+        async def fake_stream(resume_input, config=None, version=None):
+            captured["resume_input"] = resume_input
+            captured["config"] = config
+            yield {
+                "event": "on_chain_end",
+                "name": "resume",
+                "data": {
+                    "output": {
+                        "final_answer": "退款已执行",
+                        "stop_reason": "completed",
+                    }
+                },
+            }
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.hitl_service.approve", AsyncMock(return_value=True)), \
+             patch("api.chat.agent_graph.astream_events", fake_stream):
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1001", "approved": True},
+                headers={"X-User-Id": "9", "X-User-Role": "cs"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.text
+        assert "thread-from-db" in body
+        assert captured["config"] == {"configurable": {"thread_id": "thread-from-db"}}
+        assert captured["resume_input"]["pending_action"]["action_type"] == "execute_refund"
+        assert captured["resume_input"]["pending_action"]["approval_id"] == "1001"
+        assert captured["resume_input"]["pending_action"]["payload"]["order_id"] == "O-1"
+
+    def test_resume_rejects_mismatched_client_thread_id(self):
+        approval = type(
+            "Approval",
+            (),
+            {
+                "id": 1005,
+                "status": "PENDING",
+                "thread_id": "thread-from-db",
+                "action_type": "execute_refund",
+                "action_payload": {"order_id": "O-5"},
+                "agent_reason": "高风险动作",
+            },
+        )()
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.hitl_service.approve", AsyncMock(return_value=True)) as approve_mock:
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1005", "thread_id": "thread-from-client", "approved": True},
+                headers={"X-User-Id": "9", "X-User-Role": "cs"},
+            )
+
+        assert resp.status_code == 400
+        assert "thread_id" in resp.json()["detail"]
+        approve_mock.assert_not_awaited()
+
+    def test_resume_reject_path_uses_thread_from_approval(self):
+        approval = type(
+            "Approval",
+            (),
+            {
+                "id": 1002,
+                "status": "PENDING",
+                "thread_id": "thread-reject",
+                "action_type": "execute_refund",
+                "action_payload": {"order_id": "O-2"},
+                "agent_reason": "高风险动作",
+            },
+        )()
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.hitl_service.reject", AsyncMock(return_value=True)):
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1002", "approved": False},
+                headers={"X-User-Id": "9", "X-User-Role": "admin"},
+            )
+
+        assert resp.status_code == 200
+        assert "thread-reject" in resp.text
+
+    def test_resume_accepts_already_approved_record_from_hitl_workbench(self):
+        approval = type(
+            "Approval",
+            (),
+            {
+                "id": 1003,
+                "status": "APPROVED",
+                "thread_id": "thread-approved",
+                "action_type": "execute_refund",
+                "action_payload": {"order_id": "O-3"},
+                "agent_reason": "工作台已审批通过",
+            },
+        )()
+
+        captured = {}
+
+        async def fake_stream(resume_input, config=None, version=None):
+            captured["config"] = config
+            yield {
+                "event": "on_chain_end",
+                "name": "resume",
+                "data": {"output": {"final_answer": "继续执行", "stop_reason": "completed"}},
+            }
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.hitl_service.approve", AsyncMock(return_value=False)) as approve_mock, \
+             patch("api.chat.agent_graph.astream_events", fake_stream):
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1003", "approved": True},
+                headers={"X-User-Id": "9", "X-User-Role": "cs"},
+            )
+
+        assert resp.status_code == 200
+        assert captured["config"] == {"configurable": {"thread_id": "thread-approved"}}
+        approve_mock.assert_not_awaited()
+
+    def test_resume_accepts_already_rejected_record_from_hitl_workbench(self):
+        approval = type(
+            "Approval",
+            (),
+            {
+                "id": 1004,
+                "status": "REJECTED",
+                "thread_id": "thread-rejected",
+                "action_type": "execute_refund",
+                "action_payload": {"order_id": "O-4"},
+                "agent_reason": "工作台已拒绝",
+            },
+        )()
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.hitl_service.reject", AsyncMock(return_value=False)) as reject_mock:
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1004", "approved": False},
+                headers={"X-User-Id": "9", "X-User-Role": "admin"},
+            )
+
+        assert resp.status_code == 200
+        assert "thread-rejected" in resp.text
+        reject_mock.assert_not_awaited()

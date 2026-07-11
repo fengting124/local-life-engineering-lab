@@ -78,7 +78,7 @@ Agent Service 是独立 Python FastAPI 服务，Swagger UI 由 FastAPI 自动生
 | 接口 | 说明 |
 | --- | --- |
 | `POST /chat` | 发起 Agent 对话，SSE 流式返回步骤和最终答案 |
-| `POST /chat/resume` | HITL 审批后恢复 Agent 执行 |
+| `POST /chat/resume` | HITL 审批后恢复 Agent 执行（仅 `cs/admin` 可调用，线程以审批记录为准） |
 | `POST /sessions` | 创建会话 |
 | `GET /hitl/pending` | 查询待审批任务 |
 
@@ -89,6 +89,14 @@ X-User-Id: 880000000001
 X-User-Role: merchant
 X-Merchant-Id: 880000100001
 ```
+
+补充约束：
+
+1. `POST /chat` 在传入已有 `session_id` 时，会校验该会话必须属于当前 `X-User-Id`。
+2. `POST /chat/resume` 需要 `X-User-Role` 为 `cs` 或 `admin`。
+3. `POST /chat/resume` 的 `thread_id` 只是可选辅助字段；服务端会以 `approval_id` 查到的审批记录作为最终恢复线程。
+4. 审批工作台接口 `/hitl/pending`、`/hitl/{id}`、`/hitl/{id}/approve`、`/hitl/{id}/reject` 都需要 `X-User-Id` 和 `X-User-Role=cs/admin`。
+5. `/chat/resume` 支持审批记录已经是 `APPROVED/REJECTED` 的情况，适配“工作台先审批，再恢复 Agent”的前端流程。
 
 ## 生产环境建议
 
