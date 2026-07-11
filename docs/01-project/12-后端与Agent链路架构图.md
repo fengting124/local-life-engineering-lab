@@ -1,5 +1,11 @@
 # 后端链路与 Agent 链路架构图
 
+- Status: Active
+- Type: Explanation
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: Compose、服务代码
+
 本文给面试、交接和设计评审使用，重点展示 LocalLife 如何把传统后端能力安全地提供给 AI Agent。
 
 ## 0. 当前本地 Docker Compose 组件关系

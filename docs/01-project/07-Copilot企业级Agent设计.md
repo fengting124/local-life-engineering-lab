@@ -1,10 +1,35 @@
 # Copilot 企业级 Agent 设计
 
+- Status: Active
+- Type: Explanation
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: `copilot-agent-service/agent`, `copilot-agent-service/api`, `copilot-agent-service/session`, `copilot-agent-service/rag`, `local-life-copilot/src/main/java`
+
 ## 1. 文档目标
 
-本文档将 `LocalLife Copilot` 从普通 AI 问答应用升级为企业级 Agent 应用，明确它在业务系统中的定位、架构、数据分工、工具协议、RAG、HITL、评测和治理方案。
+本文档说明 `LocalLife Copilot` 当前的企业级 Agent 架构、边界、已实现能力和仍未完成的运行时治理项。
 
-该文档先作为第二阶段设计蓝图，不立刻影响当前 `LocalLife` 主项目编码节奏。当前优先级仍然是完成传统后端主链路。
+本文不再作为早期蓝图使用。下一阶段尚未完成的运行时加固工作记录在 [Agent Runtime 企业化落地计划](./09-AgentRuntime企业化落地计划.md)。
+
+## 1.1 当前实现状态
+
+| 能力 | 状态 | 证据 |
+| --- | --- | --- |
+| Python Agent Service | Active | `copilot-agent-service/main.py`、`api/chat.py` |
+| LangGraph ReAct 主循环 | Active | `copilot-agent-service/agent/graph.py`、`agent/nodes.py` |
+| MCP Client 调 Java MCP Server | Active | `copilot-agent-service/mcp/mcp_client.py`、`local-life-copilot/.../McpController.java` |
+| Fast Path | Active | `copilot-agent-service/api/chat.py` |
+| HITL 审批记录 | Partial | `copilot-agent-service/session/hitl.py`、`api/hitl.py` |
+| Checkpoint 持久化 | Partial | `copilot-agent-service/session/checkpointer.py`，`aput_writes()` 仍未完整持久化 pending writes |
+| RAG + Milvus | Partial | `copilot-agent-service/rag/`；Milvus 故障时仍存在 `Mock 文档` fallback |
+| Guardrails | Active | `copilot-agent-service/guardrails/input_checker.py` |
+| 服务端短时内部 token | Planned | 当前代码仍使用 `X-User-*` 请求头链路 |
+| Agent Run/Event 运行时表 | Planned | 见 `docs/01-project/09-AgentRuntime企业化落地计划.md` |
+
+## 1.2 历史计划处理
+
+早期“第 7 周至第 10 周”等周计划不再作为当前事实维护。本文保留长期有效的架构边界和设计取舍；阶段计划以后统一放入 Plan 文档或 archive。
 
 ## 2. 战略定位
 
@@ -798,7 +823,7 @@ Copilot 必须在 `LocalLife` 主项目核心链路完成后启动。
 
 | 任务 | 输出 |
 | --- | --- |
-| 评测集 | 50 条用例 |
+| 评测集 | 小型可回归用例集，规模以 `evals/` 数据集为准 |
 | 评测脚本 | 6 项指标 |
 | Trace | LangSmith + 自建审计 |
 | Guardrails | 输入、输出、工具、权限 |

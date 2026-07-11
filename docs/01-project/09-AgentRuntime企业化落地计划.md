@@ -1,5 +1,11 @@
 # Agent Runtime 企业化落地计划
 
+- Status: Draft
+- Type: Plan
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: 当前代码和外部规范
+
 ## 1. 文档目标
 
 这份文档回答两个问题：
@@ -124,7 +130,7 @@
 2. 保留现有 MCP security smoke，并扩展为权限矩阵回归。
 3. 文档同步更新：
    - [Swagger在线接口文档](../04-notes/Swagger在线接口文档.md)
-   - [面试高频题库](../04-notes/面试高频题库-后端Agent.md)
+   - [面试高频题库](../05-interview/面试高频题库-后端Agent.md)
 
 完成标志：身份由服务端解析，MCP 不再把客户端 header 当作最终可信来源。
 
@@ -402,4 +408,4 @@
 1. 先看 [Copilot 企业级 Agent 设计](./07-Copilot企业级Agent设计.md)，理解项目为什么这样拆层。
 2. 再看本文，理解当前实现距离真正企业化还差哪几步。
 3. 然后回到 [LocalLife Copilot 全链路教程](../04-notes/LocalLifeCopilot项目教程.md) 对照代码。
-4. 最后看 [AgentOps 评测与 GenAI 追踪](../04-notes/AgentOps评测与GenAI追踪.md)、[企业级日志系统](../04-notes/企业级日志系统.md) 和 [面试高频题库](../04-notes/面试高频题库-后端Agent.md)，把运行时、排障和面试表达串起来。
+4. 最后看 [AgentOps 评测与 GenAI 追踪](../04-notes/AgentOps评测与GenAI追踪.md)、[企业级日志系统](../04-notes/企业级日志系统.md) 和 [面试高频题库](../05-interview/面试高频题库-后端Agent.md)，把运行时、排障和面试表达串起来。

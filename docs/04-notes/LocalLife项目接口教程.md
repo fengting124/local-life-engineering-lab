@@ -1,5 +1,11 @@
 # LocalLife 项目接口全链路教程
 
+- Status: Active
+- Type: Tutorial
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: Controller/Service
+
 > 目标：读完这篇文档，你应该能对着面试官把任何一个接口从头讲到尾，不用背，靠真正理解。
 
 ---

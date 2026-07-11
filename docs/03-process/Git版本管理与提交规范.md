@@ -1,5 +1,11 @@
 # Git 版本管理与提交规范
 
+- Status: Active
+- Type: Reference
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: Git 历史和协作约定
+
 > 目标：让每次提交都能回答「为什么改、改了什么、怎么验证、还有什么风险」。
 > 本项目历史提交已经大量使用详细 commit body，本文件把这个习惯固化为项目规范。
 

@@ -1,5 +1,11 @@
 # AgentOps 评测与 GenAI 追踪
 
+- Status: Active
+- Type: Explanation
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: `evals/`、trace 代码
+
 本文记录 LocalLife Copilot 的两个生产化增强：AgentOps Eval Center 和 GenAI Trace。
 
 ## 1. AgentOps Eval Center

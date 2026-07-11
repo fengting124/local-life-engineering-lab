@@ -1,0 +1,40 @@
+name: docs CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'docs/**'
+      - 'scripts/check_docs.py'
+      - '.github/workflows/docs-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'docs/**'
+      - 'scripts/check_docs.py'
+      - '.github/workflows/docs-ci.yml'
+
+concurrency:
+  group: docs-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run documentation checks
+        run: |
+          python scripts/check_docs.py
+          git diff --check

@@ -1,39 +1,92 @@
 # 文档中心
 
-本文档中心按“需求 → 设计 → 代码实现 → Agent → 测试 → 面试”组织。学习时优先从 [LocalLife 学习路线](./00-学习路线.md) 开始。
+- Status: Active
+- Type: Overview
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: `docs/文档规范.md`
 
-## 推荐阅读顺序
+本文档中心按文档类型和目录职责组织。第一次阅读项目时，从 [LocalLife 学习路线](./00-学习路线.md) 开始；维护文档时，先阅读 [文档规范](./文档规范.md) 和 [文档清单](./文档清单.md)。
 
-1. [LocalLife 学习路线](./00-学习路线.md)
-2. [项目边界文档](./01-project/03-项目边界文档.md)
-3. [领域模型文档](./01-project/04-领域模型文档.md)
-4. [ER 图文档](./01-project/05-ER图文档.md)
-5. [接口规范文档](./01-project/10-接口规范文档.md)
-6. [LocalLife Server 代码关系图](./04-notes/LocalLifeServer代码关系图.md)
-7. [代码级实现地图](./01-project/02-代码级实现地图.md)
-8. [核心时序图文档](./01-project/06-核心时序图文档.md)
-9. [后端与 Agent 链路架构图](./01-project/12-后端与Agent链路架构图.md)
-10. [Copilot 企业级 Agent 设计](./01-project/07-Copilot企业级Agent设计.md)
-11. [Agent Runtime 企业化落地计划](./01-project/09-AgentRuntime企业化落地计划.md)
-12. [企业级日志系统](./04-notes/企业级日志系统.md)
-13. [AgentOps 评测与 GenAI 追踪](./04-notes/AgentOps评测与GenAI追踪.md)
-14. [测试总览与结果汇总](./04-notes/测试总览与结果汇总.md)
-15. [面试演示脚本](./demo/面试演示脚本.md)
-16. [后端 + Agent 面试高频题库](./04-notes/面试高频题库-后端Agent.md)
-17. [深度拷打与面试指南](./04-notes/深度拷打与面试指南.md)
+## 入口
 
-## 目录说明
+- [学习路线](./00-学习路线.md)：新读者从运行、业务、后端、Agent、测试和面试依次学习。
+- [文档规范](./文档规范.md)：文档类型、生命周期、证据规则、写作规则和校验命令。
+- [文档清单](./文档清单.md)：当前仓库 Markdown 文档的职责、状态和维护动作。
+- [ADR 索引](./adr/README.md)：长期架构决策记录。
 
-| 目录 | 内容 |
-| --- | --- |
-| `01-project/` | 需求边界、领域模型、ER、接口规范、代码地图、架构设计、下一阶段路线图 |
-| `02-environment/` | 环境搭建、仓库结构、WSL 本地开发 |
-| `03-process/` | Git 提交与协作规范 |
-| `04-notes/` | 深度接口教程、Agent 教程、测试总结、面试题库 |
-| `demo/` | 面试演示脚本 |
+## 按类型导航
 
-## 保留原则
+### Overview
 
-- 保留能帮助理解需求、代码、原理和面试表达的文档。
-- 删除纯历史交接、过程提示词、旧调研堆积和重复架构文档。
-- 如果以后新增文档，必须能挂到上面的阅读顺序里，否则优先放进代码注释或 commit message。
+- [项目 README](../README.md)
+- [文档中心](./README.md)
+- [项目文档索引](./01-project/00-文档索引.md)
+- [ADR 索引](./adr/README.md)
+
+### Tutorial
+
+- [LocalLife 学习路线](./00-学习路线.md)
+- [LocalLife Copilot 项目教程](./04-notes/LocalLifeCopilot项目教程.md)
+- [LocalLife 项目接口教程](./04-notes/LocalLife项目接口教程.md)
+
+### How-to
+
+- [环境搭建](./02-environment/01-环境搭建.md)
+- [WSL 本地开发指南](./02-environment/WSL本地开发指南.md)
+- [Swagger 在线接口文档](./04-notes/Swagger在线接口文档.md)
+- [企业级日志系统](./04-notes/企业级日志系统.md)
+
+### Reference
+
+- [代码级实现地图](./01-project/02-代码级实现地图.md)
+- [ER 图文档](./01-project/05-ER图文档.md)
+- [接口规范文档](./01-project/10-接口规范文档.md)
+- [测试总览与结果汇总](./04-notes/测试总览与结果汇总.md)
+- [Git 版本管理与提交规范](./03-process/Git版本管理与提交规范.md)
+
+### Explanation
+
+- [项目边界文档](./01-project/03-项目边界文档.md)
+- [领域模型文档](./01-project/04-领域模型文档.md)
+- [核心时序图文档](./01-project/06-核心时序图文档.md)
+- [Copilot 企业级 Agent 设计](./01-project/07-Copilot企业级Agent设计.md)
+- [后端与 Agent 链路架构图](./01-project/12-后端与Agent链路架构图.md)
+- [技术选型文档](./01-project/08-技术选型文档.md)
+
+### Plan
+
+- [Agent Runtime 企业化落地计划](./01-project/09-AgentRuntime企业化落地计划.md)
+
+### Interview
+
+- [面试演示脚本](./05-interview/面试演示脚本.md)
+- [后端 + Agent 面试高频题库](./05-interview/面试高频题库-后端Agent.md)
+- [深度拷打与面试指南](./05-interview/深度拷打与面试指南.md)
+
+## 目录职责
+
+```text
+docs/
+├── README.md
+├── 00-学习路线.md
+├── 文档规范.md
+├── 文档清单.md
+├── 01-project/       项目边界、领域、接口、架构、数据与设计
+├── 02-environment/   可重复执行的环境和部署操作指南
+├── 03-process/       Git、协作、质量和维护流程
+├── 04-notes/         深度教程和技术解释
+├── 05-interview/     面试题库、演示脚本和表达材料
+├── adr/              架构决策
+├── templates/        文档模板
+└── archive/          已替代或历史文档
+```
+
+## 文档维护命令
+
+```bash
+python scripts/check_docs.py
+git diff --check
+```
+
+文档变更如果涉及 API、数据库、环境变量、Agent Graph、HITL、Checkpoint、RAG、权限、测试数字或部署方式，必须同步更新对应 Active 文档。

@@ -1,5 +1,11 @@
 # Swagger 在线接口文档
 
+- Status: Active
+- Type: How-to
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: OpenAPI、FastAPI、Springdoc
+
 本文记录 LocalLife 项目的在线 API 文档入口、使用方式和生产开放建议。
 
 ## 本地访问地址

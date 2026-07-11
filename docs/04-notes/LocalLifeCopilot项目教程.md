@@ -1,5 +1,11 @@
 # LocalLife Copilot 全链路教程
 
+- Status: Active
+- Type: Tutorial
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: Agent/MCP 代码
+
 > 目标：读完这篇文档，你应该能对着面试官把 Copilot 的每一层从头讲到尾，不用背，靠真正理解。
 >
 > 对标文档：[LocalLife 接口教程](LocalLife项目接口教程.md)
@@ -59,13 +65,13 @@ response = client.messages.create(
 | 维度 | 普通 AI 问答 | LocalLife Copilot |
 |------|------------|-----------------|
 | 数据来源 | 模型训练数据 | MySQL 实时查询 |
-| 工具 | 无 | 10 个分级工具，动态路由 |
+| 工具 | 无 | 分级工具集合，按角色和任务动态路由 |
 | 多步推理 | 单轮问答 | ReAct 最多 15 步 |
 | 高风险动作 | 无约束 | HITL 强制人审 |
 | 失败处理 | 瞎编 | 结构化错误 + 自动修正路径 |
 | 上下文恢复 | 不能 | MySQL Checkpoint |
 | 审计追溯 | 无 | 每条消息 + 每次工具全量记录 |
-| 质量评估 | 人工感觉 | 50 条 Eval 用例 + 6 项指标 |
+| 质量评估 | 人工感觉 | 小型 Eval 用例集 + 多项质量指标 |
 
 ---
 
@@ -199,15 +205,24 @@ POST /mcp
 
 如果 MCP Server 直接信任，这就是越权攻击。
 
-### 4.2 解决：身份由服务端注入，Agent 不能覆盖
+### 4.2 当前实现：Agent Service 注入身份 Header，MCP Server 做 RBAC
 
-**Agent Service 侧**（发起调用时）：
+当前实现不是完整 IAM。`copilot-agent-service` 的 `/chat`、`/sessions` 和 `/hitl` 接口仍直接读取 `X-User-Id`、`X-User-Role`、`X-Merchant-Id`。Agent 调 MCP 时，`mcp_client.py` 再把这些身份值传给 `local-life-copilot`。
+
+本分支已经补了两类边界：
+
+- `/chat` 使用已有 `session_id` 时校验会话归属。
+- `/chat/resume` 以 `approval_id` 对应的审批记录为准，不信任客户端单独传入的 `thread_id`。
+
+但当前身份来源仍是请求头，生产环境还需要网关、登录态或短时内部 token 来替代客户端可构造 Header。
+
+**Agent Service 侧**（发起 MCP 调用时）：
 ```python
 # mcp_client.py
 headers = {
-    "X-User-Id":     "10001",    # 从 Agent 会话身份解析后注入
+    "X-User-Id":     "10001",    # 当前由 Agent Service 按请求上下文注入
     "X-User-Role":   "merchant", # merchant / cs / admin
-    "X-Merchant-Id": "20001",    # merchant 角色的商家边界，Agent 不能自填
+    "X-Merchant-Id": "20001",    # merchant 角色的商家边界
 }
 ```
 
@@ -217,7 +232,7 @@ headers = {
 RbacContext ctx = RbacContext.builder()
     .userId(Long.parseLong(userIdStr))
     .role(role)
-    .merchantId(merchantId)  // 从 Header 读，Agent 传来的，服务端决定信任
+    .merchantId(merchantId)  // 当前从 Header 读取
     .build();
 RbacContext.set(ctx);  // ThreadLocal，工具执行时取
 ```
@@ -230,6 +245,8 @@ if (ctx.isMerchant()) {
     // Agent 即使传了别的 merchant_id 参数，也被 SQL 过滤掉
 }
 ```
+
+后续目标架构见 [Agent Runtime 企业化落地计划](../01-project/09-AgentRuntime企业化落地计划.md)：用服务端签发的短时 bearer token 携带 `aud`、`scope`、`tenant`、`merchant` 和 `run_id`，MCP Server 校验 token 后再执行工具。
 
 ### 4.3 三个角色的权限边界
 
@@ -328,9 +345,9 @@ Self-Reflection 每 5 步触发：
 
 ## 第 6 章：工具分级和 Tool Router——不是所有工具都给 LLM 看
 
-### 6.1 为什么不把 10 个工具都给 LLM？
+### 6.1 为什么不把全部工具都给 LLM？
 
-每个工具 Schema 约 300-500 token。10 个工具 = 3000-5000 token 的系统提示。
+每个工具 Schema 都会占用提示词上下文；工具越多，系统提示越长。
 - 更多 token → 更慢 → 更贵
 - 更多无关工具 → 更高概率「选错工具」
 - 权限泄露：merchant 角色不应该看到 `execute_refund` 的工具描述
@@ -623,12 +640,12 @@ if re.search(r'(jdbc:|mysql://|password\s*=)', output, re.IGNORECASE):
 | **平均延迟** | 端到端 P50 / P99 | 够不够快？ |
 | **Token 成本** | 单会话平均 token 数（×模型单价≈美元） | 贵不贵？ |
 
-### 10.3 50 条评测用例分类
+### 10.3 评测用例分类
 
 | 类别 | 数量 | 示例 |
 |------|------|------|
-| 简单数据查询 | 15 | 「昨天卖了多少钱？」（单工具） |
-| 订单异常排查 | 15 | 「ORDER_12345 支付了但没收到券」（多步） |
+| 简单数据查询 | 按数据集维护 | 「昨天卖了多少钱？」（单工具） |
+| 订单异常排查 | 按数据集维护 | 「ORDER_12345 支付了但没收到券」（多步） |
 | 知识问答 | 15 | 「退款规则是什么？」（RAG） |
 | 边界场景 | 5 | Prompt Injection、查不存在的订单、批量退款请求 |
 
