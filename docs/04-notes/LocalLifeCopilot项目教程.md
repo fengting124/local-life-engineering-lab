@@ -502,7 +502,7 @@ X-User-Id: 9001
 X-User-Role: merchant
 ```
 
-它只允许 run 创建者读取，返回 `events` 和 `next_after_sequence`。前端断线后可以从最后已消费的 `sequence_index` 继续拉。注意边界：现在还没把前端自动续拉 UI 做完，也还没迁到 LangGraph 官方 `interrupt()/Command(resume=...)` 模式。
+它只允许 run 创建者读取，返回 `events` 和 `next_after_sequence`。前端断线后可以从最后已消费的 `sequence_index` 继续拉。静态 Chat UI 已做最小续拉：实时 SSE 读取异常时，用 `session_started` 里的 `run_id` 和本地 `lastEventSequence` 调这个接口补后续事件。注意边界：这不是完整离线消息队列，也还没迁到 LangGraph 官方 `interrupt()/Command(resume=...)` 模式。
 
 ### 7.3 MySQL Checkpoint 的关键性
 
@@ -1074,7 +1074,7 @@ data: {
 1. 对短期任务状态，靠 Checkpoint，而不是靠 prompt 里塞聊天记录。
 2. 对上下文超限，提前触发 Auto-Compact，并保留最近 N 条消息。
 3. 对关键业务约束，不只放自然语言摘要，还要结构化进 state，例如 `pending_action`、`user_role`、`merchant_id`。
-4. 对长输出，SSE 事件按 step 推送，关键事件同步写入 `agent_event`，后端已提供按 `run_id + sequence_index` 的回放接口；生产还要接入前端断线自动续拉。
+4. 对长输出，SSE 事件按 step 推送，关键事件同步写入 `agent_event`，后端已提供按 `run_id + sequence_index` 的回放接口，静态 Chat UI 会在流式读取异常时做一次 best-effort 续拉。
 
 ### 13.6 场景题：MCP、Function Calling、Skill 到底怎么区分？
 

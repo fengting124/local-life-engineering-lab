@@ -485,6 +485,7 @@ async def chat(
             payload = {
                 "session_id": str(actual_session_id),
                 "thread_id":  thread_id,
+                "run_id":     run_id,
                 "trace_id":   request_trace_id,
             }
             await _safe_append_runtime_event(
@@ -552,6 +553,7 @@ async def chat(
         payload = {
             "session_id": str(actual_session_id),
             "thread_id":  thread_id,
+            "run_id":     run_id,
             "trace_id":   request_trace_id,
         }
         await _safe_append_runtime_event(

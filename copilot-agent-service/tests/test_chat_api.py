@@ -539,6 +539,7 @@ class TestChatRuntimeEvents:
 
         assert resp.status_code == 200
         assert "event: final_answer" in resp.text
+        assert '"run_id": "run-001"' in resp.text
         runtime.create_run.assert_awaited_once()
         statuses = [
             call.args[1]

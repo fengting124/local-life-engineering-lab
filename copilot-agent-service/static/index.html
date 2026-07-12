@@ -271,6 +271,7 @@
 const API_BASE = 'http://localhost:8000';
 let userId = 10001, role = 'merchant', merchantId = 20001;
 let currentSessionId = 0, currentThreadId = null;
+let currentRunId = null, lastEventSequence = -1;
 let isStreaming = false;
 let pendingHitl = null;
 
@@ -329,6 +330,8 @@ function loadSession(id) {
 function newChat() {
   currentSessionId = 0;
   currentThreadId = null;
+  currentRunId = null;
+  lastEventSequence = -1;
   clearMessages();
   pendingHitl = null;
 }
@@ -508,27 +511,35 @@ async function consumeSseStream(response) {
   let buffer = '';
   let stepCards = {};
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    const lines = buffer.split('\n');
-    buffer = lines.pop(); // keep incomplete line
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // keep incomplete line
 
-    for (const line of lines) {
-      if (line.startsWith('event:')) {
-        currentEvent = line.slice(6).trim();
-      } else if (line.startsWith('data:')) {
-        const data = line.slice(5).trim();
-        try {
-          const payload = JSON.parse(data);
-          handleSseEvent(currentEvent, payload, { answerId, answerEl, stepCards },
-            (updates) => { answerId = updates.answerId ?? answerId; answerEl = updates.answerEl ?? answerEl; });
-        } catch(e) { /* not json */ }
-        currentEvent = null;
+      for (const line of lines) {
+        if (line.startsWith('event:')) {
+          currentEvent = line.slice(6).trim();
+        } else if (line.startsWith('data:')) {
+          const data = line.slice(5).trim();
+          try {
+            const payload = JSON.parse(data);
+            handleSseEvent(currentEvent, payload, { answerId, answerEl, stepCards },
+              (updates) => { answerId = updates.answerId ?? answerId; answerEl = updates.answerEl ?? answerEl; });
+            markLiveEventConsumed(currentEvent, payload);
+          } catch(e) { /* not json */ }
+          currentEvent = null;
+        }
       }
     }
+  } catch(e) {
+    await replayPendingEvents({ answerId, answerEl, stepCards }, (updates) => {
+      answerId = updates.answerId ?? answerId;
+      answerEl = updates.answerEl ?? answerEl;
+    });
   }
 
   // clean up streaming cursor
@@ -536,6 +547,31 @@ async function consumeSseStream(response) {
     const cur = answerEl.querySelector('.streaming');
     if (cur) { cur.classList.remove('streaming'); }
   }
+}
+
+function markLiveEventConsumed(event, payload) {
+  if (event === 'session_started') {
+    currentRunId = payload.run_id || currentRunId;
+    lastEventSequence = 0;
+    return;
+  }
+  if (currentRunId && event) {
+    lastEventSequence += 1;
+  }
+}
+
+async function replayPendingEvents(state, update) {
+  if (!currentRunId) return;
+  try {
+    const url = `${API_BASE}/chat/runs/${currentRunId}/events?after_sequence=${lastEventSequence}&limit=100`;
+    const res = await fetch(url, { headers: headers() });
+    if (!res.ok) return;
+    const data = await res.json();
+    for (const item of data.events || []) {
+      handleSseEvent(item.event_type, item.payload || {}, state, update);
+      lastEventSequence = item.sequence_index;
+    }
+  } catch(e) { /* replay best effort */ }
 }
 
 function handleSseEvent(event, payload, state, update) {
@@ -546,6 +582,7 @@ function handleSseEvent(event, payload, state, update) {
     case 'session_started':
       currentSessionId = parseInt(payload.session_id) || currentSessionId;
       currentThreadId = payload.thread_id;
+      currentRunId = payload.run_id || currentRunId;
       break;
 
     case 'agent_step':
