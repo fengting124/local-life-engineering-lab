@@ -31,6 +31,7 @@ from config.settings import settings
 from session.hitl import hitl_service
 from session.manager import AsyncSessionLocal, session_manager
 from session.models import AgentSession
+from session.runtime import runtime_store
 
 log = structlog.get_logger(__name__)
 
@@ -232,6 +233,77 @@ async def _assert_session_owned_by_user(session_id: int, user_id: int) -> AgentS
     return session
 
 
+async def _safe_create_runtime_run(
+    *,
+    session_id: int,
+    thread_id: str,
+    user_id: int,
+    user_role: str,
+    merchant_id: int | None,
+    input_message: str,
+    trace_id: str | None,
+) -> str | None:
+    try:
+        return await runtime_store.create_run(
+            session_id=session_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            user_role=user_role,
+            merchant_id=merchant_id,
+            input_message=input_message,
+            trace_id=trace_id,
+        )
+    except Exception as e:
+        log.warning("agent_run_create_failed", error=str(e))
+        return None
+
+
+async def _safe_mark_runtime_status(
+    run_id: str | None,
+    status: str,
+    *,
+    error_message: str | None = None,
+) -> None:
+    if not run_id:
+        return
+    try:
+        await runtime_store.mark_run_status(
+            run_id,
+            status,
+            error_message=error_message,
+        )
+    except Exception as e:
+        log.warning("agent_run_status_update_failed", run_id=run_id, status=status, error=str(e))
+
+
+async def _safe_append_runtime_event(
+    *,
+    run_id: str | None,
+    session_id: int,
+    thread_id: str,
+    sequence_index: int,
+    event_type: str,
+    event_name: str | None,
+    payload: dict,
+    trace_id: str | None,
+) -> None:
+    if not run_id:
+        return
+    try:
+        await runtime_store.append_event(
+            run_id=run_id,
+            session_id=session_id,
+            thread_id=thread_id,
+            sequence_index=sequence_index,
+            event_type=event_type,
+            event_name=event_name,
+            payload=payload,
+            trace_id=trace_id,
+        )
+    except Exception as e:
+        log.warning("agent_event_append_failed", run_id=run_id, event_type=event_type, error=str(e))
+
+
 # =========================================================
 # POST /chat —— 发起对话（SSE 流式返回）
 # =========================================================
@@ -306,6 +378,19 @@ async def chat(
         # DB 不可用时不阻塞主流程，仅日志告警
         log.warning("session_save_failed", error=str(e))
 
+    # 初始化 thread/run：thread_id 给 LangGraph；run_id 给企业运行时排障入口
+    import uuid
+    thread_id = request.thread_id or str(uuid.uuid4())
+    run_id = await _safe_create_runtime_run(
+        session_id=actual_session_id,
+        thread_id=thread_id,
+        user_id=user_id,
+        user_role=user_role,
+        merchant_id=merchant_id,
+        input_message=request.message,
+        trace_id=request_trace_id,
+    )
+
     # ---- Fast Path 路由：简单确定性查询跳过 ReAct 完整循环 ----
     # 动机（面试说法）：「简单指标查询（今天/昨天/本月 + 销售额/订单数）
     #   不需要 LLM 推理，直接调工具返回。绕过 ReAct 可将延迟从 3s 降至 <500ms，
@@ -321,28 +406,49 @@ async def chat(
         user_id=user_id,
     )
     if fast_path_result is not None:
-        import uuid as _uuid
-        fp_thread_id = request.thread_id or str(_uuid.uuid4())
-
         async def fast_stream():
-            yield _sse("session_started", {
+            seq = 0
+            await _safe_mark_runtime_status(run_id, "RUNNING")
+            payload = {
                 "session_id": str(actual_session_id),
-                "thread_id":  fp_thread_id,
+                "thread_id":  thread_id,
                 "trace_id":   request_trace_id,
-            })
-            yield _sse("final_answer", {
+            }
+            await _safe_append_runtime_event(
+                run_id=run_id,
+                session_id=actual_session_id,
+                thread_id=thread_id,
+                sequence_index=seq,
+                event_type="session_started",
+                event_name=None,
+                payload=payload,
+                trace_id=request_trace_id,
+            )
+            seq += 1
+            yield _sse("session_started", payload)
+
+            payload = {
                 "content":    fast_path_result,
                 "stop_reason": "fast_path",
-                "thread_id":   fp_thread_id,
-            })
+                "thread_id":   thread_id,
+            }
+            await _safe_append_runtime_event(
+                run_id=run_id,
+                session_id=actual_session_id,
+                thread_id=thread_id,
+                sequence_index=seq,
+                event_type="final_answer",
+                event_name=None,
+                payload=payload,
+                trace_id=request_trace_id,
+            )
+            await _safe_mark_runtime_status(run_id, "COMPLETED")
+            yield _sse("final_answer", payload)
 
         return StreamingResponse(fast_stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     # 初始化 Agent 状态
-    import uuid
-    thread_id = request.thread_id or str(uuid.uuid4())
-
     initial_state: AgentState = {
         "messages":       [HumanMessage(content=request.message)],
         "step_count":     0,
@@ -368,11 +474,25 @@ async def chat(
     async def event_stream():
         """LangGraph astream_events 转换为 SSE 格式。"""
         # 立即推送 session_id 和 thread_id（前端记录，方便后续 /chat/resume）
-        yield _sse("session_started", {
+        seq = 0
+        await _safe_mark_runtime_status(run_id, "RUNNING")
+        payload = {
             "session_id": str(actual_session_id),
             "thread_id":  thread_id,
             "trace_id":   request_trace_id,
-        })
+        }
+        await _safe_append_runtime_event(
+            run_id=run_id,
+            session_id=actual_session_id,
+            thread_id=thread_id,
+            sequence_index=seq,
+            event_type="session_started",
+            event_name=None,
+            payload=payload,
+            trace_id=request_trace_id,
+        )
+        seq += 1
+        yield _sse("session_started", payload)
         try:
             # astream_events 以事件流形式输出每个节点的执行过程
             async for event in agent_graph.astream_events(
@@ -385,44 +505,128 @@ async def chat(
                 # ---- 节点开始事件 ----
                 if event_type == "on_chain_start":
                     if event_name == "llm_node":
-                        yield _sse("agent_step", {
+                        payload = {
                             "step": event_data.get("input", {}).get("step_count", 0),
                             "node": "llm_node",
-                        })
+                        }
+                        await _safe_append_runtime_event(
+                            run_id=run_id,
+                            session_id=actual_session_id,
+                            thread_id=thread_id,
+                            sequence_index=seq,
+                            event_type="agent_step",
+                            event_name=event_name,
+                            payload=payload,
+                            trace_id=request_trace_id,
+                        )
+                        seq += 1
+                        yield _sse("agent_step", payload)
 
                 # ---- LLM 流式输出 ----
                 elif event_type == "on_chat_model_stream":
                     chunk = event_data.get("chunk", {})
                     content = getattr(chunk, "content", "")
                     if content:
-                        yield _sse("stream", {"content": content})
+                        payload = {"content": content}
+                        await _safe_append_runtime_event(
+                            run_id=run_id,
+                            session_id=actual_session_id,
+                            thread_id=thread_id,
+                            sequence_index=seq,
+                            event_type="stream",
+                            event_name=event_name,
+                            payload=payload,
+                            trace_id=request_trace_id,
+                        )
+                        seq += 1
+                        yield _sse("stream", payload)
 
                 # ---- 工具调用开始 ----
                 elif event_type == "on_tool_start":
-                    yield _sse("tool_call", _safe_tool_call_event(event_name, event_data.get("input", {})))
+                    payload = _safe_tool_call_event(event_name, event_data.get("input", {}))
+                    await _safe_append_runtime_event(
+                        run_id=run_id,
+                        session_id=actual_session_id,
+                        thread_id=thread_id,
+                        sequence_index=seq,
+                        event_type="tool_call",
+                        event_name=event_name,
+                        payload=payload,
+                        trace_id=request_trace_id,
+                    )
+                    seq += 1
+                    yield _sse("tool_call", payload)
 
                 # ---- 工具调用结束 ----
                 elif event_type == "on_tool_end":
-                    yield _sse("tool_result", _safe_tool_result_event(event_name, event_data.get("output", "")))
+                    payload = _safe_tool_result_event(event_name, event_data.get("output", ""))
+                    await _safe_append_runtime_event(
+                        run_id=run_id,
+                        session_id=actual_session_id,
+                        thread_id=thread_id,
+                        sequence_index=seq,
+                        event_type="tool_result",
+                        event_name=event_name,
+                        payload=payload,
+                        trace_id=request_trace_id,
+                    )
+                    seq += 1
+                    yield _sse("tool_result", payload)
 
                 # ---- 节点结束（检查 Final Answer / HITL）----
                 elif event_type == "on_chain_end":
                     output = event_data.get("output", {})
                     if isinstance(output, dict):
                         if output.get("final_answer"):
-                            yield _sse("final_answer", {
+                            payload = {
                                 "content": output["final_answer"],
                                 "stop_reason": output.get("stop_reason", "completed"),
                                 "thread_id": thread_id,
-                            })
+                            }
+                            await _safe_append_runtime_event(
+                                run_id=run_id,
+                                session_id=actual_session_id,
+                                thread_id=thread_id,
+                                sequence_index=seq,
+                                event_type="final_answer",
+                                event_name=event_name,
+                                payload=payload,
+                                trace_id=request_trace_id,
+                            )
+                            seq += 1
+                            await _safe_mark_runtime_status(run_id, "COMPLETED")
+                            yield _sse("final_answer", payload)
                         if output.get("pending_hitl"):
-                            yield _sse("hitl_request", _safe_hitl_request_event(
-                                thread_id, output.get("pending_action", {})
-                            ))
+                            payload = _safe_hitl_request_event(thread_id, output.get("pending_action", {}))
+                            await _safe_append_runtime_event(
+                                run_id=run_id,
+                                session_id=actual_session_id,
+                                thread_id=thread_id,
+                                sequence_index=seq,
+                                event_type="hitl_request",
+                                event_name=event_name,
+                                payload=payload,
+                                trace_id=request_trace_id,
+                            )
+                            seq += 1
+                            await _safe_mark_runtime_status(run_id, "WAITING_APPROVAL")
+                            yield _sse("hitl_request", payload)
 
         except Exception as e:
             log.error("agent_stream_error", error=str(e), exc_info=True)
-            yield _sse("error", _safe_error_event(e))
+            payload = _safe_error_event(e)
+            await _safe_append_runtime_event(
+                run_id=run_id,
+                session_id=actual_session_id,
+                thread_id=thread_id,
+                sequence_index=seq,
+                event_type="error",
+                event_name=None,
+                payload=payload,
+                trace_id=request_trace_id,
+            )
+            await _safe_mark_runtime_status(run_id, "FAILED", error_message=str(e))
+            yield _sse("error", payload)
 
     return StreamingResponse(
         event_stream(),

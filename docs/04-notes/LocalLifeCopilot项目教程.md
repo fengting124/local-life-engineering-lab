@@ -487,6 +487,15 @@ SSE 是展示通道，不是审计或数据导出接口。当前实现中：
 - `error` 只给通用错误码和文案，详细异常进入服务端日志。
 - `hitl_request` 只给动作类型和审批 ID，不推退款参数、手机号、internal key 等 payload。
 
+为了避免“浏览器断开就不知道 Agent 刚才做了什么”，当前分支还新增了运行时事实表：
+
+| 表 | 记录什么 | 排障时怎么用 |
+| --- | --- | --- |
+| `agent_run` | 一次用户请求触发的 Agent 执行，状态包括 `SUBMITTED/RUNNING/WAITING_APPROVAL/COMPLETED/FAILED` | 先看这次 run 是否卡在审批、失败还是已完成。 |
+| `agent_event` | 这次 run 内按顺序产生的事件，如 `tool_call`、`tool_result`、`hitl_request`、`final_answer`、`error` | 看事件序列，判断是模型没选对工具、工具失败、审批卡住，还是 SSE 前端展示问题。 |
+
+注意边界：现在已经做到 `/chat` 一边推 SSE 一边把关键事件落库；还没做完整的事件重放 API，也还没迁到 LangGraph 官方 `interrupt()/Command(resume=...)` 模式。
+
 ### 7.3 MySQL Checkpoint 的关键性
 
 如果用默认的 `MemorySaver`（内存），服务重启或崩溃后 thread 状态丢失。
@@ -1057,7 +1066,7 @@ data: {
 1. 对短期任务状态，靠 Checkpoint，而不是靠 prompt 里塞聊天记录。
 2. 对上下文超限，提前触发 Auto-Compact，并保留最近 N 条消息。
 3. 对关键业务约束，不只放自然语言摘要，还要结构化进 state，例如 `pending_action`、`user_role`、`merchant_id`。
-4. 对长输出，SSE 事件按 step 推送，最终状态仍以 session/thread 为准；生产可增加 resume cursor。
+4. 对长输出，SSE 事件按 step 推送，关键事件同步写入 `agent_event`；生产还要增加按 `run_id + sequence_index` 的 resume cursor。
 
 ### 13.6 场景题：MCP、Function Calling、Skill 到底怎么区分？
 

@@ -25,7 +25,7 @@
 | RAG + Milvus | Partial | `copilot-agent-service/rag/`；Milvus 客户端不可用时返回空候选，知识库无真实候选则拒答；仍待真实故障 smoke 和告警联动 |
 | Guardrails | Active | `copilot-agent-service/guardrails/input_checker.py` |
 | 服务端短时内部 token | Planned | 当前代码仍使用 `X-User-*` 请求头链路 |
-| Agent Run/Event 运行时表 | Planned | 见 `docs/01-project/09-AgentRuntime企业化落地计划.md` |
+| Agent Run/Event 运行时表 | Partial | `agent_run`/`agent_event` 已记录 `/chat` 运行状态和 SSE 事件；仍待按 `run_id` 重放、断线恢复和官方 interrupt/resume 迁移 |
 
 ## 1.2 历史计划处理
 
@@ -522,7 +522,46 @@ CREATE TABLE langgraph_checkpoint_write (
 );
 ```
 
-### 9.5 工具调用审计表
+### 9.5 Agent Run/Event 运行时表
+
+`agent_run` 记录一次用户请求触发的 Agent 执行，不等同于整个聊天会话；`agent_event` 记录这次执行中推给前端的关键 SSE 事件。它们的价值是让排障从“看浏览器有没有收到流”变成“查数据库里的运行事实”。
+
+```sql
+CREATE TABLE agent_run (
+  id VARCHAR(64) PRIMARY KEY,
+  session_id BIGINT NOT NULL,
+  thread_id VARCHAR(64) NOT NULL,
+  trace_id VARCHAR(64),
+  user_id BIGINT NOT NULL,
+  user_role VARCHAR(20) NOT NULL,
+  merchant_id BIGINT,
+  status VARCHAR(32) NOT NULL,
+  input_summary VARCHAR(255),
+  error_message TEXT,
+  started_at DATETIME,
+  finished_at DATETIME,
+  INDEX idx_agent_run_session_time (session_id, created_at),
+  INDEX idx_agent_run_status_time (status, created_at),
+  INDEX idx_agent_run_trace (trace_id)
+);
+
+CREATE TABLE agent_event (
+  id BIGINT PRIMARY KEY,
+  run_id VARCHAR(64) NOT NULL,
+  session_id BIGINT NOT NULL,
+  thread_id VARCHAR(64) NOT NULL,
+  sequence_index INT NOT NULL,
+  event_type VARCHAR(50) NOT NULL,
+  event_name VARCHAR(100),
+  payload JSON,
+  trace_id VARCHAR(64),
+  UNIQUE KEY uk_agent_event_run_seq (run_id, sequence_index)
+);
+```
+
+当前代码在 `/chat` Fast Path 和 LangGraph SSE 流里同步写入 `session_started`、`agent_step`、`stream`、`tool_call`、`tool_result`、`hitl_request`、`final_answer`、`error` 等事件。生产级还需要补事件重放 API、断线 cursor 和官方 `interrupt()/Command(resume=...)` 恢复语义。
+
+### 9.6 工具调用审计表
 
 ```sql
 CREATE TABLE tool_audit_log (
@@ -542,7 +581,7 @@ CREATE TABLE tool_audit_log (
 );
 ```
 
-### 9.5 Redis Key
+### 9.7 Redis Key
 
 | Key | Value | TTL | 用途 |
 | --- | --- | --- | --- |
@@ -705,6 +744,8 @@ Agent 不能自行生成或覆盖 `merchant_id`。服务端根据登录态注入
 4. RAG 检索。
 5. HITL 审批。
 6. 最终回答。
+
+`trace_id` 同时写入 `agent_run` 和 `agent_event`。排障时可以先按 `trace_id` 查日志，再反查 run 状态和事件顺序；也可以从某个异常 `run_id` 找到对应 SSE 事件、工具调用和 HITL 审批。
 
 工具审计必须记录：
 

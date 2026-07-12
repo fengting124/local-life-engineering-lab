@@ -514,3 +514,39 @@ class TestResumeEndpoint:
         assert resp.status_code == 200
         assert "thread-rejected" in resp.text
         reject_mock.assert_not_awaited()
+
+
+class TestChatRuntimeEvents:
+    def test_fast_path_records_agent_run_and_events(self):
+        runtime = AsyncMock()
+        runtime.create_run.return_value = "run-001"
+
+        with (
+            patch("api.chat.session_manager.create_session", new=AsyncMock(return_value=1001)),
+            patch("api.chat.session_manager.save_message", new=AsyncMock()),
+            patch("api.chat._try_fast_path", new=AsyncMock(return_value="今天 GMV 为 500 元")),
+            patch("api.chat.runtime_store", runtime),
+        ):
+            resp = client.post(
+                "/chat",
+                json={"message": "今天销售额是多少"},
+                headers={
+                    "X-User-Id": "9001",
+                    "X-User-Role": "merchant",
+                    "X-Merchant-Id": "8001",
+                },
+            )
+
+        assert resp.status_code == 200
+        assert "event: final_answer" in resp.text
+        runtime.create_run.assert_awaited_once()
+        statuses = [
+            call.args[1]
+            for call in runtime.mark_run_status.await_args_list
+        ]
+        assert statuses == ["RUNNING", "COMPLETED"]
+        event_types = [
+            call.kwargs["event_type"]
+            for call in runtime.append_event.await_args_list
+        ]
+        assert event_types == ["session_started", "final_answer"]
