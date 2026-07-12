@@ -37,7 +37,7 @@
 
 | 主题 | 当前现象 | 代码入口 |
 | --- | --- | --- |
-| 身份信任链过弱 | Agent 和 MCP 仍直接信任 `X-User-Id/X-User-Role/X-Merchant-Id` | `copilot-agent-service/api/chat.py`、`api/session.py`、`mcp/mcp_client.py`、`local-life-copilot/.../RbacFilter.java` |
+| 身份信任链仍需生产化 | Agent 入口侧仍直接读取 `X-User-*`，但 Agent -> MCP 已对身份上下文加 HMAC、时间戳和 5 分钟重放窗口 | `copilot-agent-service/api/chat.py`、`api/session.py`、`mcp/mcp_client.py`、`local-life-copilot/.../RbacFilter.java` |
 | HITL 恢复绑定 | 当前分支已改为服务端按 `approval_id` 反查 `thread_id`，但还未迁到 LangGraph 官方 `interrupt()/Command(resume=...)` 模式 | `copilot-agent-service/api/chat.py`、`api/hitl.py`、`session/hitl.py` |
 | Checkpoint pending writes | 当前分支已新增 `langgraph_checkpoint_write` 并实现 `aput_writes()` 持久化；仍需真 MySQL 重启恢复 smoke | `copilot-agent-service/session/checkpointer.py`、`local-life-copilot/src/main/resources/db/migration/V102__add_langgraph_checkpoint_writes.sql` |
 | 高风险副作用幂等账本 | 当前分支已在 `local-life-server` 新增 `side_effect_ledger`，退款/补券执行前按 `operation_type + approval_id` 幂等检查，成功后写结果快照 | `local-life-server/.../InternalService.java`、`SideEffectLedgerMapper`、`V10__add_side_effect_ledger.sql` |
@@ -116,10 +116,11 @@
 
 1. 前端不再直接传业务身份头作为真实身份来源。
 2. Agent 服务接入统一登录态解析，得到 `PrincipalContext`。
-3. Agent 调 MCP 时改为短时 bearer token，而不是透传 `X-User-*`。
-4. token 至少带 `sub`、`tenant_id`、`merchant_id`、`role`、`scopes`、`aud`、`exp`、`run_id`。
-5. MCP 服务端按 scope 和资源归属校验权限。
-6. 退款、补券类写操作通过审批后签发一次性临时 scope，例如 `refund.execute.approval:<id>`。
+3. 当前已完成 Agent -> MCP HMAC 保护：`X-User-* + X-Agent-Timestamp` 由共享密钥签名，MCP Server 验签后才注入 `RbacContext`。
+4. 下一阶段把 Agent 调 MCP 改为短时 bearer token，而不是长期共享密钥。
+5. token 至少带 `sub`、`tenant_id`、`merchant_id`、`role`、`scopes`、`aud`、`exp`、`run_id`。
+6. MCP 服务端按 scope 和资源归属校验权限。
+7. 退款、补券类写操作通过审批后签发一次性临时 scope，例如 `refund.execute.approval:<id>`。
 
 ### A.4 测试与验收
 

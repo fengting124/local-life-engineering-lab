@@ -31,11 +31,28 @@ mvn spring-boot:run
 # 验证健康
 curl http://localhost:8081/actuator/health
 
+# 本地直连 /mcp 调试时需要给身份上下文签名。
+# 真实业务链路中该签名由 Python Agent Service 自动生成。
+# 先设置 MCP_CONTEXT_SIGNING_SECRET，并确保它与 local-life-copilot 配置一致。
+: "${MCP_CONTEXT_SIGNING_SECRET:?set MCP_CONTEXT_SIGNING_SECRET first}"
+sign_mcp_headers() {
+  local user_id="$1"
+  local role="$2"
+  local merchant_id="${3:-}"
+  local ts
+  local sig
+  ts="$(date +%s)"
+  sig="$(printf '%s\n%s\n%s\n%s' "$user_id" "$role" "$merchant_id" "$ts" \
+    | openssl dgst -sha256 -hmac "$MCP_CONTEXT_SIGNING_SECRET" -hex \
+    | awk '{print $2}')"
+  printf -- '-H X-User-Id:%s -H X-User-Role:%s -H X-Agent-Timestamp:%s -H X-Agent-Signature:%s' \
+    "$user_id" "$role" "$ts" "$sig"
+}
+
 # 测试工具列表
 curl -X POST http://localhost:8081/mcp \
   -H "Content-Type: application/json" \
-  -H "X-User-Id: 10001" \
-  -H "X-User-Role: merchant" \
+  $(sign_mcp_headers 10001 merchant 20001) \
   -H "X-Merchant-Id: 20001" \
   -d '{"jsonrpc":"2.0","id":"1","method":"tools/list","params":{}}'
 
@@ -44,8 +61,7 @@ curl -X POST http://localhost:8081/mcp \
 # 但实现按业务订单号 order_no 查询，例如 BULK2026061000000000。
 curl -X POST http://localhost:8081/mcp \
   -H "Content-Type: application/json" \
-  -H "X-User-Id: 881000000000" \
-  -H "X-User-Role: merchant" \
+  $(sign_mcp_headers 881000000000 merchant 881100000000) \
   -H "X-Merchant-Id: 881100000000" \
   -d '{"jsonrpc":"2.0","id":"2","method":"tools/call","params":{"name":"query_order","arguments":{"order_id":"BULK2026061000000000"}}}'
 ```
@@ -71,8 +87,18 @@ curl -X POST http://localhost:8081/mcp \
 | `X-User-Id` | ✅ | 调用者用户 ID |
 | `X-User-Role` | ✅ | 角色：`merchant` / `cs` / `admin` |
 | `X-Merchant-Id` | merchant 角色必填 | 商家 ID，服务端强制注入，Agent 不能伪造 |
+| `X-Agent-Timestamp` | ✅ | Agent 生成的 Epoch 秒时间戳，默认 5 分钟有效 |
+| `X-Agent-Signature` | ✅ | `X-User-* + timestamp` 的 HMAC-SHA256 签名 |
 | `X-Session-Id` | 可选 | 会话 ID，写入审计日志 |
 | `X-Thread-Id` | 可选 | LangGraph thread ID，写入审计日志 |
+
+签名 canonical string 为：
+
+```text
+user_id + "\n" + role + "\n" + merchant_id_or_empty + "\n" + timestamp
+```
+
+`MCP_CONTEXT_SIGNING_SECRET` 必须在 Python Agent Service 和本服务之间保持一致。生产环境应通过 Secret Manager、Kubernetes Secret 或 CI/CD 变量注入，不使用仓库默认值。
 
 ### 结构化错误响应
 

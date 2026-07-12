@@ -34,7 +34,7 @@ def _new_pact() -> Pact:
 
 
 def _client_at(server) -> McpClient:
-    client = McpClient(user_id=1, user_role="merchant")
+    client = McpClient(user_id=1, user_role="merchant", merchant_id=42)
     client._base_url = str(server.url).rstrip("/")  # 指向 Pact mock，而非真实 MCP Server
     return client
 
@@ -48,6 +48,9 @@ def test_tools_call_success_contract():
         .with_header("Content-Type", "application/json")
         .with_header("X-User-Id", "1")
         .with_header("X-User-Role", "merchant")
+        .with_header("X-Merchant-Id", "42")
+        .with_header("X-Agent-Timestamp", match.regex("1710000000", regex=r"\d{10}"))
+        .with_header("X-Agent-Signature", match.regex("0" * 64, regex=r"[0-9a-f]{64}"))
         .with_body(
             {
                 "jsonrpc": "2.0",
@@ -85,6 +88,9 @@ def test_tools_call_business_error_contract():
         .with_header("Content-Type", "application/json")
         .with_header("X-User-Id", "1")
         .with_header("X-User-Role", "merchant")
+        .with_header("X-Merchant-Id", "42")
+        .with_header("X-Agent-Timestamp", match.regex("1710000000", regex=r"\d{10}"))
+        .with_header("X-Agent-Signature", match.regex("0" * 64, regex=r"[0-9a-f]{64}"))
         .with_body(
             {
                 "jsonrpc": "2.0",

@@ -65,6 +65,8 @@ MCP Server 的核心入口是 `POST /mcp`，请求体使用 JSON-RPC 2.0。
 ```text
 X-User-Id: 10001
 X-User-Role: admin
+X-Agent-Timestamp: 1710000000
+X-Agent-Signature: HMAC-SHA256(...)
 ```
 
 如果角色是 `merchant`，还需要：
@@ -73,7 +75,27 @@ X-User-Role: admin
 X-Merchant-Id: 20001
 ```
 
-这些 Header 在真实链路中由 Python Agent Service 注入，MCP Server 只信任内网调用。
+这些 Header 在真实链路中由 Python Agent Service 注入。`X-Agent-Signature` 的 canonical string 是 `user_id + "\n" + role + "\n" + merchant_id_or_empty + "\n" + timestamp`，MCP Server 验签后才信任 `X-User-*`。
+
+本地手工 curl 可先定义：
+
+```bash
+# 先设置 MCP_CONTEXT_SIGNING_SECRET，并确保它与 local-life-copilot 配置一致。
+: "${MCP_CONTEXT_SIGNING_SECRET:?set MCP_CONTEXT_SIGNING_SECRET first}"
+sign_mcp_headers() {
+  local user_id="$1"
+  local role="$2"
+  local merchant_id="${3:-}"
+  local ts
+  local sig
+  ts="$(date +%s)"
+  sig="$(printf '%s\n%s\n%s\n%s' "$user_id" "$role" "$merchant_id" "$ts" \
+    | openssl dgst -sha256 -hmac "$MCP_CONTEXT_SIGNING_SECRET" -hex \
+    | awk '{print $2}')"
+  printf -- '-H X-User-Id:%s -H X-User-Role:%s -H X-Agent-Timestamp:%s -H X-Agent-Signature:%s' \
+    "$user_id" "$role" "$ts" "$sig"
+}
+```
 
 ## Copilot Agent Service 调用
 

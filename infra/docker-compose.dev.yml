@@ -101,6 +101,7 @@ services:
         -Dspring.data.redis.database=1
         -Dlocallife.server.url=http://locallife-server:8080
         -Dlocallife.server.internal-key=${INTERNAL_API_KEY:-local-life-internal-secret}
+        -Dmcp.context-signing.secret=${MCP_CONTEXT_SIGNING_SECRET:-local-life-mcp-context-secret}
     depends_on:
       locallife-server:
         condition: service_healthy
@@ -126,6 +127,7 @@ services:
       DEPLOY_ENV: "${DEPLOY_ENV:-dev}"
       SERVICE_NAME: "copilot-agent"
       MCP_SERVER_URL: "http://locallife-copilot:8081"
+      MCP_CONTEXT_SIGNING_SECRET: "${MCP_CONTEXT_SIGNING_SECRET:-local-life-mcp-context-secret}"
       DB_URL: "mysql+aiomysql://root:${MYSQL_ROOT_PASSWORD:-123456}@mysql:3306/local_life"
       REDIS_URL: "redis://redis:6379/2"
       MILVUS_URI: "http://milvus:19530"

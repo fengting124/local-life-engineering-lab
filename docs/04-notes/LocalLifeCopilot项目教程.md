@@ -205,16 +205,17 @@ POST /mcp
 
 如果 MCP Server 直接信任，这就是越权攻击。
 
-### 4.2 当前实现：Agent Service 注入身份 Header，MCP Server 做 RBAC
+### 4.2 当前实现：Agent Service 注入身份 Header + HMAC，MCP Server 做 RBAC
 
 当前实现不是完整 IAM。`copilot-agent-service` 的 `/chat`、`/sessions` 和 `/hitl` 接口仍直接读取 `X-User-Id`、`X-User-Role`、`X-Merchant-Id`。Agent 调 MCP 时，`mcp_client.py` 再把这些身份值传给 `local-life-copilot`。
 
-本分支已经补了两类边界：
+已补的边界：
 
 - `/chat` 使用已有 `session_id` 时校验会话归属。
 - `/chat/resume` 以 `approval_id` 对应的审批记录为准，不信任客户端单独传入的 `thread_id`。
+- Agent 调 MCP 时会对 `X-User-Id/X-User-Role/X-Merchant-Id/X-Agent-Timestamp` 生成 HMAC-SHA256 签名，MCP Server 在 `RbacFilter` 中验签后才信任身份 Header。
 
-但当前身份来源仍是请求头，生产环境还需要网关、登录态或短时内部 token 来替代客户端可构造 Header。
+但当前身份来源仍是 Agent Service 收到的请求头，生产环境还需要网关、登录态或短时内部 token 来替代客户端可构造 Header。HMAC 解决的是“Agent 到 MCP 这一跳不能被随便伪造”，不等于完整登录鉴权。
 
 **Agent Service 侧**（发起 MCP 调用时）：
 ```python
@@ -223,12 +224,14 @@ headers = {
     "X-User-Id":     "10001",    # 当前由 Agent Service 按请求上下文注入
     "X-User-Role":   "merchant", # merchant / cs / admin
     "X-Merchant-Id": "20001",    # merchant 角色的商家边界
+    "X-Agent-Timestamp": "1710000000",
+    "X-Agent-Signature": "hmac_sha256(...)",
 }
 ```
 
 **MCP Server 侧**（RbacFilter.java）：
 ```java
-// 解析 Header → ThreadLocal
+// 先校验 X-Agent-Signature，再解析 Header → ThreadLocal
 RbacContext ctx = RbacContext.builder()
     .userId(Long.parseLong(userIdStr))
     .role(role)
@@ -247,6 +250,8 @@ if (ctx.isMerchant()) {
 ```
 
 后续目标架构见 [Agent Runtime 企业化落地计划](../01-project/09-AgentRuntime企业化落地计划.md)：用服务端签发的短时 bearer token 携带 `aud`、`scope`、`tenant`、`merchant` 和 `run_id`，MCP Server 校验 token 后再执行工具。
+
+面试说法：「MCP Server 不能直接相信 `X-User-*`，否则任何人只要能访问 8081 就能伪造管理员。当前项目在 Agent -> MCP 内部调用上加了共享密钥 HMAC 和 5 分钟时间窗，防止身份 Header 被伪造或重放；再往企业生产走，会把入口身份换成 JWT/网关 Principal，并用 mTLS 或服务网格确认服务身份。」
 
 ### 4.3 三个角色的权限边界
 

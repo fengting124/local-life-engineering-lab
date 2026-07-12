@@ -104,7 +104,7 @@
 | 初始化 | `McpClient.initialize()` | 握手确认 Java MCP Server 可用 | MCP initialize |
 | 工具列表 | `McpClient.list_tools()` | 获取工具 Schema，300 秒 TTL 缓存 | 工具发现、Prompt 成本优化 |
 | 工具调用 | `McpClient.call_tool()` | 发起 `tools/call`，提取 `content[0].text` | Tool Calling |
-| 身份透传 | `McpClient._headers()` | 传 `X-User-Id`、`X-User-Role`、`X-Merchant-Id`、trace | 安全上下文、链路追踪 |
+| 身份透传 | `McpClient._headers()` | 传 `X-User-Id`、`X-User-Role`、`X-Merchant-Id`、trace，并生成 HMAC 签名 | 安全上下文、服务间认证、链路追踪 |
 | 错误结构 | `McpToolError` | 区分参数错误、超时、内部错误 | Agent 失败恢复 |
 
 面试讲法：Function Calling 更像模型输出一个函数名和参数；MCP 更像独立工具服务协议。本项目 Python Agent 通过 MCP Client 调 Java MCP Server，Java 侧统一做工具注册、权限、限流、审计和业务访问。
@@ -112,12 +112,12 @@
 当前不足：
 
 - `ToolAuditService` 是 `@Async`，但普通 `ThreadLocal` 的 `RbacContext` 不会自动传播到异步线程，审计里用户信息可能为空。
-- MCP Server 依赖 Python Agent 注入身份 Header，生产上不能暴露公网，最好加 HMAC 或网关内网认证。
+- Agent Service 入口侧仍直接读取请求 Header，生产上需要接网关/JWT/登录态；MCP Server 仍不能暴露公网。
 
 优化方案：
 
 - 在进入异步审计前显式捕获 userId/role/merchantId，作为参数传入。
-- 给 MCP 请求加内部签名、时间戳和重放保护。
+- 当前已给 Agent -> MCP 请求加内部 HMAC、时间戳和 5 分钟重放窗口；下一步可升级为短时 bearer token 或 mTLS。
 - 将工具错误码和重试策略标准化，帮助 Agent 判断是否重试。
 
 ## Tool Router

@@ -26,6 +26,9 @@
         },
         "headers": {
           "Content-Type": "application/json",
+          "X-Agent-Signature": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Agent-Timestamp": "1710000000",
+          "X-Merchant-Id": "42",
           "X-User-Id": "1",
           "X-User-Role": "merchant"
         },
@@ -37,6 +40,26 @@
                 {
                   "match": "regex",
                   "regex": "^([0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12})$"
+                }
+              ]
+            }
+          },
+          "header": {
+            "X-Agent-Signature": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "[0-9a-f]{64}"
+                }
+              ]
+            },
+            "X-Agent-Timestamp": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "\\d{10}"
                 }
               ]
             }
@@ -107,6 +130,9 @@
         },
         "headers": {
           "Content-Type": "application/json",
+          "X-Agent-Signature": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Agent-Timestamp": "1710000000",
+          "X-Merchant-Id": "42",
           "X-User-Id": "1",
           "X-User-Role": "merchant"
         },
@@ -118,6 +144,26 @@
                 {
                   "match": "regex",
                   "regex": "^([0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12})$"
+                }
+              ]
+            }
+          },
+          "header": {
+            "X-Agent-Signature": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "[0-9a-f]{64}"
+                }
+              ]
+            },
+            "X-Agent-Timestamp": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "\\d{10}"
                 }
               ]
             }

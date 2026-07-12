@@ -51,7 +51,7 @@ curl http://localhost:8000/health
 - Java/Springdoc 兼容 JSON：`http://localhost:8000/v3/api-docs`
 
 **最低运行环境**：只需 MySQL + Redis + local-life-copilot（:8081）。
-Milvus 非必须（不可用时 knowledge_search 返回 Mock 结果，其他功能正常）。
+Milvus 非必须（不可用时 knowledge_search 返回空候选，上层按无证据拒答，不返回 Mock 文档）。
 
 ---
 
@@ -264,7 +264,7 @@ copilot-agent-service/
 │   ├── chat.py               POST /chat（SSE）+ POST /chat/resume（HITL 恢复）
 │   ├── session.py            Session CRUD API
 │   └── hitl.py               审批工作台 API
-├── mcp/mcp_client.py         异步 HTTP 客户端（调用 Java MCP Server）
+├── mcp/mcp_client.py         异步 HTTP 客户端（调用 Java MCP Server，自动生成 MCP 身份签名）
 ├── rag/
 │   ├── pipeline.py           完整 RAG 流水线（Query→Embed→Search→Rerank）
 │   ├── embedding.py          multilingual-e5-base 向量化

@@ -23,6 +23,8 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import lombok.Data;
 
 import static org.hamcrest.Matchers.containsString;
@@ -77,6 +79,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class McpControllerTest {
 
     private static final String MCP_URL = "/mcp";
+    private static final String SIGNING_SECRET = "local-life-mcp-context-secret";
 
     @Autowired
     private MockMvc mockMvc;
@@ -120,13 +123,29 @@ class McpControllerTest {
     }
 
     /** 构造一条会真实经过 RbacFilter 的 /mcp 请求：按角色补齐过滤器要求的身份 Header。 */
-    private MockHttpServletRequestBuilder mcpRequest(String jsonBody, String role) {
+    private MockHttpServletRequestBuilder mcpRequest(String jsonBody, String role) throws Exception {
+        String userId = "10001";
+        String merchantId = "merchant".equals(role) ? "20001" : "";
+        String timestamp = String.valueOf(System.currentTimeMillis() / 1000);
         MockHttpServletRequestBuilder builder = post(MCP_URL)
                 .contentType(MediaType.APPLICATION_JSON)
-                .header("X-User-Id", "10001")
+                .header("X-User-Id", userId)
                 .header("X-User-Role", role)
+                .header("X-Agent-Timestamp", timestamp)
+                .header("X-Agent-Signature", hmac(userId + "\n" + role + "\n" + merchantId + "\n" + timestamp))
                 .content(jsonBody);
-        return "merchant".equals(role) ? builder.header("X-Merchant-Id", "20001") : builder;
+        return "merchant".equals(role) ? builder.header("X-Merchant-Id", merchantId) : builder;
+    }
+
+    private static String hmac(String canonical) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(SIGNING_SECRET.getBytes(), "HmacSHA256"));
+        byte[] digest = mac.doFinal(canonical.getBytes());
+        StringBuilder hex = new StringBuilder(digest.length * 2);
+        for (byte b : digest) {
+            hex.append(String.format("%02x", b));
+        }
+        return hex.toString();
     }
 
     /** 构造一个"已注册到 ToolRegistry"的工具替身：调用方按需控制其 xAllowedRoles 与 execute() 行为。 */

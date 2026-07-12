@@ -851,9 +851,9 @@
 
 可能被追问什么：为什么不让 Python 直接查 Java 数据库？
 
-项目当前不足：跨服务身份 Header 需要加强可信认证。
+项目当前不足：Agent 入口侧仍直接读取身份 Header，生产环境需要统一登录态或网关 Principal。
 
-后续优化方案：MCP 请求加 HMAC、内网网关和重放保护。
+后续优化方案：当前 Agent -> MCP 已加 HMAC、时间戳和重放窗口；下一步是内网网关、短时 token 或 mTLS。
 
 面试回答模板：Function Calling 是 LLM 说“我要调用哪个函数”，MCP 是工具服务怎么被发现和调用。项目里两者一起用：模型出 tool call，Python 通过 MCP 调 Java。
 
@@ -1049,9 +1049,9 @@
 
 可能被追问什么：Python Agent 为什么不直接连业务库？
 
-项目当前不足：内部调用需要更完善的签名和服务间鉴权。
+项目当前不足：Agent -> MCP 已有 HMAC 签名，但还不是完整服务间身份体系。
 
-后续优化方案：MCP 内网隔离、HMAC 签名、统一内部网关。
+后续优化方案：MCP 内网隔离、统一内部网关、短时 token 或 mTLS。
 
 面试回答模板：Agent 通过 MCP 工具访问 Java 后端。Python 负责决策，Java 负责业务执行，这样不会绕过后端的权限、事务和审计。
 
