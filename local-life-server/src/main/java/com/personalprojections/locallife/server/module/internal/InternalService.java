@@ -1,18 +1,24 @@
 package com.personalprojections.locallife.server.module.internal;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.personalprojections.locallife.server.common.exception.BizException;
 import com.personalprojections.locallife.server.common.result.ErrorCode;
 import com.personalprojections.locallife.server.domain.entity.OrderInfo;
+import com.personalprojections.locallife.server.domain.entity.SideEffectLedger;
 import com.personalprojections.locallife.server.domain.mapper.OrderInfoMapper;
+import com.personalprojections.locallife.server.domain.mapper.SideEffectLedgerMapper;
 import com.personalprojections.locallife.server.module.internal.InternalController.CompensateResult;
 import com.personalprojections.locallife.server.module.internal.InternalController.RefundResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 
 /**
  * 内部服务业务逻辑。
@@ -33,7 +39,12 @@ import java.time.LocalDateTime;
 @RequiredArgsConstructor
 public class InternalService {
 
+    private static final String OP_REFUND = "execute_refund";
+    private static final String OP_COMPENSATE_COUPON = "issue_compensation_coupon";
+
     private final OrderInfoMapper orderInfoMapper;
+    private final SideEffectLedgerMapper sideEffectLedgerMapper;
+    private final ObjectMapper objectMapper;
 
     // =========================================================
     // 退款
@@ -53,6 +64,17 @@ public class InternalService {
      */
     @Transactional(rollbackFor = Exception.class)
     public RefundResult executeRefund(String orderNo, int amount, String approvalId, String reason) {
+        SideEffectLedger existing = findLedger(OP_REFUND, approvalId);
+        if (existing != null) {
+            return replayRefundLedger(existing);
+        }
+        SideEffectLedger ledger = beginLedger(
+                OP_REFUND,
+                approvalId,
+                approvalId,
+                orderNo,
+                Map.of("orderNo", orderNo, "amount", amount, "approvalId", approvalId, "reason", reason));
+
         // ---- 1. 查订单 ----
         OrderInfo order = orderInfoMapper.selectOne(
                 new LambdaQueryWrapper<OrderInfo>()
@@ -88,7 +110,9 @@ public class InternalService {
         log.info("[Internal] 退款执行成功: orderNo={}, refundNo={}, amount={}分, approvalId={}, reason={}",
                 orderNo, refundNo, amount, approvalId, reason);
 
-        return RefundResult.of(refundNo, orderNo, amount, "SUCCESS");
+        RefundResult result = RefundResult.of(refundNo, orderNo, amount, "SUCCESS");
+        completeLedger(ledger, result);
+        return result;
     }
 
     // =========================================================
@@ -113,6 +137,21 @@ public class InternalService {
     public CompensateResult issueCompensationCoupon(
             String orderNo, String userId, int compensationAmount,
             String approvalId, String reason) {
+        SideEffectLedger existing = findLedger(OP_COMPENSATE_COUPON, approvalId);
+        if (existing != null) {
+            return replayCompensateLedger(existing);
+        }
+        SideEffectLedger ledger = beginLedger(
+                OP_COMPENSATE_COUPON,
+                approvalId,
+                approvalId,
+                orderNo,
+                Map.of(
+                        "orderNo", orderNo,
+                        "userId", userId,
+                        "compensationAmount", compensationAmount,
+                        "approvalId", approvalId,
+                        "reason", reason));
 
         // 生成补偿券 ID（实际应先创建 coupon_template，此处简化）
         String couponId = "COMP_" + System.currentTimeMillis();
@@ -125,6 +164,73 @@ public class InternalService {
         // 2. INSERT user_coupon (user_id, coupon_template_id, status=UNUSED, expire_at=30天后)
         // 3. 发短信/Push 通知用户
 
-        return CompensateResult.of(couponId, userId, compensationAmount, "SUCCESS");
+        CompensateResult result = CompensateResult.of(couponId, userId, compensationAmount, "SUCCESS");
+        completeLedger(ledger, result);
+        return result;
+    }
+
+    private SideEffectLedger findLedger(String operationType, String idempotencyKey) {
+        return sideEffectLedgerMapper.selectOne(
+                new LambdaQueryWrapper<SideEffectLedger>()
+                        .eq(SideEffectLedger::getOperationType, operationType)
+                        .eq(SideEffectLedger::getIdempotencyKey, idempotencyKey));
+    }
+
+    private SideEffectLedger beginLedger(
+            String operationType,
+            String idempotencyKey,
+            String approvalId,
+            String resourceId,
+            Map<String, Object> requestPayload) {
+        SideEffectLedger ledger = SideEffectLedger.builder()
+                .operationType(operationType)
+                .idempotencyKey(idempotencyKey)
+                .approvalId(approvalId)
+                .resourceId(resourceId)
+                .requestPayload(writeJson(requestPayload))
+                .status("RUNNING")
+                .build();
+        try {
+            sideEffectLedgerMapper.insert(ledger);
+            return ledger;
+        } catch (DuplicateKeyException e) {
+            throw new BizException(ErrorCode.SYS_BUSY, "高风险操作已提交，请勿重复提交");
+        }
+    }
+
+    private void completeLedger(SideEffectLedger ledger, Object result) {
+        ledger.setStatus("SUCCESS");
+        ledger.setResultSnapshot(writeJson(result));
+        sideEffectLedgerMapper.updateById(ledger);
+    }
+
+    private RefundResult replayRefundLedger(SideEffectLedger ledger) {
+        if ("SUCCESS".equals(ledger.getStatus())) {
+            return readJson(ledger.getResultSnapshot(), RefundResult.class);
+        }
+        throw new BizException(ErrorCode.SYS_BUSY, "退款操作已在处理中或失败，请勿重复提交");
+    }
+
+    private CompensateResult replayCompensateLedger(SideEffectLedger ledger) {
+        if ("SUCCESS".equals(ledger.getStatus())) {
+            return readJson(ledger.getResultSnapshot(), CompensateResult.class);
+        }
+        throw new BizException(ErrorCode.SYS_BUSY, "补偿券操作已在处理中或失败，请勿重复提交");
+    }
+
+    private String writeJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("序列化副作用账本失败", e);
+        }
+    }
+
+    private <T> T readJson(String json, Class<T> type) {
+        try {
+            return objectMapper.readValue(json, type);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("反序列化副作用账本失败", e);
+        }
     }
 }

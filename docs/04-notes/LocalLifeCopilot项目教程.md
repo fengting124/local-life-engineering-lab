@@ -969,12 +969,13 @@ data: {
 | Agent 层 | ReAct 只做诊断和生成 pending action | 模型不能直接改资金状态。 |
 | HITL 层 | `hitl_approval`、审批工作台、`/chat/resume` | 人类确认高风险动作，留下审批记录。 |
 | MCP 层 | 工具 schema、RBAC、审计、approval_id 必填 | 防止越权调用和无审批调用。 |
-| Java 主服务层 | 支付/退款状态机、幂等、订单状态校验 | 最终业务事实由后端保证，Agent 只是调用方。 |
+| Java 主服务层 | 支付/退款状态机、`side_effect_ledger`、订单状态校验 | 最终业务事实由后端保证，Agent 只是调用方。 |
 
 如果面试官追问“审批通过后服务重启怎么办”，回答：
 
 - LangGraph thread 状态存 MySQL Checkpoint，不用内存保存。
 - 审批通过后通过 `thread_id + approval_id` 恢复，从挂起点继续执行。
+- Java 主服务用 `side_effect_ledger` 以 `operation_type + approval_id` 做幂等；同一审批重复恢复时直接返回第一次成功结果，不再次退款/发券。
 - 如果 MySQL Checkpoint 不可用，当前开发环境会 fallback 到 `MemorySaver`，但生产必须把 MySQL Checkpoint 作为强依赖，否则不能承诺长时间挂起恢复。
 
 对应代码：
@@ -983,6 +984,8 @@ data: {
 - `copilot-agent-service/api/hitl.py`
 - `local-life-copilot/src/main/java/.../ExecuteRefundTool.java`
 - `local-life-copilot/src/main/java/.../IssueCompensationCouponTool.java`
+- `local-life-server/src/main/java/.../InternalService.java`
+- `local-life-server/src/main/resources/db/migration/V10__add_side_effect_ledger.sql`
 
 ### 13.4 场景题：RAG 召回率低，怎么定位是检索错还是生成错？
 

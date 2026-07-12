@@ -1013,11 +1013,11 @@
 
 可能被追问什么：审批通过后如何保证状态没丢？
 
-项目当前不足：审批和业务执行跨服务，需要更强幂等键。
+项目当前实现：审批和业务执行跨服务，Java 主服务用 `side_effect_ledger` 记录 `operation_type + approval_id`，重复恢复同一审批时直接返回第一次成功结果。
 
-后续优化方案：把 `approval_id` 作为业务幂等键，并记录补偿任务。
+后续优化方案：接入 `agent_run/agent_event` 后，把 `run_id/trace_id/operator_id` 也写入账本，并把外部支付渠道返回码纳入对账。
 
-面试回答模板：高风险工具必须 HITL。模型只提出调用意图，系统暂停并发审批事件，审批通过后带 `approval_id` 恢复执行。
+面试回答模板：高风险工具必须 HITL。模型只提出调用意图，系统暂停并发审批事件，审批通过后带 `approval_id` 恢复执行；Java 主服务再用 `side_effect_ledger` 做最终幂等和结果追踪。
 
 ### 56. Prompt Engineering 如何落到项目里？
 

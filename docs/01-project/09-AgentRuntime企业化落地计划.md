@@ -40,7 +40,7 @@
 | 身份信任链过弱 | Agent 和 MCP 仍直接信任 `X-User-Id/X-User-Role/X-Merchant-Id` | `copilot-agent-service/api/chat.py`、`api/session.py`、`mcp/mcp_client.py`、`local-life-copilot/.../RbacFilter.java` |
 | HITL 恢复绑定 | 当前分支已改为服务端按 `approval_id` 反查 `thread_id`，但还未迁到 LangGraph 官方 `interrupt()/Command(resume=...)` 模式 | `copilot-agent-service/api/chat.py`、`api/hitl.py`、`session/hitl.py` |
 | Checkpoint pending writes | 当前分支已新增 `langgraph_checkpoint_write` 并实现 `aput_writes()` 持久化；仍需真 MySQL 重启恢复 smoke | `copilot-agent-service/session/checkpointer.py`、`local-life-copilot/src/main/resources/db/migration/V102__add_langgraph_checkpoint_writes.sql` |
-| 高风险副作用缺少完整幂等账本 | 退款、补券依赖 `approval_id`，但没有统一 side-effect ledger | `local-life-copilot/.../LocalLifeInternalClient.java`、`local-life-server/.../InternalService.java` |
+| 高风险副作用幂等账本 | 当前分支已在 `local-life-server` 新增 `side_effect_ledger`，退款/补券执行前按 `operation_type + approval_id` 幂等检查，成功后写结果快照 | `local-life-server/.../InternalService.java`、`SideEffectLedgerMapper`、`V10__add_side_effect_ledger.sql` |
 | SSE / 错误输出 | 当前分支已改为安全展示事件：工具只输出参数 key，结果只输出完成状态，异常只输出通用错误码和文案 | `copilot-agent-service/api/chat.py` |
 | RAG 故障降级 | 当前分支已移除向量检索的 “Mock 文档” 兜底；Milvus 不可用时返回空候选，上层在无 BM25/真实候选时拒答 | `copilot-agent-service/rag/*` |
 | CORS 策略 | 当前分支已改为 `CORS_ALLOWED_ORIGINS` 环境变量驱动，默认只允许本地开发前端；生产需配置真实前端域名 | `copilot-agent-service/main.py`、`copilot-agent-service/config/settings.py` |
@@ -204,18 +204,18 @@
 
 ### C.3 具体动作
 
-1. 引入 `side_effect_ledger` 或同类表，记录：
+1. 引入 `side_effect_ledger` 表（当前分支已完成最小闭环），记录：
    - `operation_type`
    - `idempotency_key`
    - `approval_id`
-   - `run_id`
+   - `run_id`（后续接 `agent_run` 后补齐）
    - `resource_id`
    - `request_payload`
    - `status`
    - `result_snapshot`
-2. 退款、补券执行前先查账本，再决定是否继续。
-3. Java 内部执行接口支持幂等键，而不是只传 `approval_id`。
-4. 审计日志与 trace、run、approval 串起来。
+2. 退款、补券执行前先查账本，再决定是否继续（当前已用 `approval_id` 作为幂等键）。
+3. Java 内部执行接口支持幂等键，而不是只传 `approval_id`（后续可显式增加 `idempotencyKey` 字段，当前兼容用 `approval_id`）。
+4. 审计日志与 trace、run、approval 串起来（`run_id/trace_id` 待 `agent_run/agent_event` 落地后补齐）。
 
 ### C.4 测试与验收
 

@@ -206,9 +206,9 @@
 - Tool Calling：模型只提出工具调用意图，不直接执行高风险副作用。
 - Human-in-the-loop：退款和补偿券必须人审。
 - Checkpoint：等待审批期间需要保存 Agent 状态。
-- 幂等和审计：高风险操作需要 `approval_id`、审计日志和失败可追踪。
+- 幂等和审计：高风险操作需要 `approval_id`、`side_effect_ledger`、审计日志和失败可追踪。
 
-面试讲法：高风险工具不是 LLM 说调用就调用。工具 Schema 标记 `xRequiresHitl`，Agent 先生成审批单并暂停，审批通过后才恢复执行，而且把 `approval_id` 传给 Java 后端做审计。
+面试讲法：高风险工具不是 LLM 说调用就调用。工具 Schema 标记 `xRequiresHitl`，Agent 先生成审批单并暂停，审批通过后才恢复执行，而且把 `approval_id` 传给 Java 后端。Java 主服务再用 `operation_type + approval_id` 写 `side_effect_ledger`，重复恢复时返回第一次成功结果，避免重复退款或重复发券。
 
 ## Java 后端和 Agent 如何交互
 

@@ -5,7 +5,7 @@
 # 功能：
 #   1. 等待 MySQL 就绪
 #   2. 创建数据库（若不存在）
-#   3. 按版本顺序执行所有 SQL 迁移（V1~V9 + Copilot V1）
+#   3. 按版本顺序执行所有 SQL 迁移（server + copilot）
 #   4. 使用迁移记录表（schema_migrations）防止重复执行
 #      迁移 key 使用 namespace:version（如 server:V1 / copilot:V1），避免不同模块
 #      都有 V1 时互相遮挡。历史库中已有的 server 侧旧 key（V1~V9）会被兼容跳过。
