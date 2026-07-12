@@ -559,7 +559,7 @@ CREATE TABLE agent_event (
 );
 ```
 
-当前代码在 `/chat` Fast Path 和 LangGraph SSE 流里同步写入 `session_started`、`agent_step`、`stream`、`tool_call`、`tool_result`、`hitl_request`、`final_answer`、`error` 等事件。`GET /chat/runs/{run_id}/events?after_sequence=N&limit=M` 可按游标回放当前用户自己的 run；静态 Chat UI 已在流式读取异常时按 `run_id + lastEventSequence` 做一次 best-effort 续拉。生产级还需要运营审计入口和官方 `interrupt()/Command(resume=...)` 恢复语义。
+当前代码在 `/chat` Fast Path、LangGraph SSE 流和 `/chat/resume` 恢复流里同步写入 `session_started`、`agent_step`、`stream`、`tool_call`、`tool_result`、`hitl_request`、`final_answer`、`error` 等事件。审批恢复时会按 `thread_id` 找最近的 `WAITING_APPROVAL` run，从下一个 `sequence_index` 继续写事件；审批拒绝会把 run 标记为 `CANCELED`。`GET /chat/runs/{run_id}/events?after_sequence=N&limit=M` 可按游标回放当前用户自己的 run；静态 Chat UI 已在流式读取异常时按 `run_id + lastEventSequence` 做一次 best-effort 续拉。生产级还需要运营审计入口和官方 `interrupt()/Command(resume=...)` 恢复语义。
 
 ### 9.6 工具调用审计表
 

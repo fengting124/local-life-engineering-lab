@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import desc, func, select
 
 from session.manager import AsyncSessionLocal, _snowflake_id
 from session.models import AgentEvent, AgentRun
@@ -39,6 +39,19 @@ class AgentRuntimeStore:
     async def get_run(self, run_id: str) -> AgentRun | None:
         async with AsyncSessionLocal() as db:
             return await db.get(AgentRun, run_id)
+
+    async def get_latest_waiting_run_by_thread(self, thread_id: str) -> AgentRun | None:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(AgentRun)
+                .where(
+                    AgentRun.thread_id == thread_id,
+                    AgentRun.status == "WAITING_APPROVAL",
+                )
+                .order_by(desc(AgentRun.created_at))
+                .limit(1)
+            )
+            return result.scalars().first()
 
     async def create_run(
         self,
@@ -149,6 +162,14 @@ class AgentRuntimeStore:
                 .limit(limit)
             )
             return list(result.scalars().all())
+
+    async def next_sequence(self, run_id: str) -> int:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(func.max(AgentEvent.sequence_index)).where(AgentEvent.run_id == run_id)
+            )
+            current_max = result.scalar_one_or_none()
+            return int(current_max) + 1 if current_max is not None else 0
 
 
 runtime_store = AgentRuntimeStore()

@@ -384,9 +384,13 @@ class TestResumeEndpoint:
                 },
             }
 
+        runtime = AsyncMock()
+        runtime.get_latest_waiting_run_by_thread.return_value = None
+
         with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
              patch("api.chat.hitl_service.approve", AsyncMock(return_value=True)), \
-             patch("api.chat.agent_graph.astream_events", fake_stream):
+             patch("api.chat.agent_graph.astream_events", fake_stream), \
+             patch("api.chat.runtime_store", runtime):
             resp = client.post(
                 "/chat/resume",
                 json={"approval_id": "1001", "approved": True},
@@ -400,6 +404,62 @@ class TestResumeEndpoint:
         assert captured["resume_input"]["pending_action"]["action_type"] == "execute_refund"
         assert captured["resume_input"]["pending_action"]["approval_id"] == "1001"
         assert captured["resume_input"]["pending_action"]["payload"]["order_id"] == "O-1"
+
+    def test_resume_records_events_on_waiting_runtime_run(self):
+        approval = type(
+            "Approval",
+            (),
+            {
+                "id": 1006,
+                "status": "PENDING",
+                "thread_id": "thread-waiting",
+                "action_type": "execute_refund",
+                "action_payload": {"order_id": "O-6"},
+                "agent_reason": "需要退款",
+            },
+        )()
+        runtime = AsyncMock()
+        runtime.get_latest_waiting_run_by_thread.return_value = type(
+            "Run",
+            (),
+            {
+                "id": "run-waiting",
+                "session_id": 1001,
+                "thread_id": "thread-waiting",
+                "trace_id": "trace-waiting",
+            },
+        )()
+        runtime.next_sequence.return_value = 3
+
+        async def fake_stream(_resume_input, config=None, version=None):
+            yield {
+                "event": "on_tool_start",
+                "name": "execute_refund",
+                "data": {"input": {"order_id": "O-6", "approval_id": "1006"}},
+            }
+            yield {
+                "event": "on_chain_end",
+                "name": "resume",
+                "data": {"output": {"final_answer": "退款已执行", "stop_reason": "completed"}},
+            }
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.hitl_service.approve", AsyncMock(return_value=True)), \
+             patch("api.chat.agent_graph.astream_events", fake_stream), \
+             patch("api.chat.runtime_store", runtime):
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1006", "approved": True},
+                headers={"X-User-Id": "9", "X-User-Role": "cs"},
+            )
+
+        assert resp.status_code == 200
+        statuses = [call.args[1] for call in runtime.mark_run_status.await_args_list]
+        assert statuses == ["RUNNING", "COMPLETED"]
+        event_types = [call.kwargs["event_type"] for call in runtime.append_event.await_args_list]
+        assert event_types == ["agent_step", "tool_call", "final_answer"]
+        sequences = [call.kwargs["sequence_index"] for call in runtime.append_event.await_args_list]
+        assert sequences == [3, 4, 5]
 
     def test_resume_rejects_mismatched_client_thread_id(self):
         approval = type(
@@ -441,8 +501,12 @@ class TestResumeEndpoint:
             },
         )()
 
+        runtime = AsyncMock()
+        runtime.get_latest_waiting_run_by_thread.return_value = None
+
         with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
-             patch("api.chat.hitl_service.reject", AsyncMock(return_value=True)):
+             patch("api.chat.hitl_service.reject", AsyncMock(return_value=True)), \
+             patch("api.chat.runtime_store", runtime):
             resp = client.post(
                 "/chat/resume",
                 json={"approval_id": "1002", "approved": False},
@@ -476,9 +540,13 @@ class TestResumeEndpoint:
                 "data": {"output": {"final_answer": "继续执行", "stop_reason": "completed"}},
             }
 
+        runtime = AsyncMock()
+        runtime.get_latest_waiting_run_by_thread.return_value = None
+
         with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
              patch("api.chat.hitl_service.approve", AsyncMock(return_value=False)) as approve_mock, \
-             patch("api.chat.agent_graph.astream_events", fake_stream):
+             patch("api.chat.agent_graph.astream_events", fake_stream), \
+             patch("api.chat.runtime_store", runtime):
             resp = client.post(
                 "/chat/resume",
                 json={"approval_id": "1003", "approved": True},
@@ -503,8 +571,12 @@ class TestResumeEndpoint:
             },
         )()
 
+        runtime = AsyncMock()
+        runtime.get_latest_waiting_run_by_thread.return_value = None
+
         with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
-             patch("api.chat.hitl_service.reject", AsyncMock(return_value=False)) as reject_mock:
+             patch("api.chat.hitl_service.reject", AsyncMock(return_value=False)) as reject_mock, \
+             patch("api.chat.runtime_store", runtime):
             resp = client.post(
                 "/chat/resume",
                 json={"approval_id": "1004", "approved": False},

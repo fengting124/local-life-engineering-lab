@@ -44,6 +44,9 @@ class _FakeScalarResult:
     def all(self):
         return self._rows
 
+    def first(self):
+        return self._rows[0] if self._rows else None
+
 
 class _FakeExecuteResult:
     def __init__(self, rows):
@@ -51,6 +54,9 @@ class _FakeExecuteResult:
 
     def scalars(self):
         return _FakeScalarResult(self._rows)
+
+    def scalar_one_or_none(self):
+        return self._rows[0] if self._rows else None
 
 
 @pytest.mark.asyncio
@@ -161,3 +167,37 @@ async def test_list_events_returns_ordered_runtime_events(monkeypatch):
     assert events[0].run_id == "run-001"
     assert events[0].sequence_index == 1
     assert events[0].event_type == "final_answer"
+
+
+@pytest.mark.asyncio
+async def test_get_latest_waiting_run_by_thread_returns_matching_run(monkeypatch):
+    fake_session = FakeSession()
+    fake_session.execute_result = _FakeExecuteResult([
+        AgentRun(
+            id="run-waiting",
+            session_id=1001,
+            thread_id="thread-001",
+            user_id=9001,
+            user_role="merchant",
+            merchant_id=8001,
+            status="WAITING_APPROVAL",
+            input_summary="refund",
+        )
+    ])
+    monkeypatch.setattr(runtime_mod, "AsyncSessionLocal", lambda: fake_session)
+
+    store = AgentRuntimeStore()
+    run = await store.get_latest_waiting_run_by_thread("thread-001")
+
+    assert run.id == "run-waiting"
+    assert run.status == "WAITING_APPROVAL"
+
+
+@pytest.mark.asyncio
+async def test_next_sequence_returns_max_plus_one(monkeypatch):
+    fake_session = FakeSession()
+    fake_session.execute_result = _FakeExecuteResult([5])
+    monkeypatch.setattr(runtime_mod, "AsyncSessionLocal", lambda: fake_session)
+
+    store = AgentRuntimeStore()
+    assert await store.next_sequence("run-001") == 6

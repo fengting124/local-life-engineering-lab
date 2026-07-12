@@ -323,6 +323,24 @@ async def _safe_append_runtime_event(
         log.warning("agent_event_append_failed", run_id=run_id, event_type=event_type, error=str(e))
 
 
+async def _safe_get_waiting_runtime_run(thread_id: str) -> Any | None:
+    try:
+        return await runtime_store.get_latest_waiting_run_by_thread(thread_id)
+    except Exception as e:
+        log.warning("agent_waiting_run_lookup_failed", thread_id=thread_id, error=str(e))
+        return None
+
+
+async def _safe_next_runtime_sequence(run_id: str | None) -> int:
+    if not run_id:
+        return 0
+    try:
+        return await runtime_store.next_sequence(run_id)
+    except Exception as e:
+        log.warning("agent_event_sequence_lookup_failed", run_id=run_id, error=str(e))
+        return 0
+
+
 def _serialize_runtime_event(event: Any) -> RuntimeEventResponse:
     created_at = getattr(event, "created_at", None)
     return RuntimeEventResponse(
@@ -763,6 +781,12 @@ async def resume(
         raise HTTPException(status_code=400, detail="thread_id 与审批记录不匹配")
 
     # ---- Step 1：审批拒绝 ----
+    runtime_run = await _safe_get_waiting_runtime_run(resolved_thread_id)
+    run_id = runtime_run.id if runtime_run is not None else None
+    runtime_session_id = runtime_run.session_id if runtime_run is not None else getattr(approval, "session_id", 0)
+    runtime_trace_id = runtime_run.trace_id if runtime_run is not None else None
+    seq = await _safe_next_runtime_sequence(run_id)
+
     if not request.approved:
         if approval.status == "PENDING":
             success = await hitl_service.reject(
@@ -774,11 +798,23 @@ async def resume(
 
         # 向前端推送拒绝通知（单次 SSE，不恢复 Agent）
         async def reject_stream():
-            yield _sse("final_answer", {
+            payload = {
                 "content":    "运营已拒绝此操作，任务终止。如需其他帮助请重新发起会话。",
                 "stop_reason": "hitl_rejected",
                 "thread_id":   resolved_thread_id,
-            })
+            }
+            await _safe_append_runtime_event(
+                run_id=run_id,
+                session_id=runtime_session_id,
+                thread_id=resolved_thread_id,
+                sequence_index=seq,
+                event_type="final_answer",
+                event_name="hitl_rejected",
+                payload=payload,
+                trace_id=runtime_trace_id,
+            )
+            await _safe_mark_runtime_status(run_id, "CANCELED")
+            yield _sse("final_answer", payload)
 
         return StreamingResponse(reject_stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -807,10 +843,24 @@ async def resume(
 
     async def resume_stream():
         """从 checkpoint 恢复 Agent，继续执行，以 SSE 推送后续过程。"""
-        yield _sse("agent_step", {
+        nonlocal seq
+        await _safe_mark_runtime_status(run_id, "RUNNING")
+        payload = {
             "type":    "hitl_resumed",
             "message": f"审批通过（approver={approver_id}），Agent 继续执行",
-        })
+        }
+        await _safe_append_runtime_event(
+            run_id=run_id,
+            session_id=runtime_session_id,
+            thread_id=resolved_thread_id,
+            sequence_index=seq,
+            event_type="agent_step",
+            event_name="hitl_resumed",
+            payload=payload,
+            trace_id=runtime_trace_id,
+        )
+        seq += 1
+        yield _sse("agent_step", payload)
         try:
             async for event in agent_graph.astream_events(
                 resume_input, config=config, version="v2"
@@ -823,26 +873,87 @@ async def resume(
                     chunk = event_data.get("chunk", {})
                     content = getattr(chunk, "content", "")
                     if content:
-                        yield _sse("stream", {"content": content})
+                        payload = {"content": content}
+                        await _safe_append_runtime_event(
+                            run_id=run_id,
+                            session_id=runtime_session_id,
+                            thread_id=resolved_thread_id,
+                            sequence_index=seq,
+                            event_type="stream",
+                            event_name=event_name,
+                            payload=payload,
+                            trace_id=runtime_trace_id,
+                        )
+                        seq += 1
+                        yield _sse("stream", payload)
 
                 elif event_type == "on_tool_start":
-                    yield _sse("tool_call", _safe_tool_call_event(event_name, event_data.get("input", {})))
+                    payload = _safe_tool_call_event(event_name, event_data.get("input", {}))
+                    await _safe_append_runtime_event(
+                        run_id=run_id,
+                        session_id=runtime_session_id,
+                        thread_id=resolved_thread_id,
+                        sequence_index=seq,
+                        event_type="tool_call",
+                        event_name=event_name,
+                        payload=payload,
+                        trace_id=runtime_trace_id,
+                    )
+                    seq += 1
+                    yield _sse("tool_call", payload)
 
                 elif event_type == "on_tool_end":
-                    yield _sse("tool_result", _safe_tool_result_event(event_name, event_data.get("output", "")))
+                    payload = _safe_tool_result_event(event_name, event_data.get("output", ""))
+                    await _safe_append_runtime_event(
+                        run_id=run_id,
+                        session_id=runtime_session_id,
+                        thread_id=resolved_thread_id,
+                        sequence_index=seq,
+                        event_type="tool_result",
+                        event_name=event_name,
+                        payload=payload,
+                        trace_id=runtime_trace_id,
+                    )
+                    seq += 1
+                    yield _sse("tool_result", payload)
 
                 elif event_type == "on_chain_end":
                     output = event_data.get("output", {})
                     if isinstance(output, dict) and output.get("final_answer"):
-                        yield _sse("final_answer", {
+                        payload = {
                             "content":    output["final_answer"],
                             "stop_reason": output.get("stop_reason", "completed"),
                             "thread_id":   resolved_thread_id,
-                        })
+                        }
+                        await _safe_append_runtime_event(
+                            run_id=run_id,
+                            session_id=runtime_session_id,
+                            thread_id=resolved_thread_id,
+                            sequence_index=seq,
+                            event_type="final_answer",
+                            event_name=event_name,
+                            payload=payload,
+                            trace_id=runtime_trace_id,
+                        )
+                        seq += 1
+                        await _safe_mark_runtime_status(run_id, "COMPLETED")
+                        yield _sse("final_answer", payload)
 
         except Exception as e:
             log.error("resume_stream_error", error=str(e), exc_info=True)
-            yield _sse("error", _safe_error_event(e))
+            payload = _safe_error_event(e)
+            await _safe_append_runtime_event(
+                run_id=run_id,
+                session_id=runtime_session_id,
+                thread_id=resolved_thread_id,
+                sequence_index=seq,
+                event_type="error",
+                event_name=None,
+                payload=payload,
+                trace_id=runtime_trace_id,
+            )
+            await _safe_mark_runtime_status(run_id, "FAILED", error_message=str(e))
+            yield _sse("error", payload)
 
     return StreamingResponse(
         resume_stream(),

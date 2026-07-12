@@ -494,6 +494,8 @@ SSE 是展示通道，不是审计或数据导出接口。当前实现中：
 | `agent_run` | 一次用户请求触发的 Agent 执行，状态包括 `SUBMITTED/RUNNING/WAITING_APPROVAL/COMPLETED/FAILED` | 先看这次 run 是否卡在审批、失败还是已完成。 |
 | `agent_event` | 这次 run 内按顺序产生的事件，如 `tool_call`、`tool_result`、`hitl_request`、`final_answer`、`error` | 看事件序列，判断是模型没选对工具、工具失败、审批卡住，还是 SSE 前端展示问题。 |
 
+HITL 恢复也会继续写同一个运行时事件流。`/chat/resume` 会根据审批记录的 `thread_id` 找最近一个 `WAITING_APPROVAL` run，从下一个 `sequence_index` 继续写 `agent_step/tool_call/tool_result/final_answer/error`；如果审批被拒绝，则写一条 `hitl_rejected` 的 `final_answer` 并把 run 标记为 `CANCELED`。
+
 断线回放入口：
 
 ```http
