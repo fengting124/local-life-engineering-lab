@@ -39,6 +39,15 @@ configure_logging()
 log = structlog.get_logger(__name__)
 
 
+def parse_cors_allowed_origins(raw_value: str) -> list[str]:
+    """Parse a comma-separated CORS origin list from environment config."""
+    return [
+        origin.rstrip("/")
+        for origin in (item.strip() for item in raw_value.split(","))
+        if origin
+    ]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -185,10 +194,10 @@ MySQL（local_life 数据库）
 )
 
 # ---- CORS ----
-# 开发阶段放开，生产环境限制为前端域名
+# 默认只允许本地开发前端；生产通过 CORS_ALLOWED_ORIGINS 显式配置域名。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=parse_cors_allowed_origins(settings.cors_allowed_origins),
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["X-Session-Id", "X-Thread-Id", "X-Trace-Id"],  # 让前端能读取这些响应头
