@@ -286,6 +286,28 @@ class TestChatEndpointGuardrails:
         )
         assert resp.status_code == 422
 
+    def test_non_numeric_user_id_header_returns_400(self):
+        resp = client.post(
+            "/chat",
+            json={"message": "你好"},
+            headers={"X-User-Id": "not-a-number", "X-User-Role": "merchant"},
+        )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "X-User-Id 必须是数字"
+
+    def test_non_numeric_merchant_id_header_returns_400(self):
+        resp = client.post(
+            "/chat",
+            json={"message": "你好"},
+            headers={
+                "X-User-Id": "1",
+                "X-User-Role": "merchant",
+                "X-Merchant-Id": "not-a-number",
+            },
+        )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "X-Merchant-Id 必须是数字"
+
 
 class _FakeAsyncSessionContext:
     def __init__(self, db):

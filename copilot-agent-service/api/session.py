@@ -18,6 +18,7 @@ import structlog
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
+from api.header_utils import parse_optional_merchant_id_header, parse_user_id_header
 from session.manager import session_manager, AsyncSessionLocal
 from session.models import AgentSession
 from sqlalchemy import select
@@ -63,8 +64,8 @@ async def create_session(
     前端拿到 session_id 后，调用 POST /chat 时携带此 ID。
     后端会自动用此 ID 持久化所有消息和 token 统计。
     """
-    user_id     = int(x_user_id)
-    merchant_id = int(x_merchant_id) if x_merchant_id else None
+    user_id     = parse_user_id_header(x_user_id)
+    merchant_id = parse_optional_merchant_id_header(x_merchant_id)
 
     # 校验 merchant 角色必须带 merchant_id
     if x_user_role == "merchant" and not merchant_id:
@@ -118,7 +119,7 @@ async def get_session(
         raise HTTPException(status_code=404, detail="会话不存在")
 
     # RBAC：只能查询自己的会话
-    if session.user_id != int(x_user_id):
+    if session.user_id != parse_user_id_header(x_user_id):
         raise HTTPException(status_code=403, detail="无权访问此会话")
 
     return SessionResponse(
@@ -144,7 +145,7 @@ async def list_sessions(
     limit:     int = 20,
 ):
     """列出当前用户的最近 N 个会话（按创建时间倒序）。"""
-    user_id = int(x_user_id)
+    user_id = parse_user_id_header(x_user_id)
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(AgentSession)
@@ -184,7 +185,7 @@ async def end_session(
 
     if session is None:
         raise HTTPException(status_code=404, detail="会话不存在")
-    if session.user_id != int(x_user_id):
+    if session.user_id != parse_user_id_header(x_user_id):
         raise HTTPException(status_code=403, detail="无权操作此会话")
 
     await session_manager.update_session_status(

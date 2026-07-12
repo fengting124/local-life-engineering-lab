@@ -26,6 +26,7 @@ from structlog.contextvars import get_contextvars
 
 from agent.graph import agent_graph
 from agent.state import AgentState
+from api.header_utils import parse_optional_merchant_id_header, parse_user_id_header
 from config.settings import settings
 from session.hitl import hitl_service
 from session.manager import AsyncSessionLocal, session_manager
@@ -250,9 +251,9 @@ async def chat(
       event: <事件类型>
       data: <JSON 字符串>
     """
-    user_id     = int(x_user_id)
+    user_id     = parse_user_id_header(x_user_id)
     user_role   = x_user_role
-    merchant_id = int(x_merchant_id) if x_merchant_id else None
+    merchant_id = parse_optional_merchant_id_header(x_merchant_id)
     request_trace_id = get_contextvars().get("trace_id")
 
     # ---- Guardrails 输入检查（Prompt Injection / 越权尝试）----
@@ -460,7 +461,7 @@ async def resume(
       LangGraph 从最新快照恢复，继续执行 hitl_node → END 之后的逻辑。
       这里我们需要额外注入 approval_id 到状态，工具调用时需要它做凭证。
     """
-    approver_id = int(x_user_id)
+    approver_id = parse_user_id_header(x_user_id)
     if x_user_role not in ("cs", "admin"):
         raise HTTPException(status_code=403, detail="无权恢复审批任务")
 
