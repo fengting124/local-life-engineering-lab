@@ -56,9 +56,43 @@ def test_pending_returns_sanitized_queue_items_without_thread_id():
     assert "thread_id" not in body["approvals"][0]
 
 
+def test_pending_passes_optional_merchant_scope_to_service():
+    with patch("api.hitl.hitl_service.get_pending_approvals", AsyncMock(return_value=[])) as pending_mock:
+        resp = client.get(
+            "/hitl/pending",
+            headers={"X-User-Id": "9", "X-User-Role": "cs", "X-Merchant-Id": "42"},
+        )
+
+    assert resp.status_code == 200
+    pending_mock.assert_awaited_once_with(limit=100, merchant_id=42)
+
+
+def test_pending_rejects_invalid_merchant_scope_header():
+    with patch("api.hitl.hitl_service.get_pending_approvals", AsyncMock(return_value=[])) as pending_mock:
+        resp = client.get(
+            "/hitl/pending",
+            headers={"X-User-Id": "9", "X-User-Role": "cs", "X-Merchant-Id": "not-a-number"},
+        )
+
+    assert resp.status_code == 400
+    pending_mock.assert_not_awaited()
+
+
 def test_detail_rejects_non_operator_role():
     resp = client.get("/hitl/1001", headers={"X-User-Id": "1", "X-User-Role": "merchant"})
     assert resp.status_code == 403
+
+
+def test_detail_hides_record_outside_merchant_scope():
+    approval = make_approval(action_payload={"order_id": "O-1", "merchant_id": 42})
+
+    with patch("api.hitl.hitl_service.get_approval", AsyncMock(return_value=approval)):
+        resp = client.get(
+            "/hitl/1001",
+            headers={"X-User-Id": "9", "X-User-Role": "cs", "X-Merchant-Id": "99"},
+        )
+
+    assert resp.status_code == 404
 
 
 def test_approve_checks_record_before_mutating_and_returns_bound_thread():
@@ -90,6 +124,21 @@ def test_approve_rejects_non_pending_record_without_mutating():
         )
 
     assert resp.status_code == 400
+    approve_mock.assert_not_awaited()
+
+
+def test_approve_rejects_record_outside_merchant_scope_without_mutating():
+    approval = make_approval(action_payload={"order_id": "O-1", "merchant_id": 42})
+
+    with patch("api.hitl.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+         patch("api.hitl.hitl_service.approve", AsyncMock(return_value=True)) as approve_mock:
+        resp = client.post(
+            "/hitl/1001/approve",
+            json={"comment": "越权审批"},
+            headers={"X-User-Id": "9", "X-User-Role": "cs", "X-Merchant-Id": "99"},
+        )
+
+    assert resp.status_code == 404
     approve_mock.assert_not_awaited()
 
 

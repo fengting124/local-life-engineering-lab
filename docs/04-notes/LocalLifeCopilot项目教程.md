@@ -841,6 +841,8 @@ POST /hitl/{approval_id}/approve
 {"comment": "已核实，退款合理"}
 ```
 
+如果审批工作台带 `X-Merchant-Id`，`/hitl/pending`、详情、通过和拒绝都会按 `action_payload.merchant_id` 做作用域过滤；不属于该商家的审批按不存在处理，避免只过滤列表但仍能凭 ID 操作其他审批。
+
 ---
 
 **Step 6 — 恢复 Agent**

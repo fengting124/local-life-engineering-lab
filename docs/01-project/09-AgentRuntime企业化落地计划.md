@@ -44,7 +44,7 @@
 | SSE / 错误输出仍有泄露面 | 前端可见工具参数、结果片段和异常文本 | `copilot-agent-service/api/chat.py` |
 | RAG 故障降级 | 当前分支已移除向量检索的 “Mock 文档” 兜底；Milvus 不可用时返回空候选，上层在无 BM25/真实候选时拒答 | `copilot-agent-service/rag/*` |
 | CORS 策略 | 当前分支已改为 `CORS_ALLOWED_ORIGINS` 环境变量驱动，默认只允许本地开发前端；生产需配置真实前端域名 | `copilot-agent-service/main.py`、`copilot-agent-service/config/settings.py` |
-| 审批队列隔离不够 | 待审批查询仍偏全局化，缺少明确的商家/租户/审批组视角 | `copilot-agent-service/api/hitl.py` |
+| 审批队列隔离 | 当前分支已支持 `X-Merchant-Id` 商家作用域过滤；带商家头时 pending/detail/approve/reject 都会限制在对应 `action_payload.merchant_id` | `copilot-agent-service/api/hitl.py`、`session/hitl.py` |
 
 ### 2.3 总体优先级判断
 

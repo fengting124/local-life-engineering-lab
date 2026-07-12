@@ -31,6 +31,32 @@ def _require_operator(user_id: str, role: str) -> int:
         raise HTTPException(status_code=400, detail="X-User-Id 必须是数字")
 
 
+def _parse_optional_merchant_id(merchant_id: str | None) -> int | None:
+    """Parse optional merchant scope from request headers."""
+    if not merchant_id:
+        return None
+    try:
+        parsed = int(merchant_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="X-Merchant-Id 必须是数字")
+    if parsed <= 0:
+        raise HTTPException(status_code=400, detail="X-Merchant-Id 必须是正数")
+    return parsed
+
+
+def _ensure_approval_in_merchant_scope(approval, merchant_id: int | None) -> None:
+    """Hide approval records outside the caller's optional merchant scope."""
+    if merchant_id is None:
+        return
+    payload = approval.action_payload or {}
+    try:
+        approval_merchant_id = int(payload.get("merchant_id"))
+    except (TypeError, ValueError):
+        approval_merchant_id = None
+    if approval_merchant_id != merchant_id:
+        raise HTTPException(status_code=404, detail="审批记录不存在")
+
+
 class ApproveRequest(BaseModel):
     """审批通过请求体。"""
     comment: str | None = None   # 审批备注（可选）
@@ -45,6 +71,7 @@ class RejectRequest(BaseModel):
 async def list_pending_approvals(
     x_user_id: str = Header(..., alias="X-User-Id"),
     x_user_role: str = Header(..., alias="X-User-Role"),
+    x_merchant_id: str | None = Header(None, alias="X-Merchant-Id"),
 ):
     """
     查询所有待审批列表（审批工作台首页）。
@@ -53,8 +80,9 @@ async def list_pending_approvals(
     返回按提交时间升序排列（最早提交的最先处理，FIFO）。
     """
     _require_operator(x_user_id, x_user_role)
+    merchant_id = _parse_optional_merchant_id(x_merchant_id)
 
-    approvals = await hitl_service.get_pending_approvals(limit=100)
+    approvals = await hitl_service.get_pending_approvals(limit=100, merchant_id=merchant_id)
     return {
         "count": len(approvals),
         "approvals": [
@@ -77,15 +105,18 @@ async def get_approval_detail(
     approval_id: int,
     x_user_id: str = Header(..., alias="X-User-Id"),
     x_user_role: str = Header(..., alias="X-User-Role"),
+    x_merchant_id: str | None = Header(None, alias="X-Merchant-Id"),
 ):
     """
     查询单个审批记录详情（运营点击某条记录查看完整信息）。
     """
     _require_operator(x_user_id, x_user_role)
+    merchant_id = _parse_optional_merchant_id(x_merchant_id)
 
     approval = await hitl_service.get_approval(approval_id)
     if not approval:
         raise HTTPException(status_code=404, detail="审批记录不存在")
+    _ensure_approval_in_merchant_scope(approval, merchant_id)
 
     return {
         "id":               approval.id,
@@ -109,6 +140,7 @@ async def approve(
     body: ApproveRequest,
     x_user_id:   str = Header(..., alias="X-User-Id"),
     x_user_role: str = Header(..., alias="X-User-Role"),
+    x_merchant_id: str | None = Header(None, alias="X-Merchant-Id"),
 ):
     """
     通过审批（运营人员操作）。
@@ -122,10 +154,12 @@ async def approve(
     这样设计的原因：审批和恢复解耦，运营可以审批但不关心 Agent 的技术细节。
     """
     approver_id = _require_operator(x_user_id, x_user_role)
+    merchant_id = _parse_optional_merchant_id(x_merchant_id)
 
     approval = await hitl_service.get_approval(approval_id)
     if not approval:
         raise HTTPException(status_code=404, detail="审批记录不存在")
+    _ensure_approval_in_merchant_scope(approval, merchant_id)
     if approval.status != "PENDING":
         raise HTTPException(status_code=400, detail=f"审批记录状态为 {approval.status}，无法通过")
 
@@ -146,6 +180,7 @@ async def reject(
     body: RejectRequest,
     x_user_id:   str = Header(..., alias="X-User-Id"),
     x_user_role: str = Header(..., alias="X-User-Role"),
+    x_merchant_id: str | None = Header(None, alias="X-Merchant-Id"),
 ):
     """
     拒绝审批（运营人员操作）。
@@ -155,10 +190,12 @@ async def reject(
     2. 前端通过 POST /chat/resume（approved=false）通知 Agent 终止
     """
     approver_id = _require_operator(x_user_id, x_user_role)
+    merchant_id = _parse_optional_merchant_id(x_merchant_id)
 
     approval = await hitl_service.get_approval(approval_id)
     if not approval:
         raise HTTPException(status_code=404, detail="审批记录不存在")
+    _ensure_approval_in_merchant_scope(approval, merchant_id)
     if approval.status != "PENDING":
         raise HTTPException(status_code=400, detail=f"审批记录状态为 {approval.status}，无法拒绝")
 

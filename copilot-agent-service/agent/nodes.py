@@ -817,7 +817,10 @@ async def hitl_node(state: AgentState) -> dict:
     """
     pending      = state.get("pending_action") or {}
     action_type  = pending.get("action_type", "unknown")
-    action_payload = pending.get("payload", {})
+    action_payload = dict(pending.get("payload") or {})
+    merchant_id = state.get("merchant_id")
+    if merchant_id is not None:
+        action_payload["merchant_id"] = merchant_id
     agent_reason = pending.get("reason", "Agent 认为需要执行此高风险动作")
     session_id   = state.get("session_id")
     thread_id    = state.get("thread_id", "")

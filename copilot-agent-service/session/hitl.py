@@ -184,15 +184,20 @@ class HitlService:
         async with AsyncSessionLocal() as db:
             return await db.get(HitlApproval, approval_id)
 
-    async def get_pending_approvals(self, limit: int = 50) -> list[HitlApproval]:
-        """查询所有待审批记录（审批工作台展示用）。"""
+    async def get_pending_approvals(
+        self,
+        limit: int = 50,
+        merchant_id: int | None = None,
+    ) -> list[HitlApproval]:
+        """查询待审批记录；merchant_id 存在时只返回该商家的审批。"""
         async with AsyncSessionLocal() as db:
             stmt = (
                 select(HitlApproval)
                 .where(HitlApproval.status == "PENDING")
-                .order_by(HitlApproval.created_at.asc())
-                .limit(limit)
             )
+            if merchant_id is not None:
+                stmt = stmt.where(HitlApproval.action_payload["merchant_id"].as_integer() == merchant_id)
+            stmt = stmt.order_by(HitlApproval.created_at.asc()).limit(limit)
             result = await db.execute(stmt)
             return list(result.scalars().all())
 
