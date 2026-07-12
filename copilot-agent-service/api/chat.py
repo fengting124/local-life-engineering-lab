@@ -18,7 +18,7 @@ import json
 import asyncio
 import structlog
 from typing import Any
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage
@@ -219,6 +219,25 @@ class ResumeRequest(BaseModel):
     approved: bool       # True=通过，False=拒绝
 
 
+class RuntimeEventResponse(BaseModel):
+    sequence_index: int
+    event_type: str
+    event_name: str | None = None
+    payload: dict[str, Any] | None = None
+    trace_id: str | None = None
+    created_at: str | None = None
+
+
+class RuntimeEventsResponse(BaseModel):
+    run_id: str
+    session_id: int
+    thread_id: str
+    trace_id: str | None = None
+    status: str
+    next_after_sequence: int
+    events: list[RuntimeEventResponse]
+
+
 async def _assert_session_owned_by_user(session_id: int, user_id: int) -> AgentSession:
     """
     校验会话归属，防止客户端拿别人的 session_id 污染上下文。
@@ -302,6 +321,60 @@ async def _safe_append_runtime_event(
         )
     except Exception as e:
         log.warning("agent_event_append_failed", run_id=run_id, event_type=event_type, error=str(e))
+
+
+def _serialize_runtime_event(event: Any) -> RuntimeEventResponse:
+    created_at = getattr(event, "created_at", None)
+    return RuntimeEventResponse(
+        sequence_index=event.sequence_index,
+        event_type=event.event_type,
+        event_name=event.event_name,
+        payload=event.payload,
+        trace_id=event.trace_id,
+        created_at=created_at.isoformat() if created_at is not None else None,
+    )
+
+
+@router.get("/runs/{run_id}/events", response_model=RuntimeEventsResponse)
+async def replay_run_events(
+    run_id: str,
+    after_sequence: int = Query(-1, ge=-1),
+    limit: int = Query(100, ge=1, le=200),
+    x_user_id: str = Header(..., alias="X-User-Id"),
+    x_user_role: str = Header(..., alias="X-User-Role"),
+):
+    """
+    回放 Agent run 的持久化事件。
+
+    用于浏览器 SSE 断开后，从最后已消费的 sequence_index 继续拉取事件。
+    当前用户侧接口只允许 run 创建者读取；运营审计视角后续单独做。
+    """
+    user_id = parse_user_id_header(x_user_id)
+    _ = x_user_role
+
+    run = await runtime_store.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Agent run 不存在")
+    if run.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权访问此 Agent run")
+
+    events = await runtime_store.list_events(
+        run_id,
+        after_sequence=after_sequence,
+        limit=limit,
+    )
+    serialized = [_serialize_runtime_event(event) for event in events]
+    next_after_sequence = serialized[-1].sequence_index if serialized else after_sequence
+
+    return RuntimeEventsResponse(
+        run_id=run.id,
+        session_id=run.session_id,
+        thread_id=run.thread_id,
+        trace_id=run.trace_id,
+        status=run.status,
+        next_after_sequence=next_after_sequence,
+        events=serialized,
+    )
 
 
 # =========================================================

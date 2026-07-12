@@ -3,7 +3,7 @@ from datetime import datetime
 import pytest
 
 from session import runtime as runtime_mod
-from session.models import AgentRun
+from session.models import AgentEvent, AgentRun
 from session.runtime import AgentRuntimeStore
 
 
@@ -12,6 +12,7 @@ class FakeSession:
         self.added = []
         self.commits = 0
         self.run = None
+        self.execute_result = None
 
     async def __aenter__(self):
         return self
@@ -31,6 +32,25 @@ class FakeSession:
 
     async def commit(self):
         self.commits += 1
+
+    async def execute(self, _stmt):
+        return self.execute_result
+
+
+class _FakeScalarResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _FakeExecuteResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return _FakeScalarResult(self._rows)
 
 
 @pytest.mark.asyncio
@@ -114,3 +134,30 @@ async def test_mark_run_status_updates_terminal_metadata(monkeypatch):
     assert fake_session.run.status == "FAILED"
     assert fake_session.run.error_message == "boom"
     assert isinstance(fake_session.run.finished_at, datetime)
+
+
+@pytest.mark.asyncio
+async def test_list_events_returns_ordered_runtime_events(monkeypatch):
+    fake_session = FakeSession()
+    fake_session.execute_result = _FakeExecuteResult([
+        AgentEvent(
+            id=1,
+            run_id="run-001",
+            session_id=1001,
+            thread_id="thread-001",
+            sequence_index=1,
+            event_type="final_answer",
+            event_name=None,
+            payload={"content": "ok"},
+            trace_id="trace-001",
+        )
+    ])
+    monkeypatch.setattr(runtime_mod, "AsyncSessionLocal", lambda: fake_session)
+
+    store = AgentRuntimeStore()
+    events = await store.list_events("run-001", after_sequence=0, limit=10)
+
+    assert len(events) == 1
+    assert events[0].run_id == "run-001"
+    assert events[0].sequence_index == 1
+    assert events[0].event_type == "final_answer"

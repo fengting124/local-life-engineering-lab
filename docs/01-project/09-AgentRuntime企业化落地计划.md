@@ -42,7 +42,7 @@
 | Checkpoint pending writes | 当前分支已新增 `langgraph_checkpoint_write` 并实现 `aput_writes()` 持久化；仍需真 MySQL 重启恢复 smoke | `copilot-agent-service/session/checkpointer.py`、`local-life-copilot/src/main/resources/db/migration/V102__add_langgraph_checkpoint_writes.sql` |
 | 高风险副作用幂等账本 | 当前分支已在 `local-life-server` 新增 `side_effect_ledger`，退款/补券执行前按 `operation_type + approval_id` 幂等检查，成功后写结果快照 | `local-life-server/.../InternalService.java`、`SideEffectLedgerMapper`、`V10__add_side_effect_ledger.sql` |
 | SSE / 错误输出 | 当前分支已改为安全展示事件：工具只输出参数 key，结果只输出完成状态，异常只输出通用错误码和文案 | `copilot-agent-service/api/chat.py` |
-| Agent Run/Event 运行时事实 | 当前分支已新增 `agent_run`/`agent_event`、Python `AgentRuntimeStore`，并把 `/chat` 的 SSE 关键事件同步落库；仍未完成断线重放接口和官方 interrupt/resume 迁移 | `copilot-agent-service/session/runtime.py`、`session/models.py`、`api/chat.py`、`local-life-copilot/.../V103__add_agent_runtime_events.sql` |
+| Agent Run/Event 运行时事实 | 当前分支已新增 `agent_run`/`agent_event`、Python `AgentRuntimeStore`，把 `/chat` 的 SSE 关键事件同步落库，并提供 `GET /chat/runs/{run_id}/events` 按游标回放；仍未完成官方 interrupt/resume 迁移 | `copilot-agent-service/session/runtime.py`、`session/models.py`、`api/chat.py`、`local-life-copilot/.../V103__add_agent_runtime_events.sql` |
 | RAG 故障降级 | 当前分支已移除向量检索的 “Mock 文档” 兜底；Milvus 不可用时返回空候选，上层在无 BM25/真实候选时拒答 | `copilot-agent-service/rag/*` |
 | CORS 策略 | 当前分支已改为 `CORS_ALLOWED_ORIGINS` 环境变量驱动，默认只允许本地开发前端；生产需配置真实前端域名 | `copilot-agent-service/main.py`、`copilot-agent-service/config/settings.py` |
 | 审批队列隔离 | 当前分支已支持 `X-Merchant-Id` 商家作用域过滤；带商家头时 pending/detail/approve/reject 都会限制在对应 `action_payload.merchant_id` | `copilot-agent-service/api/hitl.py`、`session/hitl.py` |
@@ -176,7 +176,7 @@
 2. 集成测试至少覆盖：
    - `interrupt -> approval -> resume`
    - `disconnect -> reconnect -> event replay`
-3. 运行结果以 `agent_run/agent_event` 为准，SSE 只是消费这些事件。当前分支已做到“边推 SSE 边落库”，下一步需要补 `/chat/events` 或类似接口按 `run_id + sequence_index` 重放。
+3. 运行结果以 `agent_run/agent_event` 为准，SSE 只是消费这些事件。当前分支已做到“边推 SSE 边落库”，并提供 `GET /chat/runs/{run_id}/events?after_sequence=N&limit=M` 按 `run_id + sequence_index` 重放。
 
 完成标志：系统不再依赖“前端记住 thread_id 并正确传回来”这类脆弱前提。
 

@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 
 import structlog
+from sqlalchemy import select
 
 from session.manager import AsyncSessionLocal, _snowflake_id
 from session.models import AgentEvent, AgentRun
@@ -34,6 +35,10 @@ def _summary(message: str | None, limit: int = 200) -> str | None:
 
 class AgentRuntimeStore:
     """Persistence gateway for agent_run and agent_event."""
+
+    async def get_run(self, run_id: str) -> AgentRun | None:
+        async with AsyncSessionLocal() as db:
+            return await db.get(AgentRun, run_id)
 
     async def create_run(
         self,
@@ -125,6 +130,25 @@ class AgentRuntimeStore:
             sequence_index=sequence_index,
         )
         return event_id
+
+    async def list_events(
+        self,
+        run_id: str,
+        *,
+        after_sequence: int = -1,
+        limit: int = 100,
+    ) -> list[AgentEvent]:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(AgentEvent)
+                .where(
+                    AgentEvent.run_id == run_id,
+                    AgentEvent.sequence_index > after_sequence,
+                )
+                .order_by(AgentEvent.sequence_index.asc())
+                .limit(limit)
+            )
+            return list(result.scalars().all())
 
 
 runtime_store = AgentRuntimeStore()

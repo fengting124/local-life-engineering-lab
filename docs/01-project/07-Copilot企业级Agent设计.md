@@ -25,7 +25,7 @@
 | RAG + Milvus | Partial | `copilot-agent-service/rag/`；Milvus 客户端不可用时返回空候选，知识库无真实候选则拒答；仍待真实故障 smoke 和告警联动 |
 | Guardrails | Active | `copilot-agent-service/guardrails/input_checker.py` |
 | 服务端短时内部 token | Planned | 当前代码仍使用 `X-User-*` 请求头链路 |
-| Agent Run/Event 运行时表 | Partial | `agent_run`/`agent_event` 已记录 `/chat` 运行状态和 SSE 事件；仍待按 `run_id` 重放、断线恢复和官方 interrupt/resume 迁移 |
+| Agent Run/Event 运行时表 | Partial | `agent_run`/`agent_event` 已记录 `/chat` 运行状态和 SSE 事件，并支持按 `run_id + sequence_index` 回放；仍待前端断线续拉和官方 interrupt/resume 迁移 |
 
 ## 1.2 历史计划处理
 
@@ -559,7 +559,7 @@ CREATE TABLE agent_event (
 );
 ```
 
-当前代码在 `/chat` Fast Path 和 LangGraph SSE 流里同步写入 `session_started`、`agent_step`、`stream`、`tool_call`、`tool_result`、`hitl_request`、`final_answer`、`error` 等事件。生产级还需要补事件重放 API、断线 cursor 和官方 `interrupt()/Command(resume=...)` 恢复语义。
+当前代码在 `/chat` Fast Path 和 LangGraph SSE 流里同步写入 `session_started`、`agent_step`、`stream`、`tool_call`、`tool_result`、`hitl_request`、`final_answer`、`error` 等事件。`GET /chat/runs/{run_id}/events?after_sequence=N&limit=M` 可按游标回放当前用户自己的 run。生产级还需要前端断线续拉、运营审计入口和官方 `interrupt()/Command(resume=...)` 恢复语义。
 
 ### 9.6 工具调用审计表
 

@@ -550,3 +550,77 @@ class TestChatRuntimeEvents:
             for call in runtime.append_event.await_args_list
         ]
         assert event_types == ["session_started", "final_answer"]
+
+    def test_replay_run_events_returns_events_after_cursor(self):
+        runtime = AsyncMock()
+        runtime.get_run.return_value = type(
+            "Run",
+            (),
+            {
+                "id": "run-001",
+                "session_id": 1001,
+                "thread_id": "thread-001",
+                "trace_id": "trace-001",
+                "user_id": 9001,
+                "user_role": "merchant",
+                "merchant_id": 8001,
+                "status": "COMPLETED",
+            },
+        )()
+        runtime.list_events.return_value = [
+            type(
+                "Event",
+                (),
+                {
+                    "sequence_index": 1,
+                    "event_type": "final_answer",
+                    "event_name": None,
+                    "payload": {"content": "今天暂无订单数据", "stop_reason": "fast_path"},
+                    "trace_id": "trace-001",
+                    "created_at": None,
+                },
+            )()
+        ]
+
+        with patch("api.chat.runtime_store", runtime):
+            resp = client.get(
+                "/chat/runs/run-001/events?after_sequence=0&limit=10",
+                headers={"X-User-Id": "9001", "X-User-Role": "merchant"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["run_id"] == "run-001"
+        assert body["status"] == "COMPLETED"
+        assert body["next_after_sequence"] == 1
+        assert body["events"] == [
+            {
+                "sequence_index": 1,
+                "event_type": "final_answer",
+                "event_name": None,
+                "payload": {"content": "今天暂无订单数据", "stop_reason": "fast_path"},
+                "trace_id": "trace-001",
+                "created_at": None,
+            }
+        ]
+        runtime.list_events.assert_awaited_once_with("run-001", after_sequence=0, limit=10)
+
+    def test_replay_run_events_rejects_foreign_user(self):
+        runtime = AsyncMock()
+        runtime.get_run.return_value = type(
+            "Run",
+            (),
+            {
+                "id": "run-001",
+                "user_id": 9001,
+            },
+        )()
+
+        with patch("api.chat.runtime_store", runtime):
+            resp = client.get(
+                "/chat/runs/run-001/events",
+                headers={"X-User-Id": "9999", "X-User-Role": "merchant"},
+            )
+
+        assert resp.status_code == 403
+        runtime.list_events.assert_not_awaited()
