@@ -7,16 +7,17 @@ Chat API：对前端提供 SSE 流式输出。
 
 SSE 事件类型（前端按 event 字段区分处理）：
   agent_step    → Agent 进入新步骤（step_count + thought）
-  tool_call     → 即将调用工具（工具名 + 参数预览）
-  tool_result   → 工具返回结果
+  tool_call     → 即将调用工具（工具名 + 参数 key 摘要，不输出参数值）
+  tool_result   → 工具调用完成状态（不输出原始结果）
   reflection    → Self-Reflection 触发
   hitl_request  → 高风险动作申请人工审批，Agent 挂起
   final_answer  → 最终回答（流结束）
-  error         → 异常（前端弹错误提示）
+  error         → 安全错误摘要（详细异常只写日志）
 """
 import json
 import asyncio
 import structlog
+from typing import Any
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -33,6 +34,61 @@ from session.models import AgentSession
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+SENSITIVE_ARG_KEY_FRAGMENTS = (
+    "key",
+    "token",
+    "secret",
+    "password",
+    "authorization",
+    "cookie",
+)
+
+
+def _safe_arg_keys(raw_args: Any) -> list[str]:
+    """Return non-sensitive argument keys for UI explainability without values."""
+    if not isinstance(raw_args, dict):
+        return []
+    return sorted(
+        key for key in raw_args.keys()
+        if not any(fragment in str(key).lower() for fragment in SENSITIVE_ARG_KEY_FRAGMENTS)
+    )
+
+
+def _safe_tool_call_event(tool_name: str, raw_args: Any) -> dict:
+    """Build a browser-safe tool call event."""
+    return {
+        "tool": tool_name,
+        "arg_keys": _safe_arg_keys(raw_args),
+    }
+
+
+def _safe_tool_result_event(tool_name: str, raw_output: Any) -> dict:
+    """Build a browser-safe tool result event without leaking raw tool output."""
+    return {
+        "tool": tool_name,
+        "status": "completed",
+    }
+
+
+def _safe_error_event(error: Exception) -> dict:
+    """Build a browser-safe error event while keeping details in server logs."""
+    return {
+        "code": "AGENT_STREAM_ERROR",
+        "message": "Agent 执行过程中出现错误，请稍后重试或联系管理员",
+    }
+
+
+def _safe_hitl_request_event(thread_id: str, pending_action: Any) -> dict:
+    """Build a browser-safe HITL request event without action payload values."""
+    action = pending_action if isinstance(pending_action, dict) else {}
+    approval_id = action.get("approval_id")
+    return {
+        "thread_id": thread_id,
+        "approval_id": str(approval_id) if approval_id is not None else None,
+        "action": {"action_type": action.get("action_type", "high_risk_action")},
+        "message": "等待人工审批",
+    }
 
 
 # =========================================================
@@ -342,18 +398,11 @@ async def chat(
 
                 # ---- 工具调用开始 ----
                 elif event_type == "on_tool_start":
-                    yield _sse("tool_call", {
-                        "tool": event_name,
-                        "args": event_data.get("input", {}),
-                    })
+                    yield _sse("tool_call", _safe_tool_call_event(event_name, event_data.get("input", {})))
 
                 # ---- 工具调用结束 ----
                 elif event_type == "on_tool_end":
-                    output = event_data.get("output", "")
-                    yield _sse("tool_result", {
-                        "tool": event_name,
-                        "result": str(output)[:500],  # 截断避免过大
-                    })
+                    yield _sse("tool_result", _safe_tool_result_event(event_name, event_data.get("output", "")))
 
                 # ---- 节点结束（检查 Final Answer / HITL）----
                 elif event_type == "on_chain_end":
@@ -366,15 +415,13 @@ async def chat(
                                 "thread_id": thread_id,
                             })
                         if output.get("pending_hitl"):
-                            yield _sse("hitl_request", {
-                                "thread_id": thread_id,
-                                "action": output.get("pending_action", {}),
-                                "message": "等待人工审批",
-                            })
+                            yield _sse("hitl_request", _safe_hitl_request_event(
+                                thread_id, output.get("pending_action", {})
+                            ))
 
         except Exception as e:
             log.error("agent_stream_error", error=str(e), exc_info=True)
-            yield _sse("error", {"message": str(e)})
+            yield _sse("error", _safe_error_event(e))
 
     return StreamingResponse(
         event_stream(),
@@ -499,12 +546,10 @@ async def resume(
                         yield _sse("stream", {"content": content})
 
                 elif event_type == "on_tool_start":
-                    yield _sse("tool_call", {"tool": event_name, "args": event_data.get("input", {})})
+                    yield _sse("tool_call", _safe_tool_call_event(event_name, event_data.get("input", {})))
 
                 elif event_type == "on_tool_end":
-                    yield _sse("tool_result", {
-                        "tool": event_name, "result": str(event_data.get("output", ""))[:500]
-                    })
+                    yield _sse("tool_result", _safe_tool_result_event(event_name, event_data.get("output", "")))
 
                 elif event_type == "on_chain_end":
                     output = event_data.get("output", {})
@@ -517,7 +562,7 @@ async def resume(
 
         except Exception as e:
             log.error("resume_stream_error", error=str(e), exc_info=True)
-            yield _sse("error", {"message": str(e)})
+            yield _sse("error", _safe_error_event(e))
 
     return StreamingResponse(
         resume_stream(),

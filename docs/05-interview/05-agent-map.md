@@ -54,7 +54,7 @@
 | --- | --- | --- | --- |
 | `POST /chat` | `api/chat.py` | 接收用户问题，创建会话，走 Fast Path 或 LangGraph Agent | Agent 主入口、SSE 流式响应 |
 | `POST /chat/resume` | `api/chat.py` | HITL 审批后恢复执行 | Human-in-the-loop、Checkpoint |
-| SSE 事件 | `api/chat.py` | 输出 `agent_step`、`stream`、`tool_call`、`tool_result`、`hitl_request`、`final_answer` | 流式响应、Agent 可解释过程 |
+| SSE 事件 | `api/chat.py` | 输出 `agent_step`、`stream`、`tool_call`、`tool_result`、`hitl_request`、`final_answer`；工具参数/结果/异常按展示层脱敏 | 流式响应、Agent 可解释过程 |
 | 输入防护 | `guardrails/input_checker.py` | 拦截越权、提示词注入、泄露系统提示等请求 | Prompt Injection、防幻觉、防越权 |
 
 面试讲法：用户不是直接访问 Java 业务接口，而是进入 Python Agent Service。Agent 负责理解意图、选择工具、流式返回；Java MCP Server 负责真正的业务查询和高风险操作。
@@ -250,7 +250,7 @@
 | Metrics | `agent/metrics.py` | 统计会话、LLM、工具、RAG、HITL、Guardrails 指标 | Prometheus/Grafana |
 | Tool Audit | `ToolAuditService` | 记录工具调用审计 | Agent 安全审计 |
 | Evals | `evals/metrics.py`、`evals/eval_cases.py` | 评估工具准确率、完成率、Recall@5、事实一致性、延迟和成本 | Agent/RAG 评估 |
-| SSE 过程事件 | `api/chat.py` | 前端可看到步骤、工具调用、审批请求 | 可解释 Agent |
+| SSE 过程事件 | `api/chat.py` | 前端可看到步骤、工具名、参数 key、审批请求；不直接暴露工具参数值、结果片段和异常文本 | 可解释 Agent、数据最小化 |
 
 面试讲法：Agent 不能只看最终答案。项目记录工具调用次数、延迟、RAG 命中、HITL 状态、token 成本和 eval case，通过 Prometheus/Grafana 和日志追踪定位问题。
 

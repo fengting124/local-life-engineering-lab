@@ -475,6 +475,13 @@ Step 8: ExecuteRefundTool → LocalLifeInternalClient → LocalLife Server
 Step 9: SSE 继续推送，最终 final_answer
 ```
 
+SSE 是展示通道，不是审计或数据导出接口。当前实现中：
+
+- `tool_call` 只给前端工具名和参数 key，不推参数值。
+- `tool_result` 只给完成状态，不推原始工具结果片段。
+- `error` 只给通用错误码和文案，详细异常进入服务端日志。
+- `hitl_request` 只给动作类型和审批 ID，不推退款参数、手机号、internal key 等 payload。
+
 ### 7.3 MySQL Checkpoint 的关键性
 
 如果用默认的 `MemorySaver`（内存），服务重启或崩溃后 thread 状态丢失。

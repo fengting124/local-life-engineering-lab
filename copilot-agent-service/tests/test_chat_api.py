@@ -18,7 +18,16 @@ from starlette.testclient import TestClient
 from fastapi import FastAPI
 from fastapi import HTTPException
 
-from api.chat import _sse, _try_fast_path, _assert_session_owned_by_user, router as chat_router
+from api.chat import (
+    _safe_error_event,
+    _safe_hitl_request_event,
+    _safe_tool_call_event,
+    _safe_tool_result_event,
+    _sse,
+    _try_fast_path,
+    _assert_session_owned_by_user,
+    router as chat_router,
+)
 
 
 # =========================================================
@@ -64,6 +73,55 @@ class TestSseFormatter:
         data_line = next(l for l in result.split("\n") if l.startswith("data:"))
         parsed = json.loads(data_line[len("data: "):])
         assert parsed["args"]["order_no"] == "123"
+
+
+class TestSafeSseEvents:
+    def test_tool_call_event_exposes_arg_keys_not_values(self):
+        payload = _safe_tool_call_event(
+            "execute_refund",
+            {"order_no": "ORDER-SECRET", "amount": 100, "internal_key": "sk-internal"},
+        )
+        encoded = json.dumps(payload, ensure_ascii=False)
+
+        assert payload["tool"] == "execute_refund"
+        assert payload["arg_keys"] == ["amount", "order_no"]
+        assert "ORDER-SECRET" not in encoded
+        assert "sk-internal" not in encoded
+        assert "internal_key" not in encoded
+
+    def test_tool_result_event_does_not_expose_raw_output(self):
+        payload = _safe_tool_result_event("query_order", "手机号 13812345678 internal_key=secret")
+        encoded = json.dumps(payload, ensure_ascii=False)
+
+        assert payload == {"tool": "query_order", "status": "completed"}
+        assert "13812345678" not in encoded
+        assert "secret" not in encoded
+
+    def test_error_event_does_not_expose_exception_text(self):
+        payload = _safe_error_event(RuntimeError("X-Internal-Key=secret-token"))
+        encoded = json.dumps(payload, ensure_ascii=False)
+
+        assert payload["code"] == "AGENT_STREAM_ERROR"
+        assert "secret-token" not in encoded
+        assert "X-Internal-Key" not in encoded
+
+    def test_hitl_request_event_exposes_action_type_not_payload(self):
+        payload = _safe_hitl_request_event(
+            "thread-1",
+            {
+                "action_type": "execute_refund",
+                "payload": {"order_no": "ORDER-1", "internal_key": "secret"},
+                "reason": "用户手机号 13812345678",
+                "approval_id": 1001,
+            },
+        )
+        encoded = json.dumps(payload, ensure_ascii=False)
+
+        assert payload["action"] == {"action_type": "execute_refund"}
+        assert payload["approval_id"] == "1001"
+        assert "ORDER-1" not in encoded
+        assert "secret" not in encoded
+        assert "13812345678" not in encoded
 
 
 # =========================================================
