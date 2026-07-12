@@ -77,24 +77,11 @@ X-Merchant-Id: 20001
 
 这些 Header 在真实链路中由 Python Agent Service 注入。`X-Agent-Signature` 的 canonical string 是 `user_id + "\n" + role + "\n" + merchant_id_or_empty + "\n" + timestamp`，MCP Server 验签后才信任 `X-User-*`。
 
-本地手工 curl 可先定义：
+本地手工 curl 可用仓库内脚本生成签名 Header：
 
 ```bash
 # 先设置 MCP_CONTEXT_SIGNING_SECRET，并确保它与 local-life-copilot 配置一致。
-: "${MCP_CONTEXT_SIGNING_SECRET:?set MCP_CONTEXT_SIGNING_SECRET first}"
-sign_mcp_headers() {
-  local user_id="$1"
-  local role="$2"
-  local merchant_id="${3:-}"
-  local ts
-  local sig
-  ts="$(date +%s)"
-  sig="$(printf '%s\n%s\n%s\n%s' "$user_id" "$role" "$merchant_id" "$ts" \
-    | openssl dgst -sha256 -hmac "$MCP_CONTEXT_SIGNING_SECRET" -hex \
-    | awk '{print $2}')"
-  printf -- '-H X-User-Id:%s -H X-User-Role:%s -H X-Agent-Timestamp:%s -H X-Agent-Signature:%s' \
-    "$user_id" "$role" "$ts" "$sig"
-}
+scripts/mcp-sign-headers.sh 10001 admin
 ```
 
 ## Copilot Agent Service 调用

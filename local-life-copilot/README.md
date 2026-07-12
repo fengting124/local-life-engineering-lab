@@ -34,25 +34,11 @@ curl http://localhost:8081/actuator/health
 # 本地直连 /mcp 调试时需要给身份上下文签名。
 # 真实业务链路中该签名由 Python Agent Service 自动生成。
 # 先设置 MCP_CONTEXT_SIGNING_SECRET，并确保它与 local-life-copilot 配置一致。
-: "${MCP_CONTEXT_SIGNING_SECRET:?set MCP_CONTEXT_SIGNING_SECRET first}"
-sign_mcp_headers() {
-  local user_id="$1"
-  local role="$2"
-  local merchant_id="${3:-}"
-  local ts
-  local sig
-  ts="$(date +%s)"
-  sig="$(printf '%s\n%s\n%s\n%s' "$user_id" "$role" "$merchant_id" "$ts" \
-    | openssl dgst -sha256 -hmac "$MCP_CONTEXT_SIGNING_SECRET" -hex \
-    | awk '{print $2}')"
-  printf -- '-H X-User-Id:%s -H X-User-Role:%s -H X-Agent-Timestamp:%s -H X-Agent-Signature:%s' \
-    "$user_id" "$role" "$ts" "$sig"
-}
 
 # 测试工具列表
 curl -X POST http://localhost:8081/mcp \
   -H "Content-Type: application/json" \
-  $(sign_mcp_headers 10001 merchant 20001) \
+  $(../scripts/mcp-sign-headers.sh 10001 merchant 20001) \
   -H "X-Merchant-Id: 20001" \
   -d '{"jsonrpc":"2.0","id":"1","method":"tools/list","params":{}}'
 
@@ -61,7 +47,7 @@ curl -X POST http://localhost:8081/mcp \
 # 但实现按业务订单号 order_no 查询，例如 BULK2026061000000000。
 curl -X POST http://localhost:8081/mcp \
   -H "Content-Type: application/json" \
-  $(sign_mcp_headers 881000000000 merchant 881100000000) \
+  $(../scripts/mcp-sign-headers.sh 881000000000 merchant 881100000000) \
   -H "X-Merchant-Id: 881100000000" \
   -d '{"jsonrpc":"2.0","id":"2","method":"tools/call","params":{"name":"query_order","arguments":{"order_id":"BULK2026061000000000"}}}'
 ```
