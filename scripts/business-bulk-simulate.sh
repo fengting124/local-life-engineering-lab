@@ -491,8 +491,6 @@ if [ -n "$sample_order_no" ]; then
     echo "MCP 查询："
     echo "  curl -s http://localhost:8081/mcp \\"
     echo "    -H 'Content-Type: application/json' \\"
-    echo "    -H 'X-User-Id: ${USER_BASE}' \\"
-    echo "    -H 'X-User-Role: merchant' \\"
-    echo "    -H 'X-Merchant-Id: ${MERCHANT_BASE}' \\"
+    echo "    \$(scripts/mcp-sign-headers.sh ${USER_BASE} merchant ${MERCHANT_BASE}) \\"
     echo "    -d '{\"jsonrpc\":\"2.0\",\"id\":\"bulk\",\"method\":\"tools/call\",\"params\":{\"name\":\"query_order\",\"arguments\":{\"order_id\":\"${sample_order_no}\"}}}'"
 fi

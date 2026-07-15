@@ -334,9 +334,7 @@ cat <<'EOF'
 MCP 查询示例：
   curl -s http://localhost:8081/mcp \
     -H 'Content-Type: application/json' \
-    -H 'X-User-Id: 880000000001' \
-    -H 'X-User-Role: merchant' \
-    -H 'X-Merchant-Id: 880000100001' \
+    $(scripts/mcp-sign-headers.sh 880000000001 merchant 880000100001) \
     -d '{"jsonrpc":"2.0","id":"demo","method":"tools/call","params":{"name":"query_order","arguments":{"order_id":"202606100002"}}}'
 
 Agent 演示问题：
