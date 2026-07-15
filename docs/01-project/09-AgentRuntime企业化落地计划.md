@@ -1,10 +1,10 @@
 # Agent Runtime 企业化落地计划
 
-- Status: Draft
+- Status: Active
 - Type: Plan
 - Owners: Project maintainers
 - Last verified: 2026-07-15
-- Source of truth: 当前代码和外部规范
+- Source of truth: `main` at `5fa66dace6828e2159d9b9e3e3ec37d7d33dba7d`, PR `#16`, `scripts/demo-smoke.sh`
 
 ## 1. 文档目标
 
@@ -15,8 +15,8 @@
 
 它不是重写 [Copilot 企业级 Agent 设计](./07-Copilot企业级Agent设计.md)，而是站在当前 `main` 分支实际代码之上，给出从“能跑 Demo”走向“可控、可审计、可恢复、可上线”的下一阶段工程路线。
 
-时间基线：`2026-07-11`  
-代码基线：`main` 分支
+时间基线：`2026-07-15`
+代码基线：`main` 分支，PR `#16` 已合入。
 
 ## 2. 当前状态判断
 
@@ -57,6 +57,21 @@
 4. 最后再做长期记忆和更复杂的 Agent 能力。
 
 不要反过来。否则很容易做出“记忆很花、模型很强，但退款恢复不可靠”的系统。
+
+### 2.4 v0.1.0-rc 截止状态
+
+截至 `2026-07-15`，Agent Runtime 主线已通过 PR `#16` 合入 `main`。当前状态不是“所有企业化目标完成”，而是“核心运行时、安全边界和可恢复能力进入 RC 验收阶段”。
+
+| 阶段 | 当前状态 | 证据 | 仍未完成 |
+| --- | --- | --- | --- |
+| 阶段 A：身份与权限边界 | 部分完成 | Agent -> MCP HMAC 签名、MCP header 校验、RBAC 和 HITL scope 已合入 | 短时 bearer token、`aud`/`scope`/`exp`/`run_id` 生产化授权仍未做 |
+| 阶段 B：Durable HITL 与 Runtime | 部分完成 | `agent_run`、`agent_event`、SSE replay、pending writes、审批原子状态迁移、重复 resume 短路已合入 | 仍未迁到 LangGraph 官方 `interrupt()/Command(resume=...)` |
+| 阶段 C：副作用幂等账本 | 部分完成 | `side_effect_ledger`、退款/补券按 `approval_id` 幂等检查已合入 | `run_id`/`trace_id`/显式 `idempotencyKey` 全链路贯通仍需补齐 |
+| 阶段 D：受控业务工作流 | 进行中 | `scripts/business-simulate.sh`、`scripts/e2e-smoke.sh`、`scripts/demo-smoke.sh` 提供演示链路 | 四条工作流还未全部固化为独立 workflow/eval |
+| 阶段 E：RAG 与长期记忆治理 | 部分完成 | RAG benchmark、fail closed、Milvus reset 已合入 | 长期记忆治理、租户隔离 memory、污染检测仍未做 |
+| 阶段 F：上线前平台化 | 进行中 | CI 门禁、日志栈、RC 验收报告、demo smoke 入口已建立 | 指标面板、正式 release checklist、生产部署策略仍需完善 |
+
+RC 验收入口见 [v0.1.0-rc 验收报告](../release/v0.1.0-rc验收报告.md)。
 
 ## 3. 下一阶段的总原则
 
@@ -337,14 +352,15 @@
 
 建议按下面顺序推进，而不是并行发散：
 
-1. 阶段 A：身份与权限边界。
-2. 阶段 B：Durable HITL 与 Runtime。
-3. 阶段 C：副作用幂等账本。
-4. 阶段 D：业务工作流收敛。
-5. 阶段 E：RAG 与长期记忆治理。
-6. 阶段 F：平台化、文档化、上线前封板。
+1. 先完成 `v0.1.0-rc` 验收闭环：`scripts/demo-smoke.sh`、验收报告、PR、CI。
+2. 阶段 A：把 HMAC 共享密钥升级为短时 bearer token 或 mTLS。
+3. 阶段 B：迁移到 LangGraph 官方 `interrupt()/Command(resume=...)`。
+4. 阶段 C：把 `run_id`、`trace_id`、显式 `idempotencyKey` 贯通到副作用账本。
+5. 阶段 D：业务工作流收敛。
+6. 阶段 E：RAG 与长期记忆治理。
+7. 阶段 F：平台化、文档化、上线前封板。
 
-原因很直接：前四步解决的是“系统会不会出大事”，后两步解决的是“系统看起来够不够完整”。
+原因很直接：当前主线已经具备 RC 骨架，下一步先把“能稳定复现和排障”做扎实，再继续推进生产授权、官方 HITL 恢复和长期记忆治理。
 
 ## 6. 建议的分支与里程碑
 

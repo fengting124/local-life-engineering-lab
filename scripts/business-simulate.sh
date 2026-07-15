@@ -236,6 +236,34 @@ ON DUPLICATE KEY UPDATE
     `pay_at` = VALUES(`pay_at`),
     `deleted` = 0;
 
+-- 反复运行 demo 时，订单可能已存在，created_at 不会被 ON DUPLICATE 自动刷新。
+-- shop_metrics_query 按 order_info.created_at 统计“今天/昨天”的经营数据，
+-- 因此显式刷新 demo 订单时间，保证面试演示的“今天卖了多少”稳定有数值。
+UPDATE `order_info`
+SET `created_at` = NOW() - INTERVAL 1 HOUR,
+    `updated_at` = NOW()
+WHERE `order_no` IN ('202606100001','202606100002','202606100003');
+
+UPDATE `order_info_0`
+SET `created_at` = NOW() - INTERVAL 1 HOUR,
+    `updated_at` = NOW()
+WHERE `order_no` IN ('202606100001','202606100002','202606100003');
+
+UPDATE `order_info_1`
+SET `created_at` = NOW() - INTERVAL 1 HOUR,
+    `updated_at` = NOW()
+WHERE `order_no` IN ('202606100001','202606100002','202606100003');
+
+UPDATE `order_info_2`
+SET `created_at` = NOW() - INTERVAL 1 HOUR,
+    `updated_at` = NOW()
+WHERE `order_no` IN ('202606100001','202606100002','202606100003');
+
+UPDATE `order_info_3`
+SET `created_at` = NOW() - INTERVAL 1 HOUR,
+    `updated_at` = NOW()
+WHERE `order_no` IN ('202606100001','202606100002','202606100003');
+
 INSERT INTO `payment_order`
     (`id`, `payment_no`, `order_id`, `order_no`, `user_id`, `pay_amount`, `paid_amount`,
      `pay_status`, `channel`, `trade_no`, `callback_body`, `paid_at`)
