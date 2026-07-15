@@ -53,6 +53,16 @@ class AgentRuntimeStore:
             )
             return result.scalars().first()
 
+    async def get_latest_run_by_thread(self, thread_id: str) -> AgentRun | None:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(AgentRun)
+                .where(AgentRun.thread_id == thread_id)
+                .order_by(desc(AgentRun.created_at))
+                .limit(1)
+            )
+            return result.scalars().first()
+
     async def create_run(
         self,
         *,

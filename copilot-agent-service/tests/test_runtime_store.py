@@ -194,6 +194,30 @@ async def test_get_latest_waiting_run_by_thread_returns_matching_run(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_get_latest_run_by_thread_returns_most_recent_run(monkeypatch):
+    fake_session = FakeSession()
+    fake_session.execute_result = _FakeExecuteResult([
+        AgentRun(
+            id="run-completed",
+            session_id=1001,
+            thread_id="thread-001",
+            user_id=9001,
+            user_role="merchant",
+            merchant_id=8001,
+            status="COMPLETED",
+            input_summary="refund",
+        )
+    ])
+    monkeypatch.setattr(runtime_mod, "AsyncSessionLocal", lambda: fake_session)
+
+    store = AgentRuntimeStore()
+    run = await store.get_latest_run_by_thread("thread-001")
+
+    assert run.id == "run-completed"
+    assert run.status == "COMPLETED"
+
+
+@pytest.mark.asyncio
 async def test_next_sequence_returns_max_plus_one(monkeypatch):
     fake_session = FakeSession()
     fake_session.execute_result = _FakeExecuteResult([5])

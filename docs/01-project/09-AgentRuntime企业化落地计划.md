@@ -160,7 +160,7 @@
 
 1. 从当前“手工挂起 + END”迁到 LangGraph 官方 `interrupt()`/`Command(resume=...)` 模式。
 2. `approval_id` 绑定真实 `interrupt_id`、`checkpoint_id`、`thread_id`，恢复时只允许服务端反查。
-3. 实现 `agent_run` 和 `agent_event` 两张表（当前分支已完成最小闭环：建表、Store、`/chat` SSE 事件落库、单元测试）：
+3. 实现 `agent_run` 和 `agent_event` 两张表（当前分支已完成最小闭环：建表、Store、`/chat` SSE 事件落库、单元测试、重复 resume 终态短路）：
    - `agent_run` 管状态：`SUBMITTED/RUNNING/WAITING_APPROVAL/COMPLETED/FAILED/CANCELED/EXPIRED`
    - `agent_event` 管事件流：tool call、interrupt、resume、error、final answer
 4. 补齐 `aput_writes()`，让 pending writes 真正持久化。（当前分支已完成代码、迁移和单元测试）
@@ -178,6 +178,7 @@
    - `disconnect -> reconnect -> event replay`
 3. 运行结果以 `agent_run/agent_event` 为准，SSE 只是消费这些事件。当前分支已做到“边推 SSE 边落库”，并提供 `GET /chat/runs/{run_id}/events?after_sequence=N&limit=M` 按 `run_id + sequence_index` 重放。
 4. 审批状态迁移以数据库原子更新为准：同一个审批 ID 被重复点击、并发 approve/reject 或工作台与 resume 竞态时，只有第一个抢到 `PENDING` 的请求成功，后续请求返回失败并由上层按已处理状态兜底。
+5. `/chat/resume` 会查询同一 `thread_id` 的最新 `agent_run`。如果已经是 `COMPLETED` 或 `CANCELED`，直接返回“已处理”事件，不再重启 LangGraph，避免重复追加事件或重复触发工具链。
 
 完成标志：系统不再依赖“前端记住 thread_id 并正确传回来”这类脆弱前提。
 

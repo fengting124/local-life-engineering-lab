@@ -557,6 +557,51 @@ class TestResumeEndpoint:
         assert captured["config"] == {"configurable": {"thread_id": "thread-approved"}}
         approve_mock.assert_not_awaited()
 
+    def test_resume_completed_runtime_run_does_not_restart_agent(self):
+        approval = type(
+            "Approval",
+            (),
+            {
+                "id": 1007,
+                "status": "APPROVED",
+                "thread_id": "thread-completed",
+                "action_type": "execute_refund",
+                "action_payload": {"order_id": "O-7"},
+                "agent_reason": "已经审批并执行",
+                "session_id": 2007,
+            },
+        )()
+        runtime = AsyncMock()
+        runtime.get_latest_run_by_thread.return_value = type(
+            "Run",
+            (),
+            {
+                "id": "run-completed",
+                "session_id": 2007,
+                "thread_id": "thread-completed",
+                "trace_id": "trace-completed",
+                "status": "COMPLETED",
+            },
+        )()
+
+        async def should_not_stream(_resume_input, config=None, version=None):
+            raise AssertionError("completed HITL run must not restart Agent graph")
+            yield
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.hitl_service.approve", AsyncMock(return_value=False)) as approve_mock, \
+             patch("api.chat.agent_graph.astream_events", should_not_stream), \
+             patch("api.chat.runtime_store", runtime):
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1007", "approved": True},
+                headers={"X-User-Id": "9", "X-User-Role": "cs"},
+            )
+
+        assert resp.status_code == 200
+        assert "已处理" in resp.text
+        approve_mock.assert_not_awaited()
+
     def test_resume_accepts_already_rejected_record_from_hitl_workbench(self):
         approval = type(
             "Approval",

@@ -506,6 +506,8 @@ WHERE id = ? AND status = 'PENDING'
 
 服务端以 `rowcount` 判断是否抢到这次状态迁移。并发场景下，approve 和 reject 即使同时到达，也只有第一个能把 `PENDING` 改成终态；后到请求会因为 `rowcount=0` 返回失败，不会覆盖已经审批过的结果。这类写法在面试里可以类比库存扣减、订单支付、退款状态机里的 CAS/乐观并发控制。
 
+`/chat/resume` 还有第二层幂等保护：恢复前会读取同一 `thread_id` 最新的 `agent_run`。如果这个 run 已经是 `COMPLETED` 或 `CANCELED`，说明审批恢复流程已经处理过，接口只返回“已处理”，不会再次启动 LangGraph，也不会重复追加 `tool_call/final_answer` 事件。真正的资金/补券副作用仍由 Java 主服务的 `side_effect_ledger` 做最终兜底。
+
 断线回放入口：
 
 ```http
@@ -1010,6 +1012,7 @@ data: {
 - LangGraph thread 状态存 MySQL Checkpoint，不用内存保存。
 - 审批通过后通过 `thread_id + approval_id` 恢复，从挂起点继续执行。
 - 审批表状态迁移用条件更新，`PENDING -> APPROVED/REJECTED` 只有一个请求能成功，避免运营重复点击或 approve/reject 并发覆盖。
+- `/chat/resume` 对已完成/已取消 run 做短路，避免重复恢复 Agent 图；Java 账本再兜底资金类副作用。
 - Java 主服务用 `side_effect_ledger` 以 `operation_type + approval_id` 做幂等；同一审批重复恢复时直接返回第一次成功结果，不再次退款/发券。
 - 如果 MySQL Checkpoint 不可用，当前开发环境会 fallback 到 `MemorySaver`，但生产必须把 MySQL Checkpoint 作为强依赖，否则不能承诺长时间挂起恢复。
 

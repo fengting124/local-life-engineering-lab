@@ -331,6 +331,14 @@ async def _safe_get_waiting_runtime_run(thread_id: str) -> Any | None:
         return None
 
 
+async def _safe_get_latest_runtime_run(thread_id: str) -> Any | None:
+    try:
+        return await runtime_store.get_latest_run_by_thread(thread_id)
+    except Exception as e:
+        log.warning("agent_latest_run_lookup_failed", thread_id=thread_id, error=str(e))
+        return None
+
+
 async def _safe_next_runtime_sequence(run_id: str | None) -> int:
     if not run_id:
         return 0
@@ -779,6 +787,24 @@ async def resume(
             approver_id=approver_id,
         )
         raise HTTPException(status_code=400, detail="thread_id 与审批记录不匹配")
+
+    latest_runtime_run = await _safe_get_latest_runtime_run(resolved_thread_id)
+    latest_status = getattr(latest_runtime_run, "status", None)
+    if latest_status in ("COMPLETED", "CANCELED"):
+        async def already_processed_stream():
+            payload = {
+                "content": "该审批任务已处理，无需重复恢复。",
+                "stop_reason": "hitl_already_processed",
+                "thread_id": resolved_thread_id,
+                "status": latest_status,
+            }
+            yield _sse("final_answer", payload)
+
+        return StreamingResponse(
+            already_processed_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     # ---- Step 1：审批拒绝 ----
     runtime_run = await _safe_get_waiting_runtime_run(resolved_thread_id)
