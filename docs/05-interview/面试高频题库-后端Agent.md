@@ -1,5 +1,11 @@
 # 后端 + Agent 面试高频题库
 
+- Status: Active
+- Type: Interview
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: 项目文档、面经资料
+
 这份文档面向“Java 后端实习 + AI Agent 项目”面试准备。它不重复讲完整实现细节，而是把近期面经高频问题映射到本项目的代码、文档和答题套路。
 
 阅读方式：
@@ -23,7 +29,7 @@
 
 最新抓取的关键词频次与题库判断一致：`项目`、`Agent`、`Java`、`Redis`、`MySQL`、`RAG`、`缓存`、`索引`、`八股`、`算法` 都是高频项。后续如果要继续抓登录态帖子全文，见本文末尾“继续拉取最新面经需要什么”。
 
-Agent 场景题的完整项目化答法已融合到 [LocalLife Copilot 全链路教程：第 13 章](./LocalLifeCopilot项目教程.md#第-13-章最新-agent-面经场景题)，那里按“面经问题 → 本项目实现 → 真实风险 → 代码入口”展开。
+Agent 场景题的完整项目化答法已融合到 [LocalLife Copilot 全链路教程：第 13 章](../04-notes/LocalLifeCopilot项目教程.md#第-13-章最新-agent-面经场景题)，那里按“面经问题 → 本项目实现 → 真实风险 → 代码入口”展开。
 
 ## 高频趋势
 

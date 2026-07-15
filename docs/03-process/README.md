@@ -1,5 +1,11 @@
 # 过程文档
 
+- Status: Active
+- Type: Overview
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: `docs/03-process/`
+
 这里不再保存过程日志和临时计划，只保留长期有效的协作规范。
 
 - [Git 版本管理与提交规范](./Git版本管理与提交规范.md)

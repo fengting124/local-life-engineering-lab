@@ -55,7 +55,12 @@ bash scripts/start.sh         # 自动完成：启动中间件→DB迁移→构�
 - 📖 Agent Swagger：`http://localhost:8000/swagger-ui.html`（FastAPI 原生入口：`http://localhost:8000/docs`）
 - 📊 Grafana 监控：`http://localhost:3000`（admin/admin）
 
-**可选中间件（按需启动）：**
+**核心链路（必须一起启动）：**
+```bash
+docker compose -f infra/docker-compose.dev.yml --profile app --profile search --profile mq up -d
+```
+
+**可选组件（按需启动）：**
 ```bash
 docker compose -f infra/docker-compose.dev.yml --profile search up -d        # ES 搜索
 docker compose -f infra/docker-compose.dev.yml --profile mq up -d            # RocketMQ
@@ -73,13 +78,13 @@ docker compose -f infra/docker-compose.dev.yml --profile nginx up -d         # N
 ```bash
 cd infra
 
-# 核心中间件（MySQL + Redis）
-docker compose -f docker-compose.dev.yml up -d
+# 核心链路（应用 + MySQL + Redis + ES + RocketMQ）
+docker compose -f docker-compose.dev.yml --profile app --profile search --profile mq up -d
 
-# 搜索（ES）
+# 只调试依赖时，也可以单独启动搜索（ES）
 docker compose -f docker-compose.dev.yml --profile search up -d
 
-# 消息队列（RocketMQ）
+# 只调试依赖时，也可以单独启动消息队列（RocketMQ）
 docker compose -f docker-compose.dev.yml --profile mq up -d
 
 # 可观测性（Prometheus + Grafana + Zipkin）
@@ -189,9 +194,10 @@ curl -X POST http://localhost:8000/chat \
 | [代码级实现地图](docs/01-project/02-代码级实现地图.md) | 接口、类、表、Redis/MQ、测试、面试考点 | 想吃透代码 |
 | [接口规范文档](docs/01-project/10-接口规范文档.md) | 统一响应结构、错误码、鉴权、分页 | 开发时参照 |
 | [Copilot Agent 设计](docs/01-project/07-Copilot企业级Agent设计.md) | MCP+Agent+RAG+HITL 完整设计 | 理解 Copilot |
+| [Agent Runtime 企业化落地计划](docs/01-project/09-AgentRuntime企业化落地计划.md) | 对照当前代码的下一阶段实施路线、优先级和验收标准 | 规划后续工作 |
 | [LocalLife 接口教程](docs/04-notes/LocalLife项目接口教程.md) | 11 章从请求链路到分表的深度教程 | 面试准备 |
 | [Copilot 全链路教程](docs/04-notes/LocalLifeCopilot项目教程.md) | 12 章 MCP/LangGraph/RAG/HITL 教程 | 面试准备 |
-| [后端 + Agent 面试高频题库](docs/04-notes/面试高频题库-后端Agent.md) | 结合面经趋势整理高频问题、追问链和项目答法 | 面试准备 |
+| [后端 + Agent 面试高频题库](docs/05-interview/面试高频题库-后端Agent.md) | 结合面经趋势整理高频问题、追问链和项目答法 | 面试准备 |
 | [企业级日志系统](docs/04-notes/企业级日志系统.md) | Loki/Promtail/Grafana 集中日志、trace 关联、告警和排障 | 工程化准备 |
 | [AgentOps 评测与 GenAI 追踪](docs/04-notes/AgentOps评测与GenAI追踪.md) | Evals 报告产物、任务完成率门禁、GenAI/MCP span 排障 | 工程化准备 |
 | [环境搭建](docs/02-environment/01-环境搭建.md) | 工具链版本固定 | 初次配置 |

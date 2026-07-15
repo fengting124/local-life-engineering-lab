@@ -88,6 +88,11 @@ mcp:
     version: "1.0.0"
     # 工具限流：每分钟每个工具最多调用 100 次（防 Agent 失控循环）
     tool-rate-limit-per-minute: 100
+  context-signing:
+    # Agent Service 调 MCP 时对 X-User-* 身份上下文做 HMAC 签名。
+    # 生产环境必须通过 MCP_CONTEXT_SIGNING_SECRET / Secret Manager 覆盖。
+    secret: ${MCP_CONTEXT_SIGNING_SECRET:local-life-mcp-context-secret}
+    max-clock-skew-seconds: ${MCP_CONTEXT_SIGNING_MAX_CLOCK_SKEW_SECONDS:300}
 
 # ===== 日志 =====
 logging:

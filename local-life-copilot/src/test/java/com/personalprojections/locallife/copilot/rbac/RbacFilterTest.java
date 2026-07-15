@@ -7,6 +7,8 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
 import java.util.concurrent.atomic.AtomicReference;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -43,6 +45,7 @@ import static org.mockito.Mockito.verify;
 class RbacFilterTest {
 
     private final RbacFilter filter = new RbacFilter();
+    private static final String SIGNING_SECRET = "local-life-mcp-context-secret";
 
     @AfterEach
     void tearDown() {
@@ -90,6 +93,7 @@ class RbacFilterTest {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/mcp");
         request.addHeader("X-User-Id", "10001");
         request.addHeader("X-User-Role", "merchant");
+        sign(request, "10001", "merchant", null, nowEpochSeconds());
         MockHttpServletResponse response = new MockHttpServletResponse();
         FilterChain chain = mock(FilterChain.class);
 
@@ -105,6 +109,7 @@ class RbacFilterTest {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/mcp");
         request.addHeader("X-User-Id", "30001");
         request.addHeader("X-User-Role", "cs");
+        sign(request, "30001", "cs", null, nowEpochSeconds());
         MockHttpServletResponse response = new MockHttpServletResponse();
         FilterChain chain = mock(FilterChain.class);
 
@@ -123,6 +128,7 @@ class RbacFilterTest {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/mcp");
         request.addHeader("X-User-Id", "not-a-number");
         request.addHeader("X-User-Role", "admin");
+        sign(request, "not-a-number", "admin", null, nowEpochSeconds());
         MockHttpServletResponse response = new MockHttpServletResponse();
         FilterChain chain = mock(FilterChain.class);
 
@@ -141,6 +147,7 @@ class RbacFilterTest {
         request.addHeader("X-User-Id", "10001");
         request.addHeader("X-User-Role", "merchant");
         request.addHeader("X-Merchant-Id", "abc");
+        sign(request, "10001", "merchant", "abc", nowEpochSeconds());
         MockHttpServletResponse response = new MockHttpServletResponse();
         FilterChain chain = mock(FilterChain.class);
 
@@ -186,6 +193,7 @@ class RbacFilterTest {
         request.addHeader("X-User-Id", "10001");
         request.addHeader("X-User-Role", "merchant");
         request.addHeader("X-Merchant-Id", "20001");
+        sign(request, "10001", "merchant", "20001", nowEpochSeconds());
         MockHttpServletResponse response = new MockHttpServletResponse();
 
         AtomicReference<RbacContext> seenDuringChain = new AtomicReference<>();
@@ -212,6 +220,7 @@ class RbacFilterTest {
         request.addHeader("X-User-Id", "90001");
         request.addHeader("X-User-Role", "admin");
         // 不带 X-Merchant-Id —— admin 角色不需要
+        sign(request, "90001", "admin", null, nowEpochSeconds());
         MockHttpServletResponse response = new MockHttpServletResponse();
 
         AtomicReference<RbacContext> seenDuringChain = new AtomicReference<>();
@@ -237,6 +246,7 @@ class RbacFilterTest {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/mcp");
         request.addHeader("X-User-Id", "10001");
         request.addHeader("X-User-Role", "admin");
+        sign(request, "10001", "admin", null, nowEpochSeconds());
         MockHttpServletResponse response = new MockHttpServletResponse();
 
         FilterChain chain = mock(FilterChain.class);
@@ -251,5 +261,84 @@ class RbacFilterTest {
                 .as("即便链路下游抛异常，finally 块也必须清理 ThreadLocal —— 否则线程池复用时，" +
                         "下一个落在同一线程上的请求会读到这次失败请求残留的身份，是严重的越权风险")
                 .isNull();
+    }
+
+    // =====================================================================
+    // 7. Agent -> MCP 身份签名：防止外部请求伪造 X-User-* Header
+    // =====================================================================
+
+    @Test
+    void missingAgentSignature_returns401_andNeverInvokesChain() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/mcp");
+        request.addHeader("X-User-Id", "10001");
+        request.addHeader("X-User-Role", "admin");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(response.getContentAsString()).isEqualTo("{\"error\":\"invalid agent identity signature\"}");
+        verify(chain, never()).doFilter(any(), any());
+    }
+
+    @Test
+    void invalidAgentSignature_returns401_andNeverInvokesChain() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/mcp");
+        request.addHeader("X-User-Id", "10001");
+        request.addHeader("X-User-Role", "admin");
+        request.addHeader("X-Agent-Timestamp", String.valueOf(nowEpochSeconds()));
+        request.addHeader("X-Agent-Signature", "bad-signature");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(response.getContentAsString()).isEqualTo("{\"error\":\"invalid agent identity signature\"}");
+        verify(chain, never()).doFilter(any(), any());
+    }
+
+    @Test
+    void expiredAgentSignatureTimestamp_returns401_andNeverInvokesChain() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/mcp");
+        request.addHeader("X-User-Id", "10001");
+        request.addHeader("X-User-Role", "admin");
+        sign(request, "10001", "admin", null, nowEpochSeconds() - 600);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(response.getContentAsString()).isEqualTo("{\"error\":\"invalid agent identity signature\"}");
+        verify(chain, never()).doFilter(any(), any());
+    }
+
+    private static long nowEpochSeconds() {
+        return System.currentTimeMillis() / 1000;
+    }
+
+    private static void sign(
+            MockHttpServletRequest request,
+            String userId,
+            String role,
+            String merchantId,
+            long timestamp
+    ) throws Exception {
+        request.addHeader("X-Agent-Timestamp", String.valueOf(timestamp));
+        request.addHeader("X-Agent-Signature", hmac(userId + "\n" + role + "\n"
+                + (merchantId == null ? "" : merchantId) + "\n" + timestamp));
+    }
+
+    private static String hmac(String canonical) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(SIGNING_SECRET.getBytes(), "HmacSHA256"));
+        byte[] digest = mac.doFinal(canonical.getBytes());
+        StringBuilder hex = new StringBuilder(digest.length * 2);
+        for (byte b : digest) {
+            hex.append(String.format("%02x", b));
+        }
+        return hex.toString();
     }
 }

@@ -1,5 +1,11 @@
 # LocalLife Server 代码关系图
 
+- Status: Active
+- Type: Reference
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: 自动提取脚本产物
+
 > 本文档由 `python3 ../local-life-tools/code-analysis/java_code_graph.py` 自动生成。它用于学习 `local-life-server` 的接口入口、类依赖和方法调用关系。
 
 ## 1. 当前扫描结果

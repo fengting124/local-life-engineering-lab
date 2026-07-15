@@ -75,3 +75,49 @@ class AgentMessage(Base):
     tokens:       Mapped[int | None] = mapped_column(Integer, nullable=True)
     step_index:   Mapped[int] = mapped_column(Integer, default=0)
     created_at:   Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+
+class AgentRun(Base):
+    """
+    Agent 运行实例表（agent_run）。
+
+    一次 run 对应一次用户请求触发的 Agent 执行，而不是整个聊天会话。
+    它是企业排障入口：从 run_id 可以追到 session、thread、trace、审批和事件流。
+    """
+    __tablename__ = "agent_run"
+
+    id:            Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id:    Mapped[int] = mapped_column(BigInteger, nullable=False)
+    thread_id:     Mapped[str] = mapped_column(String(64), nullable=False)
+    trace_id:      Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_id:       Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_role:     Mapped[str] = mapped_column(String(20), nullable=False)
+    merchant_id:   Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    status:        Mapped[str] = mapped_column(String(32), nullable=False, default="SUBMITTED")
+    input_summary: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at:    Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at:   Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at:    Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at:    Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class AgentEvent(Base):
+    """
+    Agent 运行事件表（agent_event）。
+
+    SSE 是展示通道，agent_event 是可重放事实流。每个事件记录 run 内的顺序、
+    事件类型、安全摘要 payload 和 trace 关联。
+    """
+    __tablename__ = "agent_event"
+
+    id:             Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    run_id:         Mapped[str] = mapped_column(String(64), nullable=False)
+    session_id:     Mapped[int] = mapped_column(BigInteger, nullable=False)
+    thread_id:      Mapped[str] = mapped_column(String(64), nullable=False)
+    sequence_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type:     Mapped[str] = mapped_column(String(50), nullable=False)
+    event_name:     Mapped[str | None] = mapped_column(String(100), nullable=True)
+    payload:        Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    trace_id:       Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at:     Mapped[datetime] = mapped_column(DateTime, default=func.now())

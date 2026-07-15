@@ -1,5 +1,11 @@
 # WSL 本地开发指南
 
+- Status: Active
+- Type: How-to
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: 本地脚本、Compose
+
 > 适用于：Ubuntu 22.04 on WSL2 + VS Code Remote WSL
 
 ---
@@ -9,7 +15,7 @@
 **必须把项目放在 Linux 文件系统**，不能在 `/mnt/c` 或 `/mnt/d`：
 
 ```
-✅ 正确：~/projects/local-life   （即 /home/fengting/projects/local-life）
+✅ 正确：~/projects/local-life   （位于 WSL 用户目录内）
 ❌ 错误：/mnt/c/Users/xxx/projects/local-life
 ```
 

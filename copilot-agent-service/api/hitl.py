@@ -21,6 +21,42 @@ log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/hitl", tags=["hitl"])
 
 
+def _require_operator(user_id: str, role: str) -> int:
+    """Validate HITL operator identity and return numeric user id."""
+    if role not in ("cs", "admin"):
+        raise HTTPException(status_code=403, detail="无权访问审批资源")
+    try:
+        return int(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="X-User-Id 必须是数字")
+
+
+def _parse_optional_merchant_id(merchant_id: str | None) -> int | None:
+    """Parse optional merchant scope from request headers."""
+    if not merchant_id:
+        return None
+    try:
+        parsed = int(merchant_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="X-Merchant-Id 必须是数字")
+    if parsed <= 0:
+        raise HTTPException(status_code=400, detail="X-Merchant-Id 必须是正数")
+    return parsed
+
+
+def _ensure_approval_in_merchant_scope(approval, merchant_id: int | None) -> None:
+    """Hide approval records outside the caller's optional merchant scope."""
+    if merchant_id is None:
+        return
+    payload = approval.action_payload or {}
+    try:
+        approval_merchant_id = int(payload.get("merchant_id"))
+    except (TypeError, ValueError):
+        approval_merchant_id = None
+    if approval_merchant_id != merchant_id:
+        raise HTTPException(status_code=404, detail="审批记录不存在")
+
+
 class ApproveRequest(BaseModel):
     """审批通过请求体。"""
     comment: str | None = None   # 审批备注（可选）
@@ -33,7 +69,9 @@ class RejectRequest(BaseModel):
 
 @router.get("/pending")
 async def list_pending_approvals(
+    x_user_id: str = Header(..., alias="X-User-Id"),
     x_user_role: str = Header(..., alias="X-User-Role"),
+    x_merchant_id: str | None = Header(None, alias="X-Merchant-Id"),
 ):
     """
     查询所有待审批列表（审批工作台首页）。
@@ -41,10 +79,10 @@ async def list_pending_approvals(
     仅 cs 和 admin 角色可以查看，merchant 无权访问审批队列。
     返回按提交时间升序排列（最早提交的最先处理，FIFO）。
     """
-    if x_user_role not in ("cs", "admin"):
-        raise HTTPException(status_code=403, detail="无权访问审批列表")
+    _require_operator(x_user_id, x_user_role)
+    merchant_id = _parse_optional_merchant_id(x_merchant_id)
 
-    approvals = await hitl_service.get_pending_approvals(limit=100)
+    approvals = await hitl_service.get_pending_approvals(limit=100, merchant_id=merchant_id)
     return {
         "count": len(approvals),
         "approvals": [
@@ -65,17 +103,20 @@ async def list_pending_approvals(
 @router.get("/{approval_id}")
 async def get_approval_detail(
     approval_id: int,
+    x_user_id: str = Header(..., alias="X-User-Id"),
     x_user_role: str = Header(..., alias="X-User-Role"),
+    x_merchant_id: str | None = Header(None, alias="X-Merchant-Id"),
 ):
     """
     查询单个审批记录详情（运营点击某条记录查看完整信息）。
     """
-    if x_user_role not in ("cs", "admin"):
-        raise HTTPException(status_code=403, detail="无权访问审批详情")
+    _require_operator(x_user_id, x_user_role)
+    merchant_id = _parse_optional_merchant_id(x_merchant_id)
 
     approval = await hitl_service.get_approval(approval_id)
     if not approval:
         raise HTTPException(status_code=404, detail="审批记录不存在")
+    _ensure_approval_in_merchant_scope(approval, merchant_id)
 
     return {
         "id":               approval.id,
@@ -99,6 +140,7 @@ async def approve(
     body: ApproveRequest,
     x_user_id:   str = Header(..., alias="X-User-Id"),
     x_user_role: str = Header(..., alias="X-User-Role"),
+    x_merchant_id: str | None = Header(None, alias="X-Merchant-Id"),
 ):
     """
     通过审批（运营人员操作）。
@@ -111,19 +153,23 @@ async def approve(
     Agent 恢复需要前端主动调用 POST /chat/resume（携带 thread_id 和 approval_id）。
     这样设计的原因：审批和恢复解耦，运营可以审批但不关心 Agent 的技术细节。
     """
-    if x_user_role not in ("cs", "admin"):
-        raise HTTPException(status_code=403, detail="无权审批")
+    approver_id = _require_operator(x_user_id, x_user_role)
+    merchant_id = _parse_optional_merchant_id(x_merchant_id)
 
-    approver_id = int(x_user_id)
+    approval = await hitl_service.get_approval(approval_id)
+    if not approval:
+        raise HTTPException(status_code=404, detail="审批记录不存在")
+    _ensure_approval_in_merchant_scope(approval, merchant_id)
+    if approval.status != "PENDING":
+        raise HTTPException(status_code=400, detail=f"审批记录状态为 {approval.status}，无法通过")
+
     ok = await hitl_service.approve(approval_id, approver_id, body.comment)
     if not ok:
         raise HTTPException(status_code=400, detail="审批失败（记录不存在、状态非 PENDING 或已过期）")
 
-    # 查询 approval 获取 thread_id，返回给前端，前端用它调用 /chat/resume
-    approval = await hitl_service.get_approval(approval_id)
     return {
         "status":    "approved",
-        "thread_id": approval.thread_id if approval else None,
+        "thread_id": approval.thread_id,
         "message":   "审批已通过，请调用 POST /chat/resume 恢复 Agent 执行",
     }
 
@@ -134,6 +180,7 @@ async def reject(
     body: RejectRequest,
     x_user_id:   str = Header(..., alias="X-User-Id"),
     x_user_role: str = Header(..., alias="X-User-Role"),
+    x_merchant_id: str | None = Header(None, alias="X-Merchant-Id"),
 ):
     """
     拒绝审批（运营人员操作）。
@@ -142,17 +189,22 @@ async def reject(
     1. hitl_approval.status → REJECTED
     2. 前端通过 POST /chat/resume（approved=false）通知 Agent 终止
     """
-    if x_user_role not in ("cs", "admin"):
-        raise HTTPException(status_code=403, detail="无权审批")
+    approver_id = _require_operator(x_user_id, x_user_role)
+    merchant_id = _parse_optional_merchant_id(x_merchant_id)
 
-    approver_id = int(x_user_id)
+    approval = await hitl_service.get_approval(approval_id)
+    if not approval:
+        raise HTTPException(status_code=404, detail="审批记录不存在")
+    _ensure_approval_in_merchant_scope(approval, merchant_id)
+    if approval.status != "PENDING":
+        raise HTTPException(status_code=400, detail=f"审批记录状态为 {approval.status}，无法拒绝")
+
     ok = await hitl_service.reject(approval_id, approver_id, body.comment)
     if not ok:
         raise HTTPException(status_code=400, detail="拒绝失败（记录不存在或状态非 PENDING）")
 
-    approval = await hitl_service.get_approval(approval_id)
     return {
         "status":    "rejected",
-        "thread_id": approval.thread_id if approval else None,
+        "thread_id": approval.thread_id,
         "message":   "审批已拒绝，请调用 POST /chat/resume（approved=false）通知 Agent",
     }

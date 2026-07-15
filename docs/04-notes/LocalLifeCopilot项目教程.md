@@ -1,5 +1,11 @@
 # LocalLife Copilot 全链路教程
 
+- Status: Active
+- Type: Tutorial
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: Agent/MCP 代码
+
 > 目标：读完这篇文档，你应该能对着面试官把 Copilot 的每一层从头讲到尾，不用背，靠真正理解。
 >
 > 对标文档：[LocalLife 接口教程](LocalLife项目接口教程.md)
@@ -59,13 +65,13 @@ response = client.messages.create(
 | 维度 | 普通 AI 问答 | LocalLife Copilot |
 |------|------------|-----------------|
 | 数据来源 | 模型训练数据 | MySQL 实时查询 |
-| 工具 | 无 | 10 个分级工具，动态路由 |
+| 工具 | 无 | 分级工具集合，按角色和任务动态路由 |
 | 多步推理 | 单轮问答 | ReAct 最多 15 步 |
 | 高风险动作 | 无约束 | HITL 强制人审 |
 | 失败处理 | 瞎编 | 结构化错误 + 自动修正路径 |
 | 上下文恢复 | 不能 | MySQL Checkpoint |
 | 审计追溯 | 无 | 每条消息 + 每次工具全量记录 |
-| 质量评估 | 人工感觉 | 50 条 Eval 用例 + 6 项指标 |
+| 质量评估 | 人工感觉 | 小型 Eval 用例集 + 多项质量指标 |
 
 ---
 
@@ -199,25 +205,37 @@ POST /mcp
 
 如果 MCP Server 直接信任，这就是越权攻击。
 
-### 4.2 解决：身份由服务端注入，Agent 不能覆盖
+### 4.2 当前实现：Agent Service 注入身份 Header + HMAC，MCP Server 做 RBAC
 
-**Agent Service 侧**（发起调用时）：
+当前实现不是完整 IAM。`copilot-agent-service` 的 `/chat`、`/sessions` 和 `/hitl` 接口仍直接读取 `X-User-Id`、`X-User-Role`、`X-Merchant-Id`。Agent 调 MCP 时，`mcp_client.py` 再把这些身份值传给 `local-life-copilot`。
+
+已补的边界：
+
+- `/chat` 使用已有 `session_id` 时校验会话归属。
+- `/chat/resume` 以 `approval_id` 对应的审批记录为准，不信任客户端单独传入的 `thread_id`。
+- Agent 调 MCP 时会对 `X-User-Id/X-User-Role/X-Merchant-Id/X-Agent-Timestamp` 生成 HMAC-SHA256 签名，MCP Server 在 `RbacFilter` 中验签后才信任身份 Header。
+
+但当前身份来源仍是 Agent Service 收到的请求头，生产环境还需要网关、登录态或短时内部 token 来替代客户端可构造 Header。HMAC 解决的是“Agent 到 MCP 这一跳不能被随便伪造”，不等于完整登录鉴权。
+
+**Agent Service 侧**（发起 MCP 调用时）：
 ```python
 # mcp_client.py
 headers = {
-    "X-User-Id":     "10001",    # 从 Agent 会话身份解析后注入
+    "X-User-Id":     "10001",    # 当前由 Agent Service 按请求上下文注入
     "X-User-Role":   "merchant", # merchant / cs / admin
-    "X-Merchant-Id": "20001",    # merchant 角色的商家边界，Agent 不能自填
+    "X-Merchant-Id": "20001",    # merchant 角色的商家边界
+    "X-Agent-Timestamp": "1710000000",
+    "X-Agent-Signature": "hmac_sha256(...)",
 }
 ```
 
 **MCP Server 侧**（RbacFilter.java）：
 ```java
-// 解析 Header → ThreadLocal
+// 先校验 X-Agent-Signature，再解析 Header → ThreadLocal
 RbacContext ctx = RbacContext.builder()
     .userId(Long.parseLong(userIdStr))
     .role(role)
-    .merchantId(merchantId)  // 从 Header 读，Agent 传来的，服务端决定信任
+    .merchantId(merchantId)  // 当前从 Header 读取
     .build();
 RbacContext.set(ctx);  // ThreadLocal，工具执行时取
 ```
@@ -230,6 +248,10 @@ if (ctx.isMerchant()) {
     // Agent 即使传了别的 merchant_id 参数，也被 SQL 过滤掉
 }
 ```
+
+后续目标架构见 [Agent Runtime 企业化落地计划](../01-project/09-AgentRuntime企业化落地计划.md)：用服务端签发的短时 bearer token 携带 `aud`、`scope`、`tenant`、`merchant` 和 `run_id`，MCP Server 校验 token 后再执行工具。
+
+面试说法：「MCP Server 不能直接相信 `X-User-*`，否则任何人只要能访问 8081 就能伪造管理员。当前项目在 Agent -> MCP 内部调用上加了共享密钥 HMAC 和 5 分钟时间窗，防止身份 Header 被伪造或重放；再往企业生产走，会把入口身份换成 JWT/网关 Principal，并用 mTLS 或服务网格确认服务身份。」
 
 ### 4.3 三个角色的权限边界
 
@@ -328,9 +350,9 @@ Self-Reflection 每 5 步触发：
 
 ## 第 6 章：工具分级和 Tool Router——不是所有工具都给 LLM 看
 
-### 6.1 为什么不把 10 个工具都给 LLM？
+### 6.1 为什么不把全部工具都给 LLM？
 
-每个工具 Schema 约 300-500 token。10 个工具 = 3000-5000 token 的系统提示。
+每个工具 Schema 都会占用提示词上下文；工具越多，系统提示越长。
 - 更多 token → 更慢 → 更贵
 - 更多无关工具 → 更高概率「选错工具」
 - 权限泄露：merchant 角色不应该看到 `execute_refund` 的工具描述
@@ -458,10 +480,48 @@ Step 8: ExecuteRefundTool → LocalLifeInternalClient → LocalLife Server
 Step 9: SSE 继续推送，最终 final_answer
 ```
 
+SSE 是展示通道，不是审计或数据导出接口。当前实现中：
+
+- `tool_call` 只给前端工具名和参数 key，不推参数值。
+- `tool_result` 只给完成状态，不推原始工具结果片段。
+- `error` 只给通用错误码和文案，详细异常进入服务端日志。
+- `hitl_request` 只给动作类型和审批 ID，不推退款参数、手机号、internal key 等 payload。
+
+为了避免“浏览器断开就不知道 Agent 刚才做了什么”，当前分支还新增了运行时事实表：
+
+| 表 | 记录什么 | 排障时怎么用 |
+| --- | --- | --- |
+| `agent_run` | 一次用户请求触发的 Agent 执行，状态包括 `SUBMITTED/RUNNING/WAITING_APPROVAL/COMPLETED/FAILED` | 先看这次 run 是否卡在审批、失败还是已完成。 |
+| `agent_event` | 这次 run 内按顺序产生的事件，如 `tool_call`、`tool_result`、`hitl_request`、`final_answer`、`error` | 看事件序列，判断是模型没选对工具、工具失败、审批卡住，还是 SSE 前端展示问题。 |
+
+HITL 恢复也会继续写同一个运行时事件流。`/chat/resume` 会根据审批记录的 `thread_id` 找最近一个 `WAITING_APPROVAL` run，从下一个 `sequence_index` 继续写 `agent_step/tool_call/tool_result/final_answer/error`；如果审批被拒绝，则写一条 `hitl_rejected` 的 `final_answer` 并把 run 标记为 `CANCELED`。
+
+审批通过/拒绝不是靠“前端按钮禁用”保证唯一性的。`session/hitl.py` 里的 `HitlService.approve()` 和 `reject()` 使用数据库条件更新：
+
+```sql
+UPDATE hitl_approval
+SET status = 'APPROVED', approver_id = ?, approved_at = ?
+WHERE id = ? AND status = 'PENDING'
+```
+
+服务端以 `rowcount` 判断是否抢到这次状态迁移。并发场景下，approve 和 reject 即使同时到达，也只有第一个能把 `PENDING` 改成终态；后到请求会因为 `rowcount=0` 返回失败，不会覆盖已经审批过的结果。这类写法在面试里可以类比库存扣减、订单支付、退款状态机里的 CAS/乐观并发控制。
+
+`/chat/resume` 还有第二层幂等保护：恢复前会读取同一 `thread_id` 最新的 `agent_run`。如果这个 run 已经是 `COMPLETED` 或 `CANCELED`，说明审批恢复流程已经处理过，接口只返回“已处理”，不会再次启动 LangGraph，也不会重复追加 `tool_call/final_answer` 事件。真正的资金/补券副作用仍由 Java 主服务的 `side_effect_ledger` 做最终兜底。
+
+断线回放入口：
+
+```http
+GET /chat/runs/{run_id}/events?after_sequence=0&limit=100
+X-User-Id: 9001
+X-User-Role: merchant
+```
+
+它只允许 run 创建者读取，返回 `events` 和 `next_after_sequence`。前端断线后可以从最后已消费的 `sequence_index` 继续拉。静态 Chat UI 已做最小续拉：实时 SSE 读取异常时，用 `session_started` 里的 `run_id` 和本地 `lastEventSequence` 调这个接口补后续事件。注意边界：这不是完整离线消息队列，也还没迁到 LangGraph 官方 `interrupt()/Command(resume=...)` 模式。
+
 ### 7.3 MySQL Checkpoint 的关键性
 
 如果用默认的 `MemorySaver`（内存），服务重启或崩溃后 thread 状态丢失。
-审批可能需要几小时，期间服务可能重启 → 用 MySQL Checkpoint。
+审批可能需要几小时，期间服务可能重启 → 用 MySQL Checkpoint。当前实现同时保存完整 checkpoint 和 LangGraph pending writes，避免中断附近尚未合并的节点输出在重启后丢失。
 
 ```python
 # session/checkpointer.py
@@ -471,10 +531,14 @@ class AsyncMySQLCheckpointer(BaseCheckpointSaver):
         serialized = self.serde.dumps(checkpoint)
         await db.execute("INSERT INTO langgraph_checkpoint ...")
 
+    async def aput_writes(self, config, writes, task_id, task_path=""):
+        # 把尚未合并到完整 checkpoint 的节点输出存到 langgraph_checkpoint_write 表
+        await db.execute("INSERT INTO langgraph_checkpoint_write ...")
+
     async def aget_tuple(self, config):
-        # 恢复时从数据库读取最新快照
+        # 恢复时从数据库读取最新快照和 pending writes
         row = await db.execute("SELECT ... WHERE thread_id = ?")
-        return CheckpointTuple(checkpoint=self.serde.loads(row.state), ...)
+        return CheckpointTuple(checkpoint=self.serde.loads(row.state), pending_writes=..., ...)
 ```
 
 ---
@@ -533,7 +597,7 @@ cd copilot-agent-service
 DEBUG=false ./.venv/bin/python -m evals.rag_benchmark --real --run-name rag-quality-real
 ```
 
-结果：Recall@5 before rerank = 1.0，Recall@5 after rerank = 1.0，Citation accuracy = 1.0，Refusal accuracy = 1.0。这个数字只代表当前 4 条小型评测集，不代表生产规模；它的价值是证明 Milvus/Reranker 不是“接了就算”，而是有可重复评测入口。
+结果：Recall@5 before rerank = 1.0，Recall@5 after rerank = 1.0，Citation accuracy = 1.0，Refusal accuracy = 1.0。这个数字只代表当前 4 条小型评测集，不代表生产规模；它的价值是证明 Milvus/Reranker 不是“接了就算”，而是有可重复评测入口。运行真实评测前要确认 `rag` profile 已启动，并且需要时用 `python -m rag.ingest --reset` 清理旧 chunk，否则历史入库残留会让 reranker 候选变多、CPU 环境下更容易超时 fallback。
 
 ### 8.4 知识库入库
 
@@ -541,7 +605,10 @@ DEBUG=false ./.venv/bin/python -m evals.rag_benchmark --real --run-name rag-qual
 # 入库整个 knowledge_base/ 目录
 python -m rag.ingest
 
-# 每个文档分块（500 字，50 字重叠），向量化，写 Milvus
+# 清空并重建 Milvus collection 后重新入库（本地重建/改 chunk 策略后使用）
+python -m rag.ingest --reset
+
+# 每个文档分块（900 字，50 字重叠），向量化，写 Milvus
 # doc_id = 文件路径的 MD5
 # scope = 从目录结构推断（merchant_{id}/ 子目录 = 私有）
 ```
@@ -623,12 +690,12 @@ if re.search(r'(jdbc:|mysql://|password\s*=)', output, re.IGNORECASE):
 | **平均延迟** | 端到端 P50 / P99 | 够不够快？ |
 | **Token 成本** | 单会话平均 token 数（×模型单价≈美元） | 贵不贵？ |
 
-### 10.3 50 条评测用例分类
+### 10.3 评测用例分类
 
 | 类别 | 数量 | 示例 |
 |------|------|------|
-| 简单数据查询 | 15 | 「昨天卖了多少钱？」（单工具） |
-| 订单异常排查 | 15 | 「ORDER_12345 支付了但没收到券」（多步） |
+| 简单数据查询 | 按数据集维护 | 「昨天卖了多少钱？」（单工具） |
+| 订单异常排查 | 按数据集维护 | 「ORDER_12345 支付了但没收到券」（多步） |
 | 知识问答 | 15 | 「退款规则是什么？」（RAG） |
 | 边界场景 | 5 | Prompt Injection、查不存在的订单、批量退款请求 |
 
@@ -820,6 +887,8 @@ POST /hitl/{approval_id}/approve
 {"comment": "已核实，退款合理"}
 ```
 
+如果审批工作台带 `X-Merchant-Id`，`/hitl/pending`、详情、通过和拒绝都会按 `action_payload.merchant_id` 做作用域过滤；不属于该商家的审批按不存在处理，避免只过滤列表但仍能凭 ID 操作其他审批。
+
 ---
 
 **Step 6 — 恢复 Agent**
@@ -939,12 +1008,15 @@ data: {
 | Agent 层 | ReAct 只做诊断和生成 pending action | 模型不能直接改资金状态。 |
 | HITL 层 | `hitl_approval`、审批工作台、`/chat/resume` | 人类确认高风险动作，留下审批记录。 |
 | MCP 层 | 工具 schema、RBAC、审计、approval_id 必填 | 防止越权调用和无审批调用。 |
-| Java 主服务层 | 支付/退款状态机、幂等、订单状态校验 | 最终业务事实由后端保证，Agent 只是调用方。 |
+| Java 主服务层 | 支付/退款状态机、`side_effect_ledger`、订单状态校验 | 最终业务事实由后端保证，Agent 只是调用方。 |
 
 如果面试官追问“审批通过后服务重启怎么办”，回答：
 
 - LangGraph thread 状态存 MySQL Checkpoint，不用内存保存。
 - 审批通过后通过 `thread_id + approval_id` 恢复，从挂起点继续执行。
+- 审批表状态迁移用条件更新，`PENDING -> APPROVED/REJECTED` 只有一个请求能成功，避免运营重复点击或 approve/reject 并发覆盖。
+- `/chat/resume` 对已完成/已取消 run 做短路，避免重复恢复 Agent 图；Java 账本再兜底资金类副作用。
+- Java 主服务用 `side_effect_ledger` 以 `operation_type + approval_id` 做幂等；同一审批重复恢复时直接返回第一次成功结果，不再次退款/发券。
 - 如果 MySQL Checkpoint 不可用，当前开发环境会 fallback 到 `MemorySaver`，但生产必须把 MySQL Checkpoint 作为强依赖，否则不能承诺长时间挂起恢复。
 
 对应代码：
@@ -953,6 +1025,8 @@ data: {
 - `copilot-agent-service/api/hitl.py`
 - `local-life-copilot/src/main/java/.../ExecuteRefundTool.java`
 - `local-life-copilot/src/main/java/.../IssueCompensationCouponTool.java`
+- `local-life-server/src/main/java/.../InternalService.java`
+- `local-life-server/src/main/resources/db/migration/V10__add_side_effect_ledger.sql`
 
 ### 13.4 场景题：RAG 召回率低，怎么定位是检索错还是生成错？
 
@@ -1019,7 +1093,7 @@ data: {
 1. 对短期任务状态，靠 Checkpoint，而不是靠 prompt 里塞聊天记录。
 2. 对上下文超限，提前触发 Auto-Compact，并保留最近 N 条消息。
 3. 对关键业务约束，不只放自然语言摘要，还要结构化进 state，例如 `pending_action`、`user_role`、`merchant_id`。
-4. 对长输出，SSE 事件按 step 推送，最终状态仍以 session/thread 为准；生产可增加 resume cursor。
+4. 对长输出，SSE 事件按 step 推送，关键事件同步写入 `agent_event`，后端已提供按 `run_id + sequence_index` 的回放接口，静态 Chat UI 会在流式读取异常时做一次 best-effort 续拉。
 
 ### 13.6 场景题：MCP、Function Calling、Skill 到底怎么区分？
 

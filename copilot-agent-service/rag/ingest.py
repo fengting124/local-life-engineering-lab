@@ -8,6 +8,7 @@ RAG 知识库入库脚本。
 运行方式：
   cd copilot-agent-service
   python -m rag.ingest                    # 入库所有公共文档
+  python -m rag.ingest --reset            # 清空并重建 Milvus collection 后重新入库
   python -m rag.ingest --file path.md     # 入库指定文件
   python -m rag.ingest --merchant 20001 --file path.md   # 入库为某商家私有文档
 
@@ -170,13 +171,34 @@ async def ingest_all(override_scope: str | None = None,
     return {"files": success_count, "chunks": total_chunks}
 
 
+async def reset_vector_index() -> bool:
+    """显式重建 Milvus collection，避免旧 chunk 残留影响召回和评测。"""
+    from rag.pipeline import _get_vector_store
+
+    reset = await asyncio.get_event_loop().run_in_executor(
+        None,
+        _get_vector_store().reset_collection,
+    )
+    if not reset:
+        log.error("vector_index_reset_failed")
+    return reset
+
+
 async def main():
     parser = argparse.ArgumentParser(description="LocalLife Copilot RAG 知识库入库")
     parser.add_argument("--file", type=str, help="入库指定文件路径（默认入库整个 knowledge_base 目录）")
     parser.add_argument("--scope", choices=["public", "merchant_private"],
                         help="覆盖文件检测的权限范围")
     parser.add_argument("--merchant", type=int, help="商家 ID（scope=merchant_private 时必填）")
+    parser.add_argument("--reset", action="store_true",
+                        help="入库前删除并重建 Milvus collection（仅用于本地/重建索引）")
     args = parser.parse_args()
+
+    if args.reset:
+        reset_ok = await reset_vector_index()
+        if not reset_ok:
+            print("✗ Milvus collection 重建失败，请检查 Milvus 是否启动")
+            sys.exit(1)
 
     if args.file:
         chunks = await ingest_file(Path(args.file), args.scope, args.merchant)

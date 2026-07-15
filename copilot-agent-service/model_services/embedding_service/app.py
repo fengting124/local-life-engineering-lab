@@ -11,6 +11,7 @@ Embedding Service — intfloat/multilingual-e5-base (default)
 import os
 import time
 import logging
+import threading
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -34,6 +35,7 @@ NORMALIZE    = os.getenv("EMBEDDING_NORMALIZE", "true").lower() == "true"
 # ── 全局模型实例（启动时初始化）──
 _model: Optional[SentenceTransformer] = None
 _device: str = "cpu"
+_encode_lock = threading.Lock()
 
 
 def _resolve_device() -> str:
@@ -115,12 +117,16 @@ def embed(req: EmbedRequest):
             )
 
     start = time.time()
-    vecs = _model.encode(
-        req.texts,
-        normalize_embeddings=req.normalize,
-        batch_size=min(len(req.texts), MAX_BATCH),
-        show_progress_bar=False,
-    )
+    # HuggingFace fast tokenizers are not re-entrant inside one Python process.
+    # Serializing encode avoids intermittent "Already borrowed" errors during
+    # concurrent startup ingest or parallel RAG requests.
+    with _encode_lock:
+        vecs = _model.encode(
+            req.texts,
+            normalize_embeddings=req.normalize,
+            batch_size=min(len(req.texts), MAX_BATCH),
+            show_progress_bar=False,
+        )
     latency_ms = (time.time() - start) * 1000
 
     actual_dim = vecs.shape[1] if len(vecs.shape) == 2 else len(vecs[0])

@@ -146,6 +146,24 @@ class MilvusVectorStore:
     # 写入
     # ──────────────────────────────────────────
 
+    def reset_collection(self) -> bool:
+        """删除并重建 collection，用于显式重建知识库索引。"""
+        client = self._get_client()
+        if client is None:
+            log.warning("milvus_reset_skipped", reason="Milvus 不可用", collection=self.collection_name)
+            return False
+
+        try:
+            if client.has_collection(self.collection_name):
+                client.drop_collection(self.collection_name)
+                log.info("milvus_collection_dropped", collection=self.collection_name)
+            self._actual_dim = None
+            self._ensure_collection()
+            return True
+        except Exception as e:
+            log.error("milvus_reset_failed", collection=self.collection_name, error=str(e))
+            return False
+
     def upsert(self, documents: list[dict]) -> int:
         """批量插入/更新文档向量，写入前验证维度一致性。"""
         client = self._get_client()
@@ -188,7 +206,12 @@ class MilvusVectorStore:
         effective_top_k = top_k if top_k is not None else rag_config.top_k_recall
         client = self._get_client()
         if client is None:
-            return self._mock_search()
+            log.warning(
+                "milvus_search_unavailable",
+                reason="Milvus client unavailable",
+                collection=self.collection_name,
+            )
+            return []
 
         if merchant_id is not None:
             filter_expr = (
@@ -221,13 +244,3 @@ class MilvusVectorStore:
         except Exception as e:
             log.error("milvus_search_failed", error=str(e))
             return []
-
-    def _mock_search(self) -> list[dict]:
-        return [{
-            "chunk_id": "mock-001",
-            "doc_id":   "mock-doc-001",
-            "content":  "[Mock] Milvus 未启动，返回 Mock 搜索结果。请检查 MILVUS_URI 配置。",
-            "title":    "Mock 文档",
-            "source":   "mock",
-            "score":    0.5,
-        }]

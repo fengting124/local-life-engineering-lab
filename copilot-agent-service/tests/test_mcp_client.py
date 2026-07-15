@@ -10,6 +10,8 @@ AsyncClient，完全隔离网络，只验证协议解析和错误处理逻辑。
   - 工具 Schema 进程级 TTL 缓存：缓存命中时不发 HTTP 请求
   - JSON-RPC 错误解析：error.data.reason 决定 McpToolError.is_retryable()
 """
+import hashlib
+import hmac
 import time
 import pytest
 import httpx
@@ -105,11 +107,28 @@ class TestMcpClientHeaders:
         assert h["X-User-Id"] == "123"
         assert h["X-User-Role"] == "merchant"
         assert h["Content-Type"] == "application/json"
+        assert h["X-Agent-Timestamp"]
+        assert h["X-Agent-Signature"]
+
+        expected_payload = f"123\nmerchant\n\n{h['X-Agent-Timestamp']}"
+        expected_signature = hmac.new(
+            b"local-life-mcp-context-secret",
+            expected_payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        assert h["X-Agent-Signature"] == expected_signature
 
     def test_merchant_id_header_when_provided(self):
         client = McpClient(user_id=1, user_role="merchant", merchant_id=42)
         h = client._headers(None, None)
         assert h["X-Merchant-Id"] == "42"
+        expected_payload = f"1\nmerchant\n42\n{h['X-Agent-Timestamp']}"
+        expected_signature = hmac.new(
+            b"local-life-mcp-context-secret",
+            expected_payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        assert h["X-Agent-Signature"] == expected_signature
 
     def test_no_merchant_id_header_when_absent(self):
         client = McpClient(user_id=1, user_role="cs")

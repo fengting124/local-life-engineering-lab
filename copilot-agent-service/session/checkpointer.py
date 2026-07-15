@@ -23,7 +23,7 @@ LangGraph Checkpointer 协议（v0.2.x）：
   parent_checkpoint_id（形成快照链）
 """
 import json
-from typing import AsyncIterator, Any
+from typing import AsyncIterator, Any, Sequence
 import structlog
 
 from sqlalchemy import text, select
@@ -79,16 +79,23 @@ class AsyncMySQLCheckpointer(BaseCheckpointSaver):
         thread_id     = config["configurable"]["thread_id"]
         checkpoint_id = config["configurable"].get("checkpoint_id")
 
+        pending_rows = []
         async with AsyncSessionLocal() as db:
             if checkpoint_id:
                 row = await self._fetch_one(db, thread_id, checkpoint_id)
             else:
                 row = await self._fetch_latest(db, thread_id)
+            if row is not None:
+                pending_rows = await self._fetch_pending_writes(
+                    db,
+                    row["thread_id"],
+                    row["checkpoint_id"],
+                )
 
         if row is None:
             return None
 
-        return self._row_to_tuple(config, row)
+        return self._row_to_tuple(config, row, pending_rows)
 
     async def aget(self, config: RunnableConfig) -> Checkpoint | None:
         """获取 checkpoint（无需 parent 信息时用此方法）。"""
@@ -156,16 +163,55 @@ class AsyncMySQLCheckpointer(BaseCheckpointSaver):
     async def aput_writes(
         self,
         config: RunnableConfig,
-        writes: list[tuple[str, Any]],
+        writes: Sequence[tuple[str, Any]],
         task_id: str,
+        task_path: str = "",
     ) -> None:
         """
         保存 pending writes（LangGraph 内部用，记录尚未合并的节点输出）。
-        当前实现：合并到 checkpoint state，暂不单独持久化 pending writes。
-        生产级升级：使用独立的 pending_writes 表支持精细的中断恢复。
+
+        LangGraph 在 interrupt、并发节点或节点输出尚未合并到完整 checkpoint 时
+        会调用此方法。生产环境必须持久化这些 write，否则服务重启后恢复任务时
+        可能丢失“已经产生但还没合并”的节点输出。
         """
-        # 简化实现：pending writes 在完整 checkpoint 中已经包含
-        pass
+        thread_id = config["configurable"]["thread_id"]
+        checkpoint_id = config["configurable"]["checkpoint_id"]
+
+        async with AsyncSessionLocal() as db:
+            for write_index, (channel, value) in enumerate(writes):
+                serialized_value = self.serde.dumps(value)
+                await db.execute(
+                    text("""
+                    INSERT INTO langgraph_checkpoint_write
+                        (thread_id, checkpoint_id, task_id, task_path, write_index, channel, value, created_at)
+                    VALUES
+                        (:thread_id, :checkpoint_id, :task_id, :task_path, :write_index, :channel, :value, NOW())
+                    ON DUPLICATE KEY UPDATE
+                        task_path = VALUES(task_path),
+                        channel   = VALUES(channel),
+                        value     = VALUES(value)
+                    """),
+                    {
+                        "thread_id": thread_id,
+                        "checkpoint_id": checkpoint_id,
+                        "task_id": task_id,
+                        "task_path": task_path,
+                        "write_index": write_index,
+                        "channel": channel,
+                        "value": serialized_value.decode("utf-8")
+                        if isinstance(serialized_value, bytes)
+                        else serialized_value,
+                    },
+                )
+            await db.commit()
+
+        log.debug(
+            "checkpoint_pending_writes_saved",
+            thread_id=thread_id,
+            checkpoint_id=checkpoint_id,
+            task_id=task_id,
+            write_count=len(writes),
+        )
 
     # =========================================================
     # 列表：HITL 恢复时浏览历史快照
@@ -194,10 +240,21 @@ class AsyncMySQLCheckpointer(BaseCheckpointSaver):
                 """),
                 {"thread_id": thread_id, "lim": lim},
             )
-            rows = result.fetchall()
+            rows = [dict(row._mapping) for row in result.fetchall()]
+            records = [
+                (
+                    row,
+                    await self._fetch_pending_writes(
+                        db,
+                        row["thread_id"],
+                        row["checkpoint_id"],
+                    ),
+                )
+                for row in rows
+            ]
 
-        for row in rows:
-            yield self._row_to_tuple(config, dict(row._mapping))
+        for row, pending_rows in records:
+            yield self._row_to_tuple(config, row, pending_rows)
 
     # =========================================================
     # 私有工具方法
@@ -229,7 +286,29 @@ class AsyncMySQLCheckpointer(BaseCheckpointSaver):
         row = result.fetchone()
         return dict(row._mapping) if row else None
 
-    def _row_to_tuple(self, config: RunnableConfig, row: dict) -> CheckpointTuple:
+    async def _fetch_pending_writes(
+        self,
+        db: AsyncSession,
+        thread_id: str,
+        checkpoint_id: str,
+    ) -> list[dict]:
+        result = await db.execute(
+            text("""
+            SELECT task_id, channel, value
+            FROM langgraph_checkpoint_write
+            WHERE thread_id = :thread_id AND checkpoint_id = :checkpoint_id
+            ORDER BY task_id ASC, write_index ASC
+            """),
+            {"thread_id": thread_id, "checkpoint_id": checkpoint_id},
+        )
+        return [dict(row._mapping) for row in result.fetchall()]
+
+    def _row_to_tuple(
+        self,
+        config: RunnableConfig,
+        row: dict,
+        pending_rows: list[dict] | None = None,
+    ) -> CheckpointTuple:
         """将数据库行转换为 LangGraph CheckpointTuple。"""
         thread_id     = row["thread_id"]
         checkpoint_id = row["checkpoint_id"]
@@ -247,6 +326,19 @@ class AsyncMySQLCheckpointer(BaseCheckpointSaver):
         meta_str  = row.get("metadata") or "{}"
         metadata: CheckpointMetadata = json.loads(meta_str) if isinstance(meta_str, str) else meta_str
 
+        pending_writes = [
+            (
+                pending["task_id"],
+                pending["channel"],
+                self.serde.loads(
+                    pending["value"].encode("utf-8")
+                    if isinstance(pending["value"], str)
+                    else pending["value"]
+                ),
+            )
+            for pending in (pending_rows or [])
+        ]
+
         # 构建 parent config（用于 checkpoint 链追踪）
         parent_config = (
             {"configurable": {"thread_id": thread_id, "checkpoint_id": parent_id}}
@@ -263,5 +355,5 @@ class AsyncMySQLCheckpointer(BaseCheckpointSaver):
             checkpoint=checkpoint,
             metadata=metadata,
             parent_config=parent_config,
-            pending_writes=None,
+            pending_writes=pending_writes or None,
         )

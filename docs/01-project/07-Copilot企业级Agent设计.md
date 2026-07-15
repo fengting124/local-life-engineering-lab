@@ -1,10 +1,35 @@
 # Copilot 企业级 Agent 设计
 
+- Status: Active
+- Type: Explanation
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: `copilot-agent-service/agent`, `copilot-agent-service/api`, `copilot-agent-service/session`, `copilot-agent-service/rag`, `local-life-copilot/src/main/java`
+
 ## 1. 文档目标
 
-本文档将 `LocalLife Copilot` 从普通 AI 问答应用升级为企业级 Agent 应用，明确它在业务系统中的定位、架构、数据分工、工具协议、RAG、HITL、评测和治理方案。
+本文档说明 `LocalLife Copilot` 当前的企业级 Agent 架构、边界、已实现能力和仍未完成的运行时治理项。
 
-该文档先作为第二阶段设计蓝图，不立刻影响当前 `LocalLife` 主项目编码节奏。当前优先级仍然是完成传统后端主链路。
+本文不再作为早期蓝图使用。下一阶段尚未完成的运行时加固工作记录在 [Agent Runtime 企业化落地计划](./09-AgentRuntime企业化落地计划.md)。
+
+## 1.1 当前实现状态
+
+| 能力 | 状态 | 证据 |
+| --- | --- | --- |
+| Python Agent Service | Active | `copilot-agent-service/main.py`、`api/chat.py` |
+| LangGraph ReAct 主循环 | Active | `copilot-agent-service/agent/graph.py`、`agent/nodes.py` |
+| MCP Client 调 Java MCP Server | Active | `copilot-agent-service/mcp/mcp_client.py`、`local-life-copilot/.../McpController.java` |
+| Fast Path | Active | `copilot-agent-service/api/chat.py` |
+| HITL 审批记录 | Partial | `copilot-agent-service/session/hitl.py`、`api/hitl.py` |
+| Checkpoint 持久化 | Partial | `copilot-agent-service/session/checkpointer.py` 已持久化 checkpoint 与 pending writes；仍待真 MySQL 重启恢复 smoke 和官方 interrupt/resume 模式迁移 |
+| RAG + Milvus | Partial | `copilot-agent-service/rag/`；Milvus 客户端不可用时返回空候选，知识库无真实候选则拒答；仍待真实故障 smoke 和告警联动 |
+| Guardrails | Active | `copilot-agent-service/guardrails/input_checker.py` |
+| 服务端短时内部 token | Planned | 当前代码仍使用 `X-User-*` 请求头链路 |
+| Agent Run/Event 运行时表 | Partial | `agent_run`/`agent_event` 已记录 `/chat` 运行状态和 SSE 事件，支持按 `run_id + sequence_index` 回放，静态 Chat UI 已做最小断线续拉；仍待官方 interrupt/resume 迁移和运营审计视图 |
+
+## 1.2 历史计划处理
+
+早期“第 7 周至第 10 周”等周计划不再作为当前事实维护。本文保留长期有效的架构边界和设计取舍；阶段计划以后统一放入 Plan 文档或 archive。
 
 ## 2. 战略定位
 
@@ -479,7 +504,64 @@ CREATE TABLE langgraph_checkpoint (
 );
 ```
 
-### 9.4 工具调用审计表
+### 9.4 Checkpoint Pending Writes 表
+
+`langgraph_checkpoint_write` 持久化 LangGraph 在节点输出尚未合并到完整 checkpoint 前产生的 pending writes。它解决的是 `interrupt`、并发节点或服务重启场景下“checkpoint 已存在，但部分节点输出还没合并”的恢复缺口。
+
+```sql
+CREATE TABLE langgraph_checkpoint_write (
+  thread_id VARCHAR(64) NOT NULL,
+  checkpoint_id VARCHAR(64) NOT NULL,
+  task_id VARCHAR(128) NOT NULL,
+  task_path VARCHAR(255) NOT NULL DEFAULT '',
+  write_index INT NOT NULL,
+  channel VARCHAR(128) NOT NULL,
+  value LONGTEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (thread_id, checkpoint_id, task_id, write_index)
+);
+```
+
+### 9.5 Agent Run/Event 运行时表
+
+`agent_run` 记录一次用户请求触发的 Agent 执行，不等同于整个聊天会话；`agent_event` 记录这次执行中推给前端的关键 SSE 事件。它们的价值是让排障从“看浏览器有没有收到流”变成“查数据库里的运行事实”。
+
+```sql
+CREATE TABLE agent_run (
+  id VARCHAR(64) PRIMARY KEY,
+  session_id BIGINT NOT NULL,
+  thread_id VARCHAR(64) NOT NULL,
+  trace_id VARCHAR(64),
+  user_id BIGINT NOT NULL,
+  user_role VARCHAR(20) NOT NULL,
+  merchant_id BIGINT,
+  status VARCHAR(32) NOT NULL,
+  input_summary VARCHAR(255),
+  error_message TEXT,
+  started_at DATETIME,
+  finished_at DATETIME,
+  INDEX idx_agent_run_session_time (session_id, created_at),
+  INDEX idx_agent_run_status_time (status, created_at),
+  INDEX idx_agent_run_trace (trace_id)
+);
+
+CREATE TABLE agent_event (
+  id BIGINT PRIMARY KEY,
+  run_id VARCHAR(64) NOT NULL,
+  session_id BIGINT NOT NULL,
+  thread_id VARCHAR(64) NOT NULL,
+  sequence_index INT NOT NULL,
+  event_type VARCHAR(50) NOT NULL,
+  event_name VARCHAR(100),
+  payload JSON,
+  trace_id VARCHAR(64),
+  UNIQUE KEY uk_agent_event_run_seq (run_id, sequence_index)
+);
+```
+
+当前代码在 `/chat` Fast Path、LangGraph SSE 流和 `/chat/resume` 恢复流里同步写入 `session_started`、`agent_step`、`stream`、`tool_call`、`tool_result`、`hitl_request`、`final_answer`、`error` 等事件。审批恢复时会按 `thread_id` 找最近的 `WAITING_APPROVAL` run，从下一个 `sequence_index` 继续写事件；审批拒绝会把 run 标记为 `CANCELED`。`GET /chat/runs/{run_id}/events?after_sequence=N&limit=M` 可按游标回放当前用户自己的 run；静态 Chat UI 已在流式读取异常时按 `run_id + lastEventSequence` 做一次 best-effort 续拉。生产级还需要运营审计入口和官方 `interrupt()/Command(resume=...)` 恢复语义。
+
+### 9.6 工具调用审计表
 
 ```sql
 CREATE TABLE tool_audit_log (
@@ -499,7 +581,7 @@ CREATE TABLE tool_audit_log (
 );
 ```
 
-### 9.5 Redis Key
+### 9.7 Redis Key
 
 | Key | Value | TTL | 用途 |
 | --- | --- | --- | --- |
@@ -663,6 +745,8 @@ Agent 不能自行生成或覆盖 `merchant_id`。服务端根据登录态注入
 5. HITL 审批。
 6. 最终回答。
 
+`trace_id` 同时写入 `agent_run` 和 `agent_event`。排障时可以先按 `trace_id` 查日志，再反查 run 状态和事件顺序；也可以从某个异常 `run_id` 找到对应 SSE 事件、工具调用和 HITL 审批。
+
 工具审计必须记录：
 
 | 字段 | 说明 |
@@ -798,7 +882,7 @@ Copilot 必须在 `LocalLife` 主项目核心链路完成后启动。
 
 | 任务 | 输出 |
 | --- | --- |
-| 评测集 | 50 条用例 |
+| 评测集 | 小型可回归用例集，规模以 `evals/` 数据集为准 |
 | 评测脚本 | 6 项指标 |
 | Trace | LangSmith + 自建审计 |
 | Guardrails | 输入、输出、工具、权限 |

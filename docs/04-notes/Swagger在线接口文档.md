@@ -1,5 +1,11 @@
 # Swagger 在线接口文档
 
+- Status: Active
+- Type: How-to
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: OpenAPI、FastAPI、Springdoc
+
 本文记录 LocalLife 项目的在线 API 文档入口、使用方式和生产开放建议。
 
 ## 本地访问地址
@@ -59,6 +65,8 @@ MCP Server 的核心入口是 `POST /mcp`，请求体使用 JSON-RPC 2.0。
 ```text
 X-User-Id: 10001
 X-User-Role: admin
+X-Agent-Timestamp: 1710000000
+X-Agent-Signature: HMAC-SHA256(...)
 ```
 
 如果角色是 `merchant`，还需要：
@@ -67,7 +75,14 @@ X-User-Role: admin
 X-Merchant-Id: 20001
 ```
 
-这些 Header 在真实链路中由 Python Agent Service 注入，MCP Server 只信任内网调用。
+这些 Header 在真实链路中由 Python Agent Service 注入。`X-Agent-Signature` 的 canonical string 是 `user_id + "\n" + role + "\n" + merchant_id_or_empty + "\n" + timestamp`，MCP Server 验签后才信任 `X-User-*`。
+
+本地手工 curl 可用仓库内脚本生成签名 Header：
+
+```bash
+# 先设置 MCP_CONTEXT_SIGNING_SECRET，并确保它与 local-life-copilot 配置一致。
+scripts/mcp-sign-headers.sh 10001 admin
+```
 
 ## Copilot Agent Service 调用
 
@@ -78,7 +93,7 @@ Agent Service 是独立 Python FastAPI 服务，Swagger UI 由 FastAPI 自动生
 | 接口 | 说明 |
 | --- | --- |
 | `POST /chat` | 发起 Agent 对话，SSE 流式返回步骤和最终答案 |
-| `POST /chat/resume` | HITL 审批后恢复 Agent 执行 |
+| `POST /chat/resume` | HITL 审批后恢复 Agent 执行（仅 `cs/admin` 可调用，线程以审批记录为准） |
 | `POST /sessions` | 创建会话 |
 | `GET /hitl/pending` | 查询待审批任务 |
 
@@ -89,6 +104,15 @@ X-User-Id: 880000000001
 X-User-Role: merchant
 X-Merchant-Id: 880000100001
 ```
+
+补充约束：
+
+1. `POST /chat` 在传入已有 `session_id` 时，会校验该会话必须属于当前 `X-User-Id`。
+2. `POST /chat/resume` 需要 `X-User-Role` 为 `cs` 或 `admin`。
+3. `POST /chat/resume` 的 `thread_id` 只是可选辅助字段；服务端会以 `approval_id` 查到的审批记录作为最终恢复线程。
+4. 审批工作台接口 `/hitl/pending`、`/hitl/{id}`、`/hitl/{id}/approve`、`/hitl/{id}/reject` 都需要 `X-User-Id` 和 `X-User-Role=cs/admin`。
+5. 审批工作台接口可选传 `X-Merchant-Id`；传入后只返回或操作 `action_payload.merchant_id` 匹配的审批记录，不匹配按不存在处理。
+6. `/chat/resume` 支持审批记录已经是 `APPROVED/REJECTED` 的情况，适配“工作台先审批，再恢复 Agent”的前端流程。
 
 ## 生产环境建议
 

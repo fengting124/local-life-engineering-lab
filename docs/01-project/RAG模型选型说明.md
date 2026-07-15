@@ -1,5 +1,11 @@
 # RAG 模型选型说明
 
+- Status: Active
+- Type: Explanation
+- Owners: Project maintainers
+- Last verified: 2026-07-12
+- Source of truth: requirements、RAG 代码
+
 > 时间：2026-06-04 | 版本：v1.0 | 作者：Claude
 
 ---

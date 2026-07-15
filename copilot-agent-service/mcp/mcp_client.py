@@ -7,6 +7,8 @@ MCP 协议：JSON-RPC 2.0 over HTTP，POST /mcp。
   - list_tools()   → 获取工具列表（Agent 启动时调用一次，缓存工具 Schema）
   - call_tool()    → 执行工具调用（ReAct Action 节点调用）
 """
+import hashlib
+import hmac
 import time
 import uuid
 import httpx
@@ -74,13 +76,23 @@ class McpClient:
 
     def _headers(self, session_id: int | None, thread_id: str | None) -> dict:
         """构建 MCP 请求 Header（身份注入 + 会话追踪）。"""
+        merchant_id = str(self.merchant_id) if self.merchant_id else ""
+        timestamp = str(int(time.time()))
+        signature = _sign_identity_context(
+            user_id=str(self.user_id),
+            user_role=self.user_role,
+            merchant_id=merchant_id,
+            timestamp=timestamp,
+        )
         h = {
             "Content-Type": "application/json",
             "X-User-Id": str(self.user_id),
             "X-User-Role": self.user_role,
+            "X-Agent-Timestamp": timestamp,
+            "X-Agent-Signature": signature,
         }
         if self.merchant_id:
-            h["X-Merchant-Id"] = str(self.merchant_id)
+            h["X-Merchant-Id"] = merchant_id
         if session_id:
             h["X-Session-Id"] = str(session_id)
         if thread_id:
@@ -197,3 +209,12 @@ class McpClient:
             raise McpToolError(reason, detail, hint)
 
         return body.get("result", {})
+
+
+def _sign_identity_context(user_id: str, user_role: str, merchant_id: str, timestamp: str) -> str:
+    canonical = "\n".join([user_id, user_role, merchant_id, timestamp])
+    return hmac.new(
+        settings.mcp_context_signing_secret.encode("utf-8"),
+        canonical.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()

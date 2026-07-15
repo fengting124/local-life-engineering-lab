@@ -6,7 +6,7 @@
 Milvus、MySQL、真实 MCP Server、真实 LLM API 默认都通过 `unittest.mock` / scripted LLM 隔离；
 跨进程真链路另按 docs 中的手动/CI 流程执行。
 
-**测试规模：187 条用例，10 个文件（单元 183 + Pact 契约 2 + ReAct E2E 2）**
+**测试规模以当前分支执行结果为准。** 最近一次全量命令记录在 `docs/04-notes/测试总览与结果汇总.md`；不要在本文复制会过期的总数。
 
 ---
 
@@ -83,9 +83,10 @@ mutmut results
 | `test_chat_api.py` | 3 | 19 | `api/chat.py` |
 | `test_agent_graph.py` | 6 | 29 | ReAct 路由、工具分批、死循环检测、图编译 |
 | `test_agent_nodes.py` | 3 | 10 | `llm_node` / `tool_node` / `final_node` |
+| `test_checkpointer.py` | — | 2 | `AsyncMySQLCheckpointer` pending writes 持久化 |
 | `tests/contract/test_mcp_contract.py` | — | 2 | Pact：McpClient ↔ MCP Server JSON-RPC 契约 |
 | `test_e2e_agent.py` | — | 2 | 真实编译 LangGraph 图的 in-process E2E |
-| **合计** | | **187** | |
+| **合计** | | 以 `pytest` 输出为准 | |
 
 ---
 

@@ -16,8 +16,18 @@ import pytest
 from unittest.mock import AsyncMock, patch
 from starlette.testclient import TestClient
 from fastapi import FastAPI
+from fastapi import HTTPException
 
-from api.chat import _sse, _try_fast_path, router as chat_router
+from api.chat import (
+    _safe_error_event,
+    _safe_hitl_request_event,
+    _safe_tool_call_event,
+    _safe_tool_result_event,
+    _sse,
+    _try_fast_path,
+    _assert_session_owned_by_user,
+    router as chat_router,
+)
 
 
 # =========================================================
@@ -63,6 +73,55 @@ class TestSseFormatter:
         data_line = next(l for l in result.split("\n") if l.startswith("data:"))
         parsed = json.loads(data_line[len("data: "):])
         assert parsed["args"]["order_no"] == "123"
+
+
+class TestSafeSseEvents:
+    def test_tool_call_event_exposes_arg_keys_not_values(self):
+        payload = _safe_tool_call_event(
+            "execute_refund",
+            {"order_no": "ORDER-SECRET", "amount": 100, "internal_key": "sk-internal"},
+        )
+        encoded = json.dumps(payload, ensure_ascii=False)
+
+        assert payload["tool"] == "execute_refund"
+        assert payload["arg_keys"] == ["amount", "order_no"]
+        assert "ORDER-SECRET" not in encoded
+        assert "sk-internal" not in encoded
+        assert "internal_key" not in encoded
+
+    def test_tool_result_event_does_not_expose_raw_output(self):
+        payload = _safe_tool_result_event("query_order", "手机号 13812345678 internal_key=secret")
+        encoded = json.dumps(payload, ensure_ascii=False)
+
+        assert payload == {"tool": "query_order", "status": "completed"}
+        assert "13812345678" not in encoded
+        assert "secret" not in encoded
+
+    def test_error_event_does_not_expose_exception_text(self):
+        payload = _safe_error_event(RuntimeError("X-Internal-Key=secret-token"))
+        encoded = json.dumps(payload, ensure_ascii=False)
+
+        assert payload["code"] == "AGENT_STREAM_ERROR"
+        assert "secret-token" not in encoded
+        assert "X-Internal-Key" not in encoded
+
+    def test_hitl_request_event_exposes_action_type_not_payload(self):
+        payload = _safe_hitl_request_event(
+            "thread-1",
+            {
+                "action_type": "execute_refund",
+                "payload": {"order_no": "ORDER-1", "internal_key": "secret"},
+                "reason": "用户手机号 13812345678",
+                "approval_id": 1001,
+            },
+        )
+        encoded = json.dumps(payload, ensure_ascii=False)
+
+        assert payload["action"] == {"action_type": "execute_refund"}
+        assert payload["approval_id"] == "1001"
+        assert "ORDER-1" not in encoded
+        assert "secret" not in encoded
+        assert "13812345678" not in encoded
 
 
 # =========================================================
@@ -226,3 +285,460 @@ class TestChatEndpointGuardrails:
             headers={"X-User-Id": "1"},  # 缺 X-User-Role
         )
         assert resp.status_code == 422
+
+    def test_non_numeric_user_id_header_returns_400(self):
+        resp = client.post(
+            "/chat",
+            json={"message": "你好"},
+            headers={"X-User-Id": "not-a-number", "X-User-Role": "merchant"},
+        )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "X-User-Id 必须是数字"
+
+    def test_non_numeric_merchant_id_header_returns_400(self):
+        resp = client.post(
+            "/chat",
+            json={"message": "你好"},
+            headers={
+                "X-User-Id": "1",
+                "X-User-Role": "merchant",
+                "X-Merchant-Id": "not-a-number",
+            },
+        )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "X-Merchant-Id 必须是数字"
+
+
+class _FakeAsyncSessionContext:
+    def __init__(self, db):
+        self._db = db
+
+    async def __aenter__(self):
+        return self._db
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeDb:
+    def __init__(self, session_obj):
+        self._session_obj = session_obj
+
+    async def get(self, model, session_id):
+        return self._session_obj
+
+
+class _FakeSession:
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+
+
+class TestSessionOwnership:
+    @pytest.mark.asyncio
+    async def test_assert_session_owned_by_user_rejects_foreign_session(self):
+        fake_db = _FakeDb(_FakeSession(user_id=999))
+        with patch("api.chat.AsyncSessionLocal", return_value=_FakeAsyncSessionContext(fake_db)):
+            with pytest.raises(HTTPException) as exc:
+                await _assert_session_owned_by_user(session_id=123, user_id=1)
+
+        assert exc.value.status_code == 403
+        assert "无权访问此会话" in str(exc.value.detail)
+
+
+class TestResumeEndpoint:
+    def test_resume_rejects_non_cs_admin_role(self):
+        resp = client.post(
+            "/chat/resume",
+            json={"approval_id": "1001", "approved": True},
+            headers={"X-User-Id": "1", "X-User-Role": "merchant"},
+        )
+        assert resp.status_code == 403
+
+    def test_resume_uses_thread_from_approval_and_preserves_action_type(self):
+        approval = type(
+            "Approval",
+            (),
+            {
+                "id": 1001,
+                "status": "PENDING",
+                "thread_id": "thread-from-db",
+                "action_type": "execute_refund",
+                "action_payload": {"order_id": "O-1", "amount": 100, "reason": "用户要求退款"},
+                "agent_reason": "订单异常，需要退款",
+            },
+        )()
+
+        captured = {}
+
+        async def fake_stream(resume_input, config=None, version=None):
+            captured["resume_input"] = resume_input
+            captured["config"] = config
+            yield {
+                "event": "on_chain_end",
+                "name": "resume",
+                "data": {
+                    "output": {
+                        "final_answer": "退款已执行",
+                        "stop_reason": "completed",
+                    }
+                },
+            }
+
+        runtime = AsyncMock()
+        runtime.get_latest_waiting_run_by_thread.return_value = None
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.hitl_service.approve", AsyncMock(return_value=True)), \
+             patch("api.chat.agent_graph.astream_events", fake_stream), \
+             patch("api.chat.runtime_store", runtime):
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1001", "approved": True},
+                headers={"X-User-Id": "9", "X-User-Role": "cs"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.text
+        assert "thread-from-db" in body
+        assert captured["config"] == {"configurable": {"thread_id": "thread-from-db"}}
+        assert captured["resume_input"]["pending_action"]["action_type"] == "execute_refund"
+        assert captured["resume_input"]["pending_action"]["approval_id"] == "1001"
+        assert captured["resume_input"]["pending_action"]["payload"]["order_id"] == "O-1"
+
+    def test_resume_records_events_on_waiting_runtime_run(self):
+        approval = type(
+            "Approval",
+            (),
+            {
+                "id": 1006,
+                "status": "PENDING",
+                "thread_id": "thread-waiting",
+                "action_type": "execute_refund",
+                "action_payload": {"order_id": "O-6"},
+                "agent_reason": "需要退款",
+            },
+        )()
+        runtime = AsyncMock()
+        runtime.get_latest_waiting_run_by_thread.return_value = type(
+            "Run",
+            (),
+            {
+                "id": "run-waiting",
+                "session_id": 1001,
+                "thread_id": "thread-waiting",
+                "trace_id": "trace-waiting",
+            },
+        )()
+        runtime.next_sequence.return_value = 3
+
+        async def fake_stream(_resume_input, config=None, version=None):
+            yield {
+                "event": "on_tool_start",
+                "name": "execute_refund",
+                "data": {"input": {"order_id": "O-6", "approval_id": "1006"}},
+            }
+            yield {
+                "event": "on_chain_end",
+                "name": "resume",
+                "data": {"output": {"final_answer": "退款已执行", "stop_reason": "completed"}},
+            }
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.hitl_service.approve", AsyncMock(return_value=True)), \
+             patch("api.chat.agent_graph.astream_events", fake_stream), \
+             patch("api.chat.runtime_store", runtime):
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1006", "approved": True},
+                headers={"X-User-Id": "9", "X-User-Role": "cs"},
+            )
+
+        assert resp.status_code == 200
+        statuses = [call.args[1] for call in runtime.mark_run_status.await_args_list]
+        assert statuses == ["RUNNING", "COMPLETED"]
+        event_types = [call.kwargs["event_type"] for call in runtime.append_event.await_args_list]
+        assert event_types == ["agent_step", "tool_call", "final_answer"]
+        sequences = [call.kwargs["sequence_index"] for call in runtime.append_event.await_args_list]
+        assert sequences == [3, 4, 5]
+
+    def test_resume_rejects_mismatched_client_thread_id(self):
+        approval = type(
+            "Approval",
+            (),
+            {
+                "id": 1005,
+                "status": "PENDING",
+                "thread_id": "thread-from-db",
+                "action_type": "execute_refund",
+                "action_payload": {"order_id": "O-5"},
+                "agent_reason": "高风险动作",
+            },
+        )()
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.hitl_service.approve", AsyncMock(return_value=True)) as approve_mock:
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1005", "thread_id": "thread-from-client", "approved": True},
+                headers={"X-User-Id": "9", "X-User-Role": "cs"},
+            )
+
+        assert resp.status_code == 400
+        assert "thread_id" in resp.json()["detail"]
+        approve_mock.assert_not_awaited()
+
+    def test_resume_reject_path_uses_thread_from_approval(self):
+        approval = type(
+            "Approval",
+            (),
+            {
+                "id": 1002,
+                "status": "PENDING",
+                "thread_id": "thread-reject",
+                "action_type": "execute_refund",
+                "action_payload": {"order_id": "O-2"},
+                "agent_reason": "高风险动作",
+            },
+        )()
+
+        runtime = AsyncMock()
+        runtime.get_latest_waiting_run_by_thread.return_value = None
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.hitl_service.reject", AsyncMock(return_value=True)), \
+             patch("api.chat.runtime_store", runtime):
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1002", "approved": False},
+                headers={"X-User-Id": "9", "X-User-Role": "admin"},
+            )
+
+        assert resp.status_code == 200
+        assert "thread-reject" in resp.text
+
+    def test_resume_accepts_already_approved_record_from_hitl_workbench(self):
+        approval = type(
+            "Approval",
+            (),
+            {
+                "id": 1003,
+                "status": "APPROVED",
+                "thread_id": "thread-approved",
+                "action_type": "execute_refund",
+                "action_payload": {"order_id": "O-3"},
+                "agent_reason": "工作台已审批通过",
+            },
+        )()
+
+        captured = {}
+
+        async def fake_stream(resume_input, config=None, version=None):
+            captured["config"] = config
+            yield {
+                "event": "on_chain_end",
+                "name": "resume",
+                "data": {"output": {"final_answer": "继续执行", "stop_reason": "completed"}},
+            }
+
+        runtime = AsyncMock()
+        runtime.get_latest_waiting_run_by_thread.return_value = None
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.hitl_service.approve", AsyncMock(return_value=False)) as approve_mock, \
+             patch("api.chat.agent_graph.astream_events", fake_stream), \
+             patch("api.chat.runtime_store", runtime):
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1003", "approved": True},
+                headers={"X-User-Id": "9", "X-User-Role": "cs"},
+            )
+
+        assert resp.status_code == 200
+        assert captured["config"] == {"configurable": {"thread_id": "thread-approved"}}
+        approve_mock.assert_not_awaited()
+
+    def test_resume_completed_runtime_run_does_not_restart_agent(self):
+        approval = type(
+            "Approval",
+            (),
+            {
+                "id": 1007,
+                "status": "APPROVED",
+                "thread_id": "thread-completed",
+                "action_type": "execute_refund",
+                "action_payload": {"order_id": "O-7"},
+                "agent_reason": "已经审批并执行",
+                "session_id": 2007,
+            },
+        )()
+        runtime = AsyncMock()
+        runtime.get_latest_run_by_thread.return_value = type(
+            "Run",
+            (),
+            {
+                "id": "run-completed",
+                "session_id": 2007,
+                "thread_id": "thread-completed",
+                "trace_id": "trace-completed",
+                "status": "COMPLETED",
+            },
+        )()
+
+        async def should_not_stream(_resume_input, config=None, version=None):
+            raise AssertionError("completed HITL run must not restart Agent graph")
+            yield
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.hitl_service.approve", AsyncMock(return_value=False)) as approve_mock, \
+             patch("api.chat.agent_graph.astream_events", should_not_stream), \
+             patch("api.chat.runtime_store", runtime):
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1007", "approved": True},
+                headers={"X-User-Id": "9", "X-User-Role": "cs"},
+            )
+
+        assert resp.status_code == 200
+        assert "已处理" in resp.text
+        approve_mock.assert_not_awaited()
+
+    def test_resume_accepts_already_rejected_record_from_hitl_workbench(self):
+        approval = type(
+            "Approval",
+            (),
+            {
+                "id": 1004,
+                "status": "REJECTED",
+                "thread_id": "thread-rejected",
+                "action_type": "execute_refund",
+                "action_payload": {"order_id": "O-4"},
+                "agent_reason": "工作台已拒绝",
+            },
+        )()
+
+        runtime = AsyncMock()
+        runtime.get_latest_waiting_run_by_thread.return_value = None
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.hitl_service.reject", AsyncMock(return_value=False)) as reject_mock, \
+             patch("api.chat.runtime_store", runtime):
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1004", "approved": False},
+                headers={"X-User-Id": "9", "X-User-Role": "admin"},
+            )
+
+        assert resp.status_code == 200
+        assert "thread-rejected" in resp.text
+        reject_mock.assert_not_awaited()
+
+
+class TestChatRuntimeEvents:
+    def test_fast_path_records_agent_run_and_events(self):
+        runtime = AsyncMock()
+        runtime.create_run.return_value = "run-001"
+
+        with (
+            patch("api.chat.session_manager.create_session", new=AsyncMock(return_value=1001)),
+            patch("api.chat.session_manager.save_message", new=AsyncMock()),
+            patch("api.chat._try_fast_path", new=AsyncMock(return_value="今天 GMV 为 500 元")),
+            patch("api.chat.runtime_store", runtime),
+        ):
+            resp = client.post(
+                "/chat",
+                json={"message": "今天销售额是多少"},
+                headers={
+                    "X-User-Id": "9001",
+                    "X-User-Role": "merchant",
+                    "X-Merchant-Id": "8001",
+                },
+            )
+
+        assert resp.status_code == 200
+        assert "event: final_answer" in resp.text
+        assert '"run_id": "run-001"' in resp.text
+        runtime.create_run.assert_awaited_once()
+        statuses = [
+            call.args[1]
+            for call in runtime.mark_run_status.await_args_list
+        ]
+        assert statuses == ["RUNNING", "COMPLETED"]
+        event_types = [
+            call.kwargs["event_type"]
+            for call in runtime.append_event.await_args_list
+        ]
+        assert event_types == ["session_started", "final_answer"]
+
+    def test_replay_run_events_returns_events_after_cursor(self):
+        runtime = AsyncMock()
+        runtime.get_run.return_value = type(
+            "Run",
+            (),
+            {
+                "id": "run-001",
+                "session_id": 1001,
+                "thread_id": "thread-001",
+                "trace_id": "trace-001",
+                "user_id": 9001,
+                "user_role": "merchant",
+                "merchant_id": 8001,
+                "status": "COMPLETED",
+            },
+        )()
+        runtime.list_events.return_value = [
+            type(
+                "Event",
+                (),
+                {
+                    "sequence_index": 1,
+                    "event_type": "final_answer",
+                    "event_name": None,
+                    "payload": {"content": "今天暂无订单数据", "stop_reason": "fast_path"},
+                    "trace_id": "trace-001",
+                    "created_at": None,
+                },
+            )()
+        ]
+
+        with patch("api.chat.runtime_store", runtime):
+            resp = client.get(
+                "/chat/runs/run-001/events?after_sequence=0&limit=10",
+                headers={"X-User-Id": "9001", "X-User-Role": "merchant"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["run_id"] == "run-001"
+        assert body["status"] == "COMPLETED"
+        assert body["next_after_sequence"] == 1
+        assert body["events"] == [
+            {
+                "sequence_index": 1,
+                "event_type": "final_answer",
+                "event_name": None,
+                "payload": {"content": "今天暂无订单数据", "stop_reason": "fast_path"},
+                "trace_id": "trace-001",
+                "created_at": None,
+            }
+        ]
+        runtime.list_events.assert_awaited_once_with("run-001", after_sequence=0, limit=10)
+
+    def test_replay_run_events_rejects_foreign_user(self):
+        runtime = AsyncMock()
+        runtime.get_run.return_value = type(
+            "Run",
+            (),
+            {
+                "id": "run-001",
+                "user_id": 9001,
+            },
+        )()
+
+        with patch("api.chat.runtime_store", runtime):
+            resp = client.get(
+                "/chat/runs/run-001/events",
+                headers={"X-User-Id": "9999", "X-User-Role": "merchant"},
+            )
+
+        assert resp.status_code == 403
+        runtime.list_events.assert_not_awaited()

@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # ===== Java MCP Server =====
     mcp_server_url: str = "http://localhost:8081"
     mcp_timeout_seconds: int = 30
+    # Agent -> MCP 身份上下文签名密钥。必须与 local-life-copilot 的
+    # mcp.context-signing.secret 一致，用于防止伪造 X-User-* Header。
+    mcp_context_signing_secret: str = "local-life-mcp-context-secret"
 
     # ===== MySQL（会话/消息/checkpoint 存储）=====
     db_url: str = "mysql+aiomysql://root:123456@localhost:3306/local_life"
@@ -75,6 +78,10 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     debug: bool = True
+    cors_allowed_origins: str = (
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost:3000,http://127.0.0.1:3000"
+    )
 
     class Config:
         env_file = ".env"

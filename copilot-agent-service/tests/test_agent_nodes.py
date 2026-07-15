@@ -37,6 +37,38 @@ def ai_with_tool_call(name, args, call_id="c1"):
 
 
 # =========================================================
+# hitl_node
+# =========================================================
+
+class TestHitlNode:
+    @pytest.mark.asyncio
+    async def test_create_approval_payload_includes_current_merchant_id(self, monkeypatch):
+        import session.hitl as hitl_module
+
+        mock_service = MagicMock()
+        mock_service.create_approval = AsyncMock(return_value=1001)
+        monkeypatch.setattr(hitl_module, "hitl_service", mock_service)
+
+        state = make_state(
+            [HumanMessage(content="帮用户退款")],
+            session_id=2001,
+            user_role="cs",
+            merchant_id=42,
+            pending_action={
+                "action_type": "execute_refund",
+                "payload": {"order_id": "O-1", "amount": 100},
+                "reason": "订单异常，需要退款",
+            },
+        )
+
+        await nodes.hitl_node(state)
+
+        _, kwargs = mock_service.create_approval.await_args
+        assert kwargs["action_payload"]["merchant_id"] == 42
+        assert kwargs["action_payload"]["order_id"] == "O-1"
+
+
+# =========================================================
 # tool_node
 # =========================================================
 
