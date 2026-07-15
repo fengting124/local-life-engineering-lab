@@ -191,6 +191,28 @@ class TestMilvusVectorStore:
 
         assert result == []
 
+    def test_reset_collection_drops_existing_collection_and_recreates_schema(self):
+        """显式重建索引时删除旧 chunk，避免历史入库残留污染 benchmark。"""
+        store = MilvusVectorStore(uri="http://milvus:19530", collection_name="local_life_kb")
+        fake_client = MagicMock()
+        fake_client.has_collection.return_value = True
+
+        with patch.object(store, "_get_client", return_value=fake_client), \
+             patch.object(store, "_ensure_collection") as ensure_mock:
+            reset = store.reset_collection()
+
+        assert reset is True
+        fake_client.drop_collection.assert_called_once_with("local_life_kb")
+        ensure_mock.assert_called_once()
+
+    def test_reset_collection_returns_false_when_milvus_unavailable(self):
+        store = MilvusVectorStore(uri="http://unavailable-milvus:19530", collection_name="local_life_kb")
+
+        with patch.object(store, "_get_client", return_value=None):
+            reset = store.reset_collection()
+
+        assert reset is False
+
 
 # =========================================================
 # retrieve() — 集成路径（全部外部依赖 mock）

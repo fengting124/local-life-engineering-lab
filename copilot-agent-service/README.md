@@ -301,6 +301,7 @@ python -m evals.metrics --real
 python -m evals.metrics --real --category diagnosis
 
 # RAG 专项：真实 Milvus + embedding + reranker
+python -m rag.ingest --reset
 python -m evals.rag_benchmark --real --run-name rag-quality-real
 ```
 

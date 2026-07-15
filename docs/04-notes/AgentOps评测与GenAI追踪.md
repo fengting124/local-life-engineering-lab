@@ -63,6 +63,13 @@ cd copilot-agent-service
 DEBUG=false ./.venv/bin/python -m evals.rag_benchmark --real --run-name rag-quality-real
 ```
 
+如果改过 chunk 策略、doc_id 规则，或发现 Milvus 中有历史残留导致 reranker 候选重复，先重建索引：
+
+```bash
+cd copilot-agent-service
+DEBUG=false ./.venv/bin/python -m rag.ingest --reset
+```
+
 评测集覆盖：
 
 - 平台规则问答：已支付订单退款是否需要审批。
@@ -83,7 +90,7 @@ DEBUG=false ./.venv/bin/python -m evals.rag_benchmark --real --run-name rag-qual
 }
 ```
 
-排障价值：这套评测发现过 500 字符 chunk 会切断“退款/补券”相邻方案，导致引用准确率只有 0.75；将 `rag.ingest` 的 chunk size 调整为 900 后恢复到 1.0。
+排障价值：这套评测发现过 500 字符 chunk 会切断“退款/补券”相邻方案，导致引用准确率只有 0.75；将 `rag.ingest` 的 chunk size 调整为 900 后恢复到 1.0。最近一次真实 smoke 还发现过历史 chunk 残留会让 CPU reranker 处理过多候选并超时 fallback，因此补了显式 `--reset` 重建入口。
 
 ### MCP Security Smoke
 

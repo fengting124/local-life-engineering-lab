@@ -597,7 +597,7 @@ cd copilot-agent-service
 DEBUG=false ./.venv/bin/python -m evals.rag_benchmark --real --run-name rag-quality-real
 ```
 
-结果：Recall@5 before rerank = 1.0，Recall@5 after rerank = 1.0，Citation accuracy = 1.0，Refusal accuracy = 1.0。这个数字只代表当前 4 条小型评测集，不代表生产规模；它的价值是证明 Milvus/Reranker 不是“接了就算”，而是有可重复评测入口。
+结果：Recall@5 before rerank = 1.0，Recall@5 after rerank = 1.0，Citation accuracy = 1.0，Refusal accuracy = 1.0。这个数字只代表当前 4 条小型评测集，不代表生产规模；它的价值是证明 Milvus/Reranker 不是“接了就算”，而是有可重复评测入口。运行真实评测前要确认 `rag` profile 已启动，并且需要时用 `python -m rag.ingest --reset` 清理旧 chunk，否则历史入库残留会让 reranker 候选变多、CPU 环境下更容易超时 fallback。
 
 ### 8.4 知识库入库
 
@@ -605,7 +605,10 @@ DEBUG=false ./.venv/bin/python -m evals.rag_benchmark --real --run-name rag-qual
 # 入库整个 knowledge_base/ 目录
 python -m rag.ingest
 
-# 每个文档分块（500 字，50 字重叠），向量化，写 Milvus
+# 清空并重建 Milvus collection 后重新入库（本地重建/改 chunk 策略后使用）
+python -m rag.ingest --reset
+
+# 每个文档分块（900 字，50 字重叠），向量化，写 Milvus
 # doc_id = 文件路径的 MD5
 # scope = 从目录结构推断（merchant_{id}/ 子目录 = 私有）
 ```
