@@ -43,6 +43,7 @@
 - [ER 图文档](./01-project/05-ER图文档.md)
 - [接口规范文档](./01-project/10-接口规范文档.md)
 - [测试总览与结果汇总](./04-notes/测试总览与结果汇总.md)
+- [v0.1.0-rc 验收报告](./release/v0.1.0-rc验收报告.md)
 - [Git 版本管理与提交规范](./03-process/Git版本管理与提交规范.md)
 
 ### Explanation
@@ -77,6 +78,7 @@ docs/
 ├── 03-process/       Git、协作、质量和维护流程
 ├── 04-notes/         深度教程和技术解释
 ├── 05-interview/     面试题库、演示脚本和表达材料
+├── release/          阶段版本验收报告和发布证据入口
 ├── adr/              架构决策
 ├── templates/        文档模板
 └── archive/          已替代或历史文档
