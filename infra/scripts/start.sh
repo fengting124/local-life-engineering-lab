@@ -5,7 +5,7 @@
 # 执行顺序：
 #   1. 检查必要工具（docker compose, curl, mysql）
 #   2. 加载环境变量（infra/.env）
-#   3. 启动中间件（MySQL / Redis / ES / RocketMQ）
+#   3. 启动核心中间件（MySQL / Redis / ES / RocketMQ）
 #   4. 等待中间件就绪
 #   5. 初始化数据库（迁移脚本）
 #   6. 构建并启动应用服务（三个容器）
@@ -18,6 +18,7 @@
 #   cp .env.example .env         # 填写 ANTHROPIC_API_KEY
 #   bash scripts/start.sh        # 完整启动
 #   bash scripts/start.sh --skip-build   # 跳过重新构建（已有镜像时）
+#   核心服务固定使用 --profile app --profile search --profile mq，避免应用缺 ES/RocketMQ。
 # ================================================================
 
 set -e
@@ -70,26 +71,12 @@ fi
 
 success "环境变量已加载"
 
-# ---- Step 2: 启动中间件 ----
-info "启动基础中间件（MySQL / Redis）..."
+# ---- Step 2: 启动核心中间件 ----
+info "启动核心中间件（MySQL / Redis / Elasticsearch / RocketMQ）..."
 cd "${INFRA_DIR}"
-docker compose -f docker-compose.dev.yml up -d mysql redis
-success "MySQL + Redis 启动中..."
-
-# ---- Step 3: 可选中间件 ----
-read -t 5 -p "$(echo -e "${YELLOW}是否启动完整中间件（ES / RocketMQ）？[y/N] ${NC}")" -n 1 REPLY 2>/dev/null || REPLY="n"
-echo ""
-if [[ "${REPLY}" =~ ^[Yy]$ ]]; then
-  info "启动 Elasticsearch..."
-  docker compose -f docker-compose.dev.yml --profile search up -d
-
-  info "启动 RocketMQ..."
-  docker compose -f docker-compose.dev.yml --profile mq up -d
-
-  success "全部中间件已启动"
-else
-  info "跳过 ES / RocketMQ（可后续通过 --profile search/mq 启动）"
-fi
+docker compose -f docker-compose.dev.yml --profile app --profile search --profile mq up -d \
+  mysql redis elasticsearch rocketmq-namesrv rocketmq-broker
+success "核心中间件启动中..."
 
 # ---- Step 4: 等待 MySQL 就绪 ----
 info "等待 MySQL 就绪..."
@@ -101,6 +88,26 @@ until docker exec local-life-mysql mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" -e "S
 done
 echo ""
 success "MySQL 已就绪"
+
+# ---- Step 4.1: 等待 Elasticsearch / RocketMQ 就绪 ----
+info "等待 Elasticsearch 就绪..."
+MAX_WAIT=120; WAITED=0
+ELASTIC_PORT="${ELASTIC_PORT:-9200}"
+until curl -sf "http://localhost:${ELASTIC_PORT}/_cluster/health" >/dev/null 2>&1; do
+  [ ${WAITED} -ge ${MAX_WAIT} ] && error "Elasticsearch 未在 ${MAX_WAIT}s 内就绪"
+  printf "."; sleep 3; WAITED=$((WAITED + 3))
+done
+echo ""
+success "Elasticsearch 已就绪"
+
+info "等待 RocketMQ NameServer 就绪..."
+MAX_WAIT=90; WAITED=0
+until docker logs local-life-rmq-namesrv 2>&1 | grep -q "Name Server boot success"; do
+  [ ${WAITED} -ge ${MAX_WAIT} ] && error "RocketMQ NameServer 未在 ${MAX_WAIT}s 内就绪"
+  printf "."; sleep 3; WAITED=$((WAITED + 3))
+done
+echo ""
+success "RocketMQ NameServer 已就绪"
 
 # ---- Step 5: 数据库初始化 ----
 info "执行数据库迁移..."
@@ -148,10 +155,10 @@ success "数据库迁移完成"
 # ---- Step 6: 构建并启动应用服务 ----
 if [ "${SKIP_BUILD}" = "true" ]; then
   info "跳过构建，直接启动应用服务..."
-  docker compose -f docker-compose.dev.yml --profile app up -d
+  docker compose -f docker-compose.dev.yml --profile app --profile search --profile mq up -d
 else
   info "构建应用镜像（首次约需 3-5 分钟）..."
-  docker compose -f docker-compose.dev.yml --profile app up -d --build
+  docker compose -f docker-compose.dev.yml --profile app --profile search --profile mq up -d --build
 fi
 
 # ---- Step 7: 等待服务健康 ----
@@ -181,5 +188,5 @@ echo -e "  🏪 LocalLife API         ${BLUE}http://localhost:8080/api/v1/${NC}"
 echo ""
 echo -e "  📊 Grafana 监控          ${BLUE}http://localhost:3000${NC}  (admin/admin)"
 echo ""
-echo -e "  ${YELLOW}停止服务：${NC} docker compose -f infra/docker-compose.dev.yml --profile app down"
+echo -e "  ${YELLOW}停止服务：${NC} docker compose -f infra/docker-compose.dev.yml --profile app --profile search --profile mq down"
 echo ""

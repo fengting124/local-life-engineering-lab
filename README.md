@@ -55,7 +55,12 @@ bash scripts/start.sh         # 自动完成：启动中间件→DB迁移→构�
 - 📖 Agent Swagger：`http://localhost:8000/swagger-ui.html`（FastAPI 原生入口：`http://localhost:8000/docs`）
 - 📊 Grafana 监控：`http://localhost:3000`（admin/admin）
 
-**可选中间件（按需启动）：**
+**核心链路（必须一起启动）：**
+```bash
+docker compose -f infra/docker-compose.dev.yml --profile app --profile search --profile mq up -d
+```
+
+**可选组件（按需启动）：**
 ```bash
 docker compose -f infra/docker-compose.dev.yml --profile search up -d        # ES 搜索
 docker compose -f infra/docker-compose.dev.yml --profile mq up -d            # RocketMQ
@@ -73,13 +78,13 @@ docker compose -f infra/docker-compose.dev.yml --profile nginx up -d         # N
 ```bash
 cd infra
 
-# 核心中间件（MySQL + Redis）
-docker compose -f docker-compose.dev.yml up -d
+# 核心链路（应用 + MySQL + Redis + ES + RocketMQ）
+docker compose -f docker-compose.dev.yml --profile app --profile search --profile mq up -d
 
-# 搜索（ES）
+# 只调试依赖时，也可以单独启动搜索（ES）
 docker compose -f docker-compose.dev.yml --profile search up -d
 
-# 消息队列（RocketMQ）
+# 只调试依赖时，也可以单独启动消息队列（RocketMQ）
 docker compose -f docker-compose.dev.yml --profile mq up -d
 
 # 可观测性（Prometheus + Grafana + Zipkin）

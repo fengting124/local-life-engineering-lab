@@ -34,10 +34,10 @@ $MysqlPwd = (Get-Content $EnvFile | Where-Object { $_ -match "^MYSQL_ROOT_PASSWO
 
 Set-Location $InfraDir
 
-# ── 启动中间件 ──
-Write-Step "启动基础中间件（MySQL / Redis）..."
-docker compose -f docker-compose.dev.yml up -d mysql redis
-Write-OK "MySQL + Redis 启动中"
+# ── 启动核心中间件 ──
+Write-Step "启动核心中间件（MySQL / Redis / Elasticsearch / RocketMQ）..."
+docker compose -f docker-compose.dev.yml --profile app --profile search --profile mq up -d mysql redis elasticsearch rocketmq-namesrv rocketmq-broker
+Write-OK "核心中间件启动中"
 
 # ── 等待 MySQL ──
 Write-Step "等待 MySQL 就绪（最多 60s）..."
@@ -50,6 +50,32 @@ while ($waited -lt 60) {
 Write-Host ""
 if ($waited -ge 60) { Write-Fail "MySQL 未就绪" }
 Write-OK "MySQL 已就绪"
+
+# ── 等待 Elasticsearch / RocketMQ ──
+Write-Step "等待 Elasticsearch 就绪（最多 120s）..."
+$ElasticPort = if ($env:ELASTIC_PORT) { $env:ELASTIC_PORT } else { "9200" }
+$waited = 0
+while ($waited -lt 120) {
+    try {
+        $r = Invoke-WebRequest "http://localhost:$ElasticPort/_cluster/health" -TimeoutSec 2 -UseBasicParsing 2>$null
+        if ($r.StatusCode -eq 200) { break }
+    } catch {}
+    Start-Sleep 3; $waited += 3; Write-Host "." -NoNewline
+}
+Write-Host ""
+if ($waited -ge 120) { Write-Fail "Elasticsearch 未就绪" }
+Write-OK "Elasticsearch 已就绪"
+
+Write-Step "等待 RocketMQ NameServer 就绪（最多 90s）..."
+$waited = 0
+while ($waited -lt 90) {
+    $logs = docker logs local-life-rmq-namesrv 2>$null
+    if ($logs -match "Name Server boot success") { break }
+    Start-Sleep 3; $waited += 3; Write-Host "." -NoNewline
+}
+Write-Host ""
+if ($waited -ge 90) { Write-Fail "RocketMQ NameServer 未就绪" }
+Write-OK "RocketMQ NameServer 已就绪"
 
 # ── 数据库迁移 ──
 Write-Step "执行数据库迁移..."
@@ -92,10 +118,10 @@ Write-OK "数据库迁移完成"
 # ── 构建并启动应用 ──
 if ($SkipBuild) {
     Write-Step "启动应用服务（跳过构建）..."
-    docker compose -f docker-compose.dev.yml --profile app up -d
+    docker compose -f docker-compose.dev.yml --profile app --profile search --profile mq up -d
 } else {
     Write-Step "构建应用镜像（首次约需 3-5 分钟）..."
-    docker compose -f docker-compose.dev.yml --profile app up -d --build
+    docker compose -f docker-compose.dev.yml --profile app --profile search --profile mq up -d --build
 }
 
 # ── 等待服务就绪 ──
