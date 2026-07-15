@@ -3,7 +3,7 @@
 - Status: Draft
 - Type: Plan
 - Owners: Project maintainers
-- Last verified: 2026-07-12
+- Last verified: 2026-07-15
 - Source of truth: 当前代码和外部规范
 
 ## 1. 文档目标
@@ -165,7 +165,7 @@
    - `agent_event` 管事件流：tool call、interrupt、resume、error、final answer
 4. 补齐 `aput_writes()`，让 pending writes 真正持久化。（当前分支已完成代码、迁移和单元测试）
 5. 捕获 `CancelledError` 和流式断连场景，确保状态和消息成对落盘。
-6. 审批接口改成“条件更新”或版本号更新，避免并发 approve/reject 竞态。
+6. 审批接口改成“条件更新”或版本号更新，避免并发 approve/reject 竞态。（当前分支已完成：`HitlService.approve/reject` 用 `UPDATE ... WHERE status='PENDING'` 的 `rowcount` 判断状态迁移是否抢占成功，并补了服务层回归测试）
 
 ### B.4 测试与验收
 
@@ -177,6 +177,7 @@
    - `interrupt -> approval -> resume`
    - `disconnect -> reconnect -> event replay`
 3. 运行结果以 `agent_run/agent_event` 为准，SSE 只是消费这些事件。当前分支已做到“边推 SSE 边落库”，并提供 `GET /chat/runs/{run_id}/events?after_sequence=N&limit=M` 按 `run_id + sequence_index` 重放。
+4. 审批状态迁移以数据库原子更新为准：同一个审批 ID 被重复点击、并发 approve/reject 或工作台与 resume 竞态时，只有第一个抢到 `PENDING` 的请求成功，后续请求返回失败并由上层按已处理状态兜底。
 
 完成标志：系统不再依赖“前端记住 thread_id 并正确传回来”这类脆弱前提。
 

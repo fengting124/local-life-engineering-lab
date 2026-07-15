@@ -496,6 +496,16 @@ SSE 是展示通道，不是审计或数据导出接口。当前实现中：
 
 HITL 恢复也会继续写同一个运行时事件流。`/chat/resume` 会根据审批记录的 `thread_id` 找最近一个 `WAITING_APPROVAL` run，从下一个 `sequence_index` 继续写 `agent_step/tool_call/tool_result/final_answer/error`；如果审批被拒绝，则写一条 `hitl_rejected` 的 `final_answer` 并把 run 标记为 `CANCELED`。
 
+审批通过/拒绝不是靠“前端按钮禁用”保证唯一性的。`session/hitl.py` 里的 `HitlService.approve()` 和 `reject()` 使用数据库条件更新：
+
+```sql
+UPDATE hitl_approval
+SET status = 'APPROVED', approver_id = ?, approved_at = ?
+WHERE id = ? AND status = 'PENDING'
+```
+
+服务端以 `rowcount` 判断是否抢到这次状态迁移。并发场景下，approve 和 reject 即使同时到达，也只有第一个能把 `PENDING` 改成终态；后到请求会因为 `rowcount=0` 返回失败，不会覆盖已经审批过的结果。这类写法在面试里可以类比库存扣减、订单支付、退款状态机里的 CAS/乐观并发控制。
+
 断线回放入口：
 
 ```http
@@ -999,6 +1009,7 @@ data: {
 
 - LangGraph thread 状态存 MySQL Checkpoint，不用内存保存。
 - 审批通过后通过 `thread_id + approval_id` 恢复，从挂起点继续执行。
+- 审批表状态迁移用条件更新，`PENDING -> APPROVED/REJECTED` 只有一个请求能成功，避免运营重复点击或 approve/reject 并发覆盖。
 - Java 主服务用 `side_effect_ledger` 以 `operation_type + approval_id` 做幂等；同一审批重复恢复时直接返回第一次成功结果，不再次退款/发券。
 - 如果 MySQL Checkpoint 不可用，当前开发环境会 fallback 到 `MemorySaver`，但生产必须把 MySQL Checkpoint 作为强依赖，否则不能承诺长时间挂起恢复。
 

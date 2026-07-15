@@ -130,29 +130,42 @@ class HitlService:
         :param comment:     审批备注（可选）
         :return: True=更新成功，False=记录不存在或已不是 PENDING 状态
         """
+        now = datetime.now()
         async with AsyncSessionLocal() as db:
+            transition = await db.execute(
+                update(HitlApproval)
+                .where(
+                    HitlApproval.id == approval_id,
+                    HitlApproval.status == "PENDING",
+                    HitlApproval.expire_at >= now,
+                )
+                .values(
+                    status="APPROVED",
+                    approver_id=approver_id,
+                    approver_comment=comment,
+                    approved_at=now,
+                    updated_at=now,
+                )
+            )
+            if transition.rowcount == 1:
+                await db.commit()
+                log.info("hitl_approved", approval_id=approval_id, approver_id=approver_id)
+                return True
+
+            await db.rollback()
             result = await db.get(HitlApproval, approval_id)
             if not result:
                 log.warning("hitl_approve_not_found", approval_id=approval_id)
                 return False
-            if result.status != "PENDING":
-                log.warning("hitl_approve_invalid_status",
-                            approval_id=approval_id, status=result.status)
-                return False
-            if result.expire_at < datetime.now():
+            if result.status == "PENDING" and result.expire_at < now:
                 log.warning("hitl_approve_expired", approval_id=approval_id)
                 result.status = "EXPIRED"
+                result.updated_at = now
                 await db.commit()
                 return False
-
-            result.status = "APPROVED"
-            result.approver_id = approver_id
-            result.approver_comment = comment
-            result.approved_at = datetime.now()
-            await db.commit()
-
-        log.info("hitl_approved", approval_id=approval_id, approver_id=approver_id)
-        return True
+            log.warning("hitl_approve_invalid_status",
+                        approval_id=approval_id, status=result.status)
+            return False
 
     async def reject(
         self,
@@ -166,14 +179,26 @@ class HitlService:
         拒绝后 Agent 不会继续执行高风险动作，
         会向用户说明拒绝原因并建议其他解决方案。
         """
+        now = datetime.now()
         async with AsyncSessionLocal() as db:
-            result = await db.get(HitlApproval, approval_id)
-            if not result or result.status != "PENDING":
+            transition = await db.execute(
+                update(HitlApproval)
+                .where(
+                    HitlApproval.id == approval_id,
+                    HitlApproval.status == "PENDING",
+                )
+                .values(
+                    status="REJECTED",
+                    approver_id=approver_id,
+                    approver_comment=comment,
+                    approved_at=now,
+                    updated_at=now,
+                )
+            )
+            if transition.rowcount != 1:
+                await db.rollback()
+                log.warning("hitl_reject_invalid_status", approval_id=approval_id)
                 return False
-            result.status = "REJECTED"
-            result.approver_id = approver_id
-            result.approver_comment = comment
-            result.approved_at = datetime.now()
             await db.commit()
 
         log.info("hitl_rejected", approval_id=approval_id, approver_id=approver_id)
