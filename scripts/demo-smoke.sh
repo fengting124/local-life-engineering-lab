@@ -33,6 +33,7 @@ DEMO_USER_ROLE="${DEMO_USER_ROLE:-merchant}"
 DEMO_MERCHANT_ID="${DEMO_MERCHANT_ID:-880000100001}"
 OPERATOR_USER_ID="${OPERATOR_USER_ID:-900000000001}"
 OPERATOR_ROLE="${OPERATOR_ROLE:-admin}"
+MCP_CONTEXT_SIGNING_SECRET="${MCP_CONTEXT_SIGNING_SECRET:-local-life-mcp-context-secret}"
 
 START_STACK="${START_STACK:-0}"
 SKIP_BUILD="${SKIP_BUILD:-1}"
@@ -96,14 +97,40 @@ wait_for_url() {
   return 0
 }
 
+build_mcp_auth_headers() {
+  local user_id="$1"
+  local role="$2"
+  local merchant_id="${3:-}"
+  local timestamp
+  local signature
+
+  timestamp="$(date +%s)"
+  signature="$(
+    printf '%s\n%s\n%s\n%s' "$user_id" "$role" "$merchant_id" "$timestamp" \
+      | openssl dgst -sha256 -hmac "$MCP_CONTEXT_SIGNING_SECRET" -hex \
+      | awk '{print $2}'
+  )"
+
+  mcp_auth_headers=(
+    -H "X-User-Id: ${user_id}"
+    -H "X-User-Role: ${role}"
+    -H "X-Agent-Timestamp: ${timestamp}"
+    -H "X-Agent-Signature: ${signature}"
+  )
+  if [[ -n "$merchant_id" ]]; then
+    mcp_auth_headers+=(-H "X-Merchant-Id: ${merchant_id}")
+  fi
+}
+
 post_mcp() {
   local payload="$1"
   local output="$2"
+  local -a mcp_auth_headers
+
+  build_mcp_auth_headers "$DEMO_USER_ID" "$DEMO_USER_ROLE" "$DEMO_MERCHANT_ID"
   curl -fsS --max-time 20 \
     -H "Content-Type: application/json" \
-    -H "X-User-Id: ${DEMO_USER_ID}" \
-    -H "X-User-Role: ${DEMO_USER_ROLE}" \
-    -H "X-Merchant-Id: ${DEMO_MERCHANT_ID}" \
+    "${mcp_auth_headers[@]}" \
     -d "$payload" \
     "${MCP_URL}/mcp" >"$output"
 }
@@ -150,6 +177,7 @@ PY
 require_cmd curl
 require_cmd python3
 require_cmd docker
+require_cmd openssl
 
 log "writing evidence to $OUT_DIR"
 

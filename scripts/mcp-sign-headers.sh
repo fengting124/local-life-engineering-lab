@@ -6,7 +6,7 @@ if [[ $# -lt 2 || $# -gt 3 ]]; then
   exit 64
 fi
 
-: "${MCP_CONTEXT_SIGNING_SECRET:?set MCP_CONTEXT_SIGNING_SECRET first}"
+MCP_CONTEXT_SIGNING_SECRET="${MCP_CONTEXT_SIGNING_SECRET:-local-life-mcp-context-secret}"
 
 user_id="$1"
 role="$2"

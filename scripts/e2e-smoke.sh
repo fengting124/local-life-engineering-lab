@@ -7,6 +7,7 @@ AGENT_URL="${AGENT_URL:-http://localhost:8000}"
 SMOKE_USER_ID="${SMOKE_USER_ID:-9000000001}"
 SMOKE_USER_ROLE="${SMOKE_USER_ROLE:-merchant}"
 SMOKE_MERCHANT_ID="${SMOKE_MERCHANT_ID:-1}"
+MCP_CONTEXT_SIGNING_SECRET="${MCP_CONTEXT_SIGNING_SECRET:-local-life-mcp-context-secret}"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -29,16 +30,47 @@ wait_for_url() {
   return 1
 }
 
+build_mcp_auth_headers() {
+  local user_id="$1"
+  local role="$2"
+  local merchant_id="${3:-}"
+  local timestamp
+  local signature
+
+  timestamp="$(date +%s)"
+  signature="$(
+    printf '%s\n%s\n%s\n%s' "$user_id" "$role" "$merchant_id" "$timestamp" \
+      | openssl dgst -sha256 -hmac "$MCP_CONTEXT_SIGNING_SECRET" -hex \
+      | awk '{print $2}'
+  )"
+
+  mcp_auth_headers=(
+    -H "X-User-Id: ${user_id}"
+    -H "X-User-Role: ${role}"
+    -H "X-Agent-Timestamp: ${timestamp}"
+    -H "X-Agent-Signature: ${signature}"
+  )
+  if [[ -n "$merchant_id" ]]; then
+    mcp_auth_headers+=(-H "X-Merchant-Id: ${merchant_id}")
+  fi
+}
+
 post_mcp() {
   local payload="$1"
   local output="$2"
+  local -a mcp_auth_headers
+
+  build_mcp_auth_headers "$SMOKE_USER_ID" "$SMOKE_USER_ROLE" "$SMOKE_MERCHANT_ID"
   curl -fsS --max-time 15 \
     -H "Content-Type: application/json" \
-    -H "X-User-Id: ${SMOKE_USER_ID}" \
-    -H "X-User-Role: ${SMOKE_USER_ROLE}" \
-    -H "X-Merchant-Id: ${SMOKE_MERCHANT_ID}" \
+    "${mcp_auth_headers[@]}" \
     -d "$payload" \
     "${MCP_URL}/mcp" >"$output"
+}
+
+command -v openssl >/dev/null 2>&1 || {
+  echo "failed: openssl is required to sign MCP smoke requests" >&2
+  exit 1
 }
 
 wait_for_url "local-life-server" "${SERVER_URL}/actuator/health"
