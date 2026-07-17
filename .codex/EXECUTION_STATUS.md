@@ -1,7 +1,7 @@
 # Engineering Hardening Execution Status
 
-- Branch: `codex/interview-hardening-plan`
-- Pull request: `#19`
+- Branch: `feature/engineering-hardening`
+- Pull request: `#20`
 - Updated: 2026-07-17
 
 ## Completed
