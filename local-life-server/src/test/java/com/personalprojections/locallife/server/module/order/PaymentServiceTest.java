@@ -22,6 +22,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -133,18 +134,21 @@ class PaymentServiceTest {
         when(orderService.getOrderById(ORDER_ID)).thenReturn(order("WAIT_PAY"));
         // Cast resolves BaseMapper#insert(T) vs insert(Collection<T>) ambiguity in MP 3.5.7
         doAnswer(inv -> {
-            PaymentOrder po = (PaymentOrder) inv.getArgument(0);
-            po.setId(PAYMENT_ID);
             return 1;
         }).when(paymentOrderMapper).insert((PaymentOrder) any());
-        when(paymentOrderMapper.update(any(), any())).thenReturn(1);
 
         PaymentVO vo = paymentService.createPayment(paymentRequest());
 
-        assertThat(vo.getPaymentNo()).isEqualTo(String.valueOf(PAYMENT_ID));
+        ArgumentCaptor<PaymentOrder> paymentCaptor = ArgumentCaptor.forClass(PaymentOrder.class);
+        verify(paymentOrderMapper).insert(paymentCaptor.capture());
+        assertThat(vo.getPaymentNo()).isNotBlank();
+        assertThat(vo.getPaymentNo()).isEqualTo(paymentCaptor.getValue().getPaymentNo());
+        assertThat(paymentCaptor.getValue().getId()).isNotNull();
+        assertThat(paymentCaptor.getValue().getPaymentNo())
+                .isEqualTo(String.valueOf(paymentCaptor.getValue().getId()));
         assertThat(vo.getPayUrl())
                 .as("Mock 渠道的 payUrl 格式应为 /api/v1/payments/mock-pay?paymentNo=xxx")
-                .startsWith("/api/v1/payments/mock-pay?paymentNo=");
+                .isEqualTo("/api/v1/payments/mock-pay?paymentNo=" + vo.getPaymentNo());
         assertThat(vo.getPayAmount()).isEqualTo(PAY_AMOUNT);
     }
 
