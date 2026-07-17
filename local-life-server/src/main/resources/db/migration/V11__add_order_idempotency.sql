@@ -16,12 +16,14 @@ CREATE TABLE IF NOT EXISTS `order_idempotency`
     `status`          VARCHAR(16)      NOT NULL DEFAULT 'PROCESSING' COMMENT 'PROCESSING / SUCCESS / FAILED',
     `response_json`   LONGTEXT         NULL COMMENT 'serialized OrderVO for deterministic replay',
     `failure_reason`  VARCHAR(256)     NULL COMMENT 'sanitized failure category',
-    `expires_at`      DATETIME         NOT NULL COMMENT 'record retention boundary',
+    `lease_until`     DATETIME         NULL COMMENT 'PROCESSING owner lease; expired claims may be recovered',
+    `expires_at`      DATETIME         NOT NULL COMMENT 'ledger retention boundary',
     `created_at`      DATETIME         NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at`      DATETIME         NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_order_idempotency_user_key` (`user_id`, `idempotency_key`),
-    KEY `idx_order_idempotency_expire` (`status`, `expires_at`)
+    KEY `idx_order_idempotency_lease` (`status`, `lease_until`),
+    KEY `idx_order_idempotency_expire` (`expires_at`)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_unicode_ci
