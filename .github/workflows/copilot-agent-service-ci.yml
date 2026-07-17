@@ -36,12 +36,18 @@ jobs:
           cache: pip
           cache-dependency-path: |
             copilot-agent-service/requirements.txt
+            copilot-agent-service/requirements-rag-local.txt
+            copilot-agent-service/requirements-rag-models.txt
             copilot-agent-service/requirements-dev.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          pip install \
+            -r requirements.txt \
+            -r requirements-rag-local.txt \
+            -r requirements-rag-models.txt \
+            -r requirements-dev.txt
 
       - name: Pytest with coverage gate
         env:

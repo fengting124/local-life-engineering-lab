@@ -1,0 +1,13 @@
+# ================================================================
+# LocalLife RAG 本地模型依赖
+#
+# 仅当在 copilot-agent-service 进程内直接加载本地 embedding/reranker
+# 模型时安装。普通本地 Demo 和 Docker 镜像默认使用独立模型服务或远程
+# API，不需要安装这组较大的依赖。
+# ================================================================
+
+sentence-transformers==3.3.1
+
+# CPU 版 torch 首次下载较大；需要 GPU/CUDA 时应按部署环境单独固定源和版本。
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0
