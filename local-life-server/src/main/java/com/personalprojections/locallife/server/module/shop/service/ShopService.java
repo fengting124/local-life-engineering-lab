@@ -8,7 +8,7 @@ import com.personalprojections.locallife.server.domain.entity.Merchant;
 import com.personalprojections.locallife.server.domain.entity.Shop;
 import com.personalprojections.locallife.server.domain.mapper.ShopMapper;
 import com.personalprojections.locallife.server.module.merchant.service.MerchantService;
-import com.personalprojections.locallife.server.module.search.service.ShopSearchService;
+import com.personalprojections.locallife.server.module.search.service.ShopSearchOperations;
 import com.personalprojections.locallife.server.module.shop.dto.CreateShopRequest;
 import com.personalprojections.locallife.server.module.shop.dto.ShopVO;
 import com.personalprojections.locallife.server.module.shop.dto.UpdateShopRequest;
@@ -102,7 +102,7 @@ public class ShopService {
 
     private final ShopMapper shopMapper;
     private final MerchantService merchantService;
-    private final ShopSearchService shopSearchService;
+    private final ShopSearchOperations shopSearchService;
 
     /** 布隆过滤器：前置拦截不存在的 shopId，防缓存穿透 */
     private final BloomFilterService bloomFilterService;

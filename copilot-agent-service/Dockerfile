@@ -24,6 +24,8 @@ RUN pip install --no-cache-dir \
 # ───── 代码层 ─────
 COPY --chown=appuser:appgroup . .
 
+RUN mkdir -p /app/data && chown -R appuser:appgroup /app/data
+
 USER appuser
 EXPOSE 8000
 

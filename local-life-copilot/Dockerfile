@@ -24,7 +24,7 @@ COPY local-life-server/pom.xml local-life-server/pom.xml
 COPY . .
 RUN for i in 1 2 3; do \
         echo "=== mvn package attempt $i ==="; \
-        mvn package -pl local-life-copilot -am -DskipTests -q -U && exit 0; \
+        mvn package -pl local-life-copilot -am -DskipTests -ntp -U && exit 0; \
         echo "attempt $i failed, retrying in 15s..."; sleep 15; \
     done; \
     echo "mvn package failed after 3 attempts" >&2; exit 1

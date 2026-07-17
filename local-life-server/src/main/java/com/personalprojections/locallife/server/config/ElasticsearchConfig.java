@@ -43,7 +43,7 @@ import org.springframework.data.elasticsearch.core.IndexOperations;
 @Slf4j
 @Configuration
 @RequiredArgsConstructor
-@Profile("!test")
+@Profile("!test & !lite")
 public class ElasticsearchConfig {
 
     /**

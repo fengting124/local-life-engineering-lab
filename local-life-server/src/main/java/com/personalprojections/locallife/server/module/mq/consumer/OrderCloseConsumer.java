@@ -8,6 +8,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
 import org.apache.rocketmq.spring.core.RocketMQListener;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
 /**
@@ -44,6 +45,7 @@ import org.springframework.stereotype.Service;
 @Slf4j
 @Service
 @RequiredArgsConstructor
+@Profile("!test & !lite")
 @RocketMQMessageListener(
         topic = MqTopics.ORDER_CLOSE_TOPIC,
         selectorExpression = MqTopics.TAG_ORDER_CLOSE_NOTIFY,

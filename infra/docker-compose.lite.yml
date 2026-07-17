@@ -11,7 +11,17 @@
 # required. Start embedding-service and reranker-service explicitly when the
 # knowledge_search tool is part of the demo.
 services:
+  locallife-server:
+    environment:
+      JAVA_OPTS: >-
+        -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0
+        -Dspring.profiles.active=lite
+        -Dspring.data.redis.host=redis
+        -Drocketmq.name-server=rocketmq-namesrv:9876
+        -Dinternal.api-key=${INTERNAL_API_KEY:-local-life-internal-secret}
+
   copilot-agent:
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
     environment:
       VECTOR_BACKEND: "${VECTOR_BACKEND:-milvus}"
       MILVUS_URI: "${MILVUS_URI:-/app/data/local_life_kb.db}"

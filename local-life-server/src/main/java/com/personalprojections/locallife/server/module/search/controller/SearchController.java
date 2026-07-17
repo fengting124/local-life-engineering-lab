@@ -4,8 +4,8 @@ import com.personalprojections.locallife.server.common.ratelimit.RateLimit;
 import com.personalprojections.locallife.server.common.result.PageResult;
 import com.personalprojections.locallife.server.common.result.Result;
 import com.personalprojections.locallife.server.module.search.dto.*;
-import com.personalprojections.locallife.server.module.search.service.PostSearchService;
-import com.personalprojections.locallife.server.module.search.service.ShopSearchService;
+import com.personalprojections.locallife.server.module.search.service.PostSearchOperations;
+import com.personalprojections.locallife.server.module.search.service.ShopSearchOperations;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -40,8 +40,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class SearchController {
 
-    private final ShopSearchService shopSearchService;
-    private final PostSearchService postSearchService;
+    private final ShopSearchOperations shopSearchService;
+    private final PostSearchOperations postSearchService;
 
     /**
      * 门店搜索接口。

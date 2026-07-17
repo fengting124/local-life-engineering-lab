@@ -18,6 +18,7 @@ Collection Schema（local_life_kb）：
 import datetime
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -59,6 +60,27 @@ def _prepare_connection_environment(uri: str) -> str:
     return uri
 
 
+@contextmanager
+def _without_pymilvus_env_uri_for_local_file(uri: str):
+    """Avoid pymilvus import-time parsing of local MILVUS_URI values.
+
+    pymilvus 2.4.x reads the MILVUS_URI environment variable while importing
+    the package and only accepts remote HTTP(S) endpoints there. The explicit
+    MilvusClient(uri=...) argument supports Lite database files, so keep the
+    project config unchanged but hide the env var during client creation.
+    """
+    if not _is_local_file_uri(uri):
+        yield
+        return
+
+    original = os.environ.pop("MILVUS_URI", None)
+    try:
+        yield
+    finally:
+        if original is not None:
+            os.environ["MILVUS_URI"] = original
+
+
 def _escape_filter_string(value: str) -> str:
     """转义 Milvus filter 中的字符串字面量。"""
     return value.replace("\\", "\\\\").replace("'", "\\'")
@@ -79,9 +101,10 @@ class MilvusVectorStore:
         if not self.uri:
             return None
         try:
-            from pymilvus import MilvusClient
+            with _without_pymilvus_env_uri_for_local_file(self.uri):
+                from pymilvus import MilvusClient
 
-            self._client = MilvusClient(uri=self.uri)
+                self._client = MilvusClient(uri=self.uri)
             log.info(
                 "milvus_connected",
                 uri=self.uri,

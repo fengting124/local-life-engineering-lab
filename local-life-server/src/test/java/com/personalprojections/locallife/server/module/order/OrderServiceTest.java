@@ -225,7 +225,6 @@ class OrderServiceTest {
         when(userCouponMapper.update(any(), any())).thenReturn(1);
 
         stubInsertWithId(ORDER_ID);
-        when(orderInfoMapper.update(any(), any())).thenReturn(1);
 
         OrderVO vo = orderService.createOrder(request(888L), null);
 
@@ -247,7 +246,6 @@ class OrderServiceTest {
         when(userCouponMapper.update(any(), any())).thenReturn(1);
 
         stubInsertWithId(ORDER_ID);
-        when(orderInfoMapper.update(any(), any())).thenReturn(1);
 
         OrderVO vo = orderService.createOrder(request(888L), null);
 
@@ -261,7 +259,6 @@ class OrderServiceTest {
     void createOrder_noCoupon_fullPrice() {
         when(shopMapper.selectById(SHOP_ID)).thenReturn(shop("ONLINE"));
         stubInsertWithId(ORDER_ID);
-        when(orderInfoMapper.update(any(), any())).thenReturn(1);
 
         OrderVO vo = orderService.createOrder(request(null), null);
 

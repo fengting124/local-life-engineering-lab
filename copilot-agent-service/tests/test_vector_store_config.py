@@ -1,11 +1,16 @@
 """向量存储配置和工厂测试。"""
+import os
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from rag.config import load_rag_config
-from rag.vector_store import _is_local_file_uri, _prepare_connection_environment
+from rag.vector_store import (
+    _is_local_file_uri,
+    _prepare_connection_environment,
+    _without_pymilvus_env_uri_for_local_file,
+)
 from rag.vector_store_factory import create_vector_store
 
 
@@ -88,3 +93,19 @@ def test_local_uri_creates_parent_directory(tmp_path):
 
 def test_http_uri_is_not_treated_as_local_file():
     assert not _is_local_file_uri("http://milvus:19530")
+
+
+def test_local_file_uri_is_hidden_from_pymilvus_import(monkeypatch):
+    monkeypatch.setenv("MILVUS_URI", "/app/data/local_life_kb.db")
+
+    with _without_pymilvus_env_uri_for_local_file("/app/data/local_life_kb.db"):
+        assert "MILVUS_URI" not in os.environ
+
+    assert os.environ["MILVUS_URI"] == "/app/data/local_life_kb.db"
+
+
+def test_remote_uri_keeps_milvus_env_for_pymilvus(monkeypatch):
+    monkeypatch.setenv("MILVUS_URI", "http://milvus:19530")
+
+    with _without_pymilvus_env_uri_for_local_file("http://milvus:19530"):
+        assert os.environ["MILVUS_URI"] == "http://milvus:19530"
