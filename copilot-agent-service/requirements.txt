@@ -16,19 +16,18 @@ langchain-openai==0.2.6
 anthropic==0.40.0
 
 # ===== RAG 完整流水线 =====
-pymilvus==2.4.9
+# milvus-lite extra 允许 MilvusClient 使用本地 .db 文件；传 HTTP URI 时仍连接 Standalone。
+pymilvus[milvus-lite]==2.4.9
 langchain-milvus==0.1.6
 # marshmallow 必须 <4：4.x 移除了 __version_info__，与 pymilvus 2.4.9 的 environs 依赖不兼容
-# 否则报错 "module 'marshmallow' has no attribute '__version_info__'"，Milvus 整个不可用
 marshmallow<4
 rank-bm25==0.2.2
 numpy>=1.26.0
 
 # sentence-transformers + torch（本地 Embedding + Reranker）
 # 注意：torch CPU 版约 700MB，首次安装较慢
-# 如果只用 Milvus 远程服务而不需要本地 embedding，可以注释掉这两行
+# 如果只用远程 embedding/reranker 服务，可以在后续依赖拆分阶段移出基础镜像。
 sentence-transformers==3.3.1
-# torch 使用 CPU 轻量版（无 GPU 时 ~700MB，比 CUDA 版 ~2.5GB 小很多）
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.0.0
 
