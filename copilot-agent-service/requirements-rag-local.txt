@@ -1,0 +1,21 @@
+# ================================================================
+# LocalLife RAG 本地向量检索依赖
+#
+# 安装后支持：
+# - Milvus Lite：MILVUS_URI=./data/local_life_kb.db
+# - Milvus Standalone：MILVUS_URI=http://milvus:19530
+# - 本地 BM25 召回
+#
+# 不包含 sentence-transformers / torch。Agent 默认通过
+# EMBEDDING_SERVICE_URL / RERANKER_SERVICE_URL 调用独立模型服务。
+# ================================================================
+
+# milvus-lite extra 允许 MilvusClient 使用本地 .db 文件；传 HTTP URI 时仍连接 Standalone。
+pymilvus[milvus-lite]==2.4.9
+langchain-milvus==0.1.6
+
+# marshmallow 必须 <4：4.x 移除了 __version_info__，与 pymilvus 2.4.9 的 environs 依赖不兼容。
+marshmallow<4
+
+rank-bm25==0.2.2
+numpy>=1.26.0

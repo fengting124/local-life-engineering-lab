@@ -14,13 +14,8 @@
 | A3 | Multiple payment callback winner selection and `DUPLICATE_PAID` classification |
 | B1 | VectorStore protocol and backend factory |
 | B2 | Unified `MILVUS_URI`, Milvus Lite local default, and optional Standalone mode |
+| B3 | Split Agent base dependencies, local RAG dependencies, and optional local model dependencies |
 | Tests | Documentation, Python Agent, Java verify, database migrations, JaCoCo, and PIT gates passed for the completed code batches |
-
-## Partial
-
-| Item | Remaining work |
-|---|---|
-| B3 | Split base, local RAG, and local model dependencies into separate requirement sets |
 
 ## Pending
 

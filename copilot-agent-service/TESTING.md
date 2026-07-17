@@ -14,7 +14,7 @@ Milvus、MySQL、真实 MCP Server、真实 LLM API 默认都通过 `unittest.mo
 
 ```bash
 cd copilot-agent-service
-source .venv/bin/activate          # 激活虚拟环境（需先 pip install -r requirements.txt）
+source .venv/bin/activate          # 激活虚拟环境（需先安装基础依赖和测试依赖）
 
 DEBUG=false python -m pytest        # 运行全部测试（若 shell 中 DEBUG 被设成非布尔值，显式覆盖）
 python -m pytest -v                # 详细模式（显示每条用例名）
@@ -284,4 +284,9 @@ rank-bm25
 
 ```bash
 pip install -r requirements.txt
+pip install -r requirements-rag-local.txt
+pip install -r requirements-dev.txt
 ```
+
+`requirements-rag-models.txt` 只在需要进程内加载本地 embedding/reranker 模型时安装；
+普通单测和默认 Docker Agent 镜像不需要 torch / sentence-transformers。

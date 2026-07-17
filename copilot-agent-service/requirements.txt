@@ -1,5 +1,9 @@
 # ================================================================
-# LocalLife Copilot Agent Service 依赖
+# LocalLife Copilot Agent Service 基础依赖
+#
+# 只包含 API、Agent 编排、会话持久化、MCP 调用、可观测性等服务启动必需包。
+# RAG 向量库依赖见 requirements-rag-local.txt。
+# 本地 embedding/reranker 模型依赖见 requirements-rag-models.txt。
 # ================================================================
 
 # ===== Web 框架（SSE 流式输出）=====
@@ -14,22 +18,6 @@ langchain-openai==0.2.6
 
 # ===== LLM =====
 anthropic==0.40.0
-
-# ===== RAG 完整流水线 =====
-# milvus-lite extra 允许 MilvusClient 使用本地 .db 文件；传 HTTP URI 时仍连接 Standalone。
-pymilvus[milvus-lite]==2.4.9
-langchain-milvus==0.1.6
-# marshmallow 必须 <4：4.x 移除了 __version_info__，与 pymilvus 2.4.9 的 environs 依赖不兼容
-marshmallow<4
-rank-bm25==0.2.2
-numpy>=1.26.0
-
-# sentence-transformers + torch（本地 Embedding + Reranker）
-# 注意：torch CPU 版约 700MB，首次安装较慢
-# 如果只用远程 embedding/reranker 服务，可以在后续依赖拆分阶段移出基础镜像。
-sentence-transformers==3.3.1
---extra-index-url https://download.pytorch.org/whl/cpu
-torch>=2.0.0
 
 # ===== 数据库（会话 + 消息 + checkpoint 持久化）=====
 sqlalchemy==2.0.36

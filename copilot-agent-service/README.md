@@ -31,7 +31,12 @@ cp .env.example .env
 # 编辑 .env，至少填写 LLM_API_KEY；默认 provider/model 是 deepseek/deepseek-v4-flash
 
 # 2. 安装依赖（建议用 Python 3.11+）
+# 基础 Agent 服务
 pip install -r requirements.txt
+# 本地 RAG / Milvus Lite / BM25
+pip install -r requirements-rag-local.txt
+# 可选：仅当在本进程内加载本地 embedding/reranker 模型时安装
+# pip install -r requirements-rag-models.txt
 
 # 3. 入库知识库（Milvus 已启动时执行，首次必须）
 python -m rag.ingest
