@@ -2,6 +2,7 @@ package com.personalprojections.locallife.server.module.order.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.personalprojections.locallife.server.common.context.UserContext;
 import com.personalprojections.locallife.server.common.exception.BizException;
@@ -257,15 +258,18 @@ public class OrderService {
             }
         }
 
-        // ---- Step 6: 生成订单号 ----
-        // orderNo 是对外展示的业务单号，用雪花 ID 字符串形式
-        // MyBatis-Plus @TableId(ASSIGN_ID) 会自动填充 id（雪花 Long），
-        // 我们用它来生成 orderNo（转成字符串，语义上是"订单流水号"）
-        // 注意：orderNo 和 id 是不同的，id 不对外暴露
+        // ---- Step 6: 生成订单号并创建订单 ----
+        // order_no 是 NOT NULL 字段，必须在 INSERT 前生成。这里显式生成雪花 ID，
+        // 同步作为主键 id 和业务订单号，避免先插入再回填 order_no 在 MySQL
+        // 严格模式下触发 "Field 'order_no' doesn't have a default value"。
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime expireAt = now.plusMinutes(ORDER_EXPIRE_MINUTES);
+        Long orderId = IdWorker.getId();
+        String orderNo = String.valueOf(orderId);
 
         OrderInfo order = OrderInfo.builder()
+                .id(orderId)
+                .orderNo(orderNo)
                 .userId(userId)
                 .shopId(shop.getId())
                 .couponTemplateId(couponTemplate != null ? couponTemplate.getId() : null)
@@ -278,17 +282,7 @@ public class OrderService {
                 .expireAt(expireAt)
                 .build();
 
-        // INSERT，@TableId(ASSIGN_ID) 自动生成雪花 ID 填到 order.id
         orderInfoMapper.insert(order);
-
-        // 用雪花 ID 作为订单号（toString），全局唯一
-        // 生产级实践：可以加前缀+日期，如 "ORD20260528" + id，更可读
-        String orderNo = String.valueOf(order.getId());
-        orderInfoMapper.update(null,
-                new LambdaUpdateWrapper<OrderInfo>()
-                        .eq(OrderInfo::getId, order.getId())
-                        .set(OrderInfo::getOrderNo, orderNo));
-        order.setOrderNo(orderNo);
 
         // ---- Step 7: 注册「事务提交后」投递订单关闭延时消息的回调 ----
         // 见 registerOrderCloseDelayMessageAfterCommit 的 Javadoc：

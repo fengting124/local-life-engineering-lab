@@ -1,5 +1,6 @@
 package com.personalprojections.locallife.server.module.order.service;
 
+import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.personalprojections.locallife.server.common.context.UserContext;
 import com.personalprojections.locallife.server.common.exception.BizException;
 import com.personalprojections.locallife.server.common.metrics.BusinessMetrics;
@@ -54,7 +55,11 @@ public class PaymentService {
             throw new BizException(ErrorCode.SYS_BUSY);
         }
 
+        Long paymentId = IdWorker.getId();
+        String paymentNo = String.valueOf(paymentId);
         PaymentOrder paymentOrder = PaymentOrder.builder()
+                .id(paymentId)
+                .paymentNo(paymentNo)
                 .orderId(order.getId())
                 .orderNo(order.getOrderNo())
                 .userId(userId)
@@ -63,13 +68,6 @@ public class PaymentService {
                 .channel(channel)
                 .build();
         paymentOrderMapper.insert(paymentOrder);
-
-        String paymentNo = String.valueOf(paymentOrder.getId());
-        paymentOrderMapper.update(null,
-                new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PaymentOrder>()
-                        .eq(PaymentOrder::getId, paymentOrder.getId())
-                        .set(PaymentOrder::getPaymentNo, paymentNo));
-        paymentOrder.setPaymentNo(paymentNo);
 
         return PaymentVO.builder()
                 .paymentNo(paymentNo)
@@ -80,6 +78,7 @@ public class PaymentService {
                 .build();
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public void triggerMockPay(String paymentNo) {
         PaymentOrder paymentOrder = paymentOrderMapper.selectByPaymentNo(paymentNo);
         if (paymentOrder == null) {
