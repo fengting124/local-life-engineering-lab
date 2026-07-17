@@ -9,6 +9,7 @@ import com.personalprojections.locallife.server.module.search.dto.ShopSearchVO;
 import com.personalprojections.locallife.server.module.search.repository.ShopSearchRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Profile;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.data.elasticsearch.core.SearchHit;
@@ -69,8 +70,9 @@ import java.util.List;
  */
 @Slf4j
 @Service
+@Profile("!lite")
 @RequiredArgsConstructor
-public class ShopSearchService {
+public class ShopSearchService implements ShopSearchOperations {
 
     private final ElasticsearchOperations elasticsearchOperations;
     private final ShopSearchRepository shopSearchRepository;
@@ -86,6 +88,7 @@ public class ShopSearchService {
      *
      * @param shop MySQL 中的门店实体
      */
+    @Override
     public void syncShop(Shop shop) {
         ShopDocument doc = shopToDocument(shop);
         shopSearchRepository.save(doc);
@@ -100,6 +103,7 @@ public class ShopSearchService {
      *
      * @param shopId MySQL 门店 ID
      */
+    @Override
     public void removeShop(Long shopId) {
         shopSearchRepository.deleteById(String.valueOf(shopId));
         log.debug("[ES] 门店从索引中删除: shopId={}", shopId);
@@ -125,6 +129,7 @@ public class ShopSearchService {
      * @param req 搜索请求参数
      * @return 分页结果，含总数和当前页数据
      */
+    @Override
     public PageResult<ShopSearchVO> searchShops(ShopSearchRequest req) {
         // Metrics：记录搜索请求（区分关键词搜索 vs 纯地理位置搜索）
         boolean hasKeyword = req.getKeyword() != null && !req.getKeyword().isBlank();

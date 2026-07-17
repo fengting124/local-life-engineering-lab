@@ -15,6 +15,7 @@ import com.personalprojections.locallife.server.module.search.dto.PostSearchVO;
 import com.personalprojections.locallife.server.module.search.repository.PostSearchRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Profile;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.elasticsearch.client.elc.NativeQuery;
@@ -76,8 +77,9 @@ import java.util.List;
  */
 @Slf4j
 @Service
+@Profile("!lite")
 @RequiredArgsConstructor
-public class PostSearchService {
+public class PostSearchService implements PostSearchOperations {
 
     private final ElasticsearchOperations elasticsearchOperations;
     private final PostSearchRepository postSearchRepository;
@@ -102,6 +104,7 @@ public class PostSearchService {
      * @param post      MySQL post 实体
      * @param shopName  冗余字段：调用方传入门店名（PostService 知道 shopName）
      */
+    @Override
     public void syncPost(Post post, String shopName) {
         PostDocument doc = postToDocument(post, shopName);
         postSearchRepository.save(doc);
@@ -116,6 +119,7 @@ public class PostSearchService {
      *
      * @param postId MySQL post ID
      */
+    @Override
     public void removePost(Long postId) {
         postSearchRepository.deleteById(String.valueOf(postId));
         log.debug("[ES] 笔记从索引中删除: postId={}", postId);
@@ -135,6 +139,7 @@ public class PostSearchService {
      * @param postId   MySQL post ID
      * @param likeCount 最新点赞数
      */
+    @Override
     public void updateLikeCount(Long postId, int likeCount) {
         postSearchRepository.findById(String.valueOf(postId)).ifPresent(doc -> {
             doc.setLikeCount(likeCount);
@@ -163,6 +168,7 @@ public class PostSearchService {
      * @param req 搜索请求参数
      * @return 分页搜索结果
      */
+    @Override
     public PageResult<PostSearchVO> searchPosts(PostSearchRequest req) {
         // Step 1: 构建 filter 子句 —— filter 上下文不参与算分，且 ES 自动走 filter cache，
         // 精确匹配类条件（status/shopId/userId）都应该放 filter 而不是 must

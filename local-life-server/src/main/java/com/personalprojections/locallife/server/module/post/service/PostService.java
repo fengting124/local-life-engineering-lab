@@ -19,7 +19,7 @@ import com.personalprojections.locallife.server.module.post.dto.CommentVO;
 import com.personalprojections.locallife.server.module.post.dto.CreateCommentRequest;
 import com.personalprojections.locallife.server.module.post.dto.CreatePostRequest;
 import com.personalprojections.locallife.server.module.post.dto.PostVO;
-import com.personalprojections.locallife.server.module.search.service.PostSearchService;
+import com.personalprojections.locallife.server.module.search.service.PostSearchOperations;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -93,7 +93,7 @@ public class PostService {
      * ES 双写服务：笔记发布/删除后立刻同步更新 ES 索引。
      * 后续 Canal 方案上线后可移除此依赖。
      */
-    private final PostSearchService postSearchService;
+    private final PostSearchOperations postSearchService;
 
     /**
      * 使用 StringRedisTemplate（Key 和 Value 都是 String）操作点赞计数和限流 Key。
