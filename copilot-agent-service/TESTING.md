@@ -285,8 +285,10 @@ rank-bm25
 ```bash
 pip install -r requirements.txt
 pip install -r requirements-rag-local.txt
+pip install -r requirements-rag-models.txt
 pip install -r requirements-dev.txt
 ```
 
-`requirements-rag-models.txt` 只在需要进程内加载本地 embedding/reranker 模型时安装；
-普通单测和默认 Docker Agent 镜像不需要 torch / sentence-transformers。
+`requirements-rag-models.txt` 只在需要进程内加载本地 embedding/reranker 模型，
+或运行包含 `model_services/*` 的全量测试套件时安装；默认 Docker Agent 镜像不安装
+torch / sentence-transformers。
