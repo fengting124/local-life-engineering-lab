@@ -1,0 +1,22 @@
+# Local lightweight override.
+#
+# Usage:
+#   docker compose \
+#     -f infra/docker-compose.dev.yml \
+#     -f infra/docker-compose.lite.yml \
+#     --profile app up -d
+#
+# This keeps the main application stack and stores vectors in an embedded
+# Milvus Lite file. The rag profile with etcd, MinIO and Milvus Server is not
+# required. Start embedding-service and reranker-service explicitly when the
+# knowledge_search tool is part of the demo.
+services:
+  copilot-agent:
+    environment:
+      VECTOR_BACKEND: "${VECTOR_BACKEND:-milvus}"
+      MILVUS_URI: "${MILVUS_URI:-/app/data/local_life_kb.db}"
+    volumes:
+      - agent_rag_data:/app/data
+
+volumes:
+  agent_rag_data:
