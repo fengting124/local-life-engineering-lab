@@ -38,6 +38,8 @@ public class OrderIdempotency {
 
     private String failureReason;
 
+    private LocalDateTime leaseUntil;
+
     private LocalDateTime expiresAt;
 
     private LocalDateTime createdAt;
