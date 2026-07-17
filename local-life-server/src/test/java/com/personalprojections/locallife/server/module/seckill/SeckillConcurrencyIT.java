@@ -194,6 +194,9 @@ class SeckillConcurrencyIT {
                 .as("最终库存必须为 0").isEqualTo("0");
         assertThat(redisTemplate.opsForSet().size(userSetKey))
                 .as("已抢用户集合大小必须等于 100").isEqualTo(100L);
+        assertThat(redisTemplate.opsForStream().size("seckill:stream"))
+                .as("每次成功预扣都必须原子写入 Redis Stream，供进程崩溃后恢复")
+                .isEqualTo(100L);
     }
 
     // =========================================================
@@ -240,6 +243,7 @@ class SeckillConcurrencyIT {
                 .isEqualTo(1);
         // 只扣了 1 个库存
         assertThat(redisTemplate.opsForValue().get(stockKey)).isEqualTo("99");
+        assertThat(redisTemplate.opsForStream().size("seckill:stream")).isEqualTo(1L);
     }
 
     // =========================================================

@@ -2,6 +2,7 @@ package com.personalprojections.locallife.server.module.mq.consumer;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.personalprojections.locallife.server.domain.entity.UserCoupon;
+import com.personalprojections.locallife.server.domain.mapper.SeckillReservationMapper;
 import com.personalprojections.locallife.server.domain.mapper.UserCouponMapper;
 import com.personalprojections.locallife.server.module.mq.constant.MqTopics;
 import com.personalprojections.locallife.server.module.mq.event.SeckillSuccessEvent;
@@ -61,6 +62,7 @@ public class SeckillSuccessConsumer implements RocketMQListener<String> {
     private final ObjectMapper objectMapper;
     private final StringRedisTemplate stringRedisTemplate;
     private final UserCouponMapper userCouponMapper;
+    private final SeckillReservationMapper reservationMapper;
 
     /**
      * 幂等判重 Key 前缀，格式：consume:seckill_success:{eventId}。
@@ -117,6 +119,7 @@ public class SeckillSuccessConsumer implements RocketMQListener<String> {
         // ---- 执行业务逻辑：异步写库 + 标记结果 ----
         try {
             createUserCoupon(event);
+            markReservationAsConfirmed(event);
             markResultAsSuccess(event);
         } catch (Exception e) {
             // 业务处理失败：清除幂等 Key，让 RocketMQ 重试时重新执行
@@ -159,6 +162,10 @@ public class SeckillSuccessConsumer implements RocketMQListener<String> {
             log.warn("[SeckillConsumer] 用户券重复创建（唯一索引冲突，幂等处理）: eventId={}, userId={}, couponTemplateId={}",
                     event.getEventId(), event.getUserId(), event.getCouponTemplateId());
         }
+    }
+
+    private void markReservationAsConfirmed(SeckillSuccessEvent event) {
+        reservationMapper.markConfirmed(event.getEventId());
     }
 
     /**
