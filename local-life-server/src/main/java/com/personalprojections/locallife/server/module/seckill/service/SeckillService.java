@@ -26,10 +26,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 /**
  * 秒杀抢券 Service，是整个项目最有技术深度的模块。
@@ -106,6 +104,7 @@ public class SeckillService {
     /** Redis Key 模板 */
     private static final String STOCK_KEY = "seckill:stock:%d:%d";   // sessionId:templateId
     private static final String USER_SET_KEY = "seckill:user:%d:%d"; // sessionId:templateId
+    private static final String STREAM_KEY = "seckill:stream";
 
     /**
      * 秒杀结果 Key：seckill:result:{sessionId}:{templateId}:{userId}（按用户区分，
@@ -123,9 +122,6 @@ public class SeckillService {
     /** 秒杀结果 Key 的取值。 */
     private static final String RESULT_PENDING = "PENDING";
     private static final String RESULT_SUCCESS = "SUCCESS";
-
-    /** 结果 Key TTL（秒）：24 小时，与 {@code SeckillSuccessConsumer} 幂等 Key TTL 保持一致。 */
-    private static final long RESULT_KEY_TTL_SECONDS = 86_400L;
 
     /**
      * Lua 脚本对象，应用启动时加载，运行时复用。
@@ -168,10 +164,12 @@ public class SeckillService {
         Long couponTemplateId = request.getCouponTemplateId();
 
         // 1. 校验场次（存在性 + 状态 + 时间窗）
-        // 返回值此前用于同步创建 user_coupon 时计算 expire_at；
-        // 现已改为发布事件异步写库，expire_at 改由 validDays 在事件中冗余传递（见 publishSeckillSuccessEvent），
-        // 此处只需校验场次合法性，不再需要持有 session 对象
         validateSession(sessionId, couponTemplateId);
+        CouponTemplate template = couponTemplateMapper.selectById(couponTemplateId);
+        if (template == null) {
+            log.error("券模板不存在，couponTemplateId: {}", couponTemplateId);
+            throw new BizException(ErrorCode.SYS_BUSY);
+        }
 
         // Metrics：记录一次秒杀尝试（无论成功与否，帮助分析热度）
         // Metrics：使用 couponTemplateId 区分不同秒杀活动（SeckillSession 无 shopId 字段）
@@ -180,12 +178,20 @@ public class SeckillService {
         // 2. 执行 Lua 脚本（关键：原子性防超卖 + 防重复）
         String stockKey = String.format(STOCK_KEY, sessionId, couponTemplateId);
         String userSetKey = String.format(USER_SET_KEY, sessionId, couponTemplateId);
-        List<String> keys = Arrays.asList(stockKey, userSetKey);
+        String resultKey = String.format(RESULT_KEY, sessionId, couponTemplateId, userId);
+        String eventId = buildEventId(sessionId, userId);
+        LocalDateTime reservedAt = LocalDateTime.now();
+        List<String> keys = Arrays.asList(stockKey, userSetKey, STREAM_KEY, resultKey);
 
         Long result = stringRedisTemplate.execute(
                 SECKILL_SCRIPT,
                 keys,
-                String.valueOf(userId)  // ARGV[1]：当前用户 ID
+                String.valueOf(userId),
+                String.valueOf(sessionId),
+                String.valueOf(couponTemplateId),
+                eventId,
+                String.valueOf(template.getValidDays()),
+                reservedAt.toString()
         );
 
         // 3. 判断 Lua 脚本返回值
@@ -202,16 +208,11 @@ public class SeckillService {
             throw new BizException(ErrorCode.COUPON_ALREADY_RECEIVED);
         }
 
-        // 4. Lua 脚本返回 0：预扣成功（防超卖/防重复已在 Redis 层原子保证）
-        //    发布「秒杀成功事件」到 Outbox（与本方法同一事务），交由 Relay 异步投递 MQ，
-        //    SeckillSuccessConsumer 异步完成真正的 user_coupon INSERT —— DB 写入
-        //    从秒杀主链路上彻底解耦，响应只剩 Redis 操作 + 一行 outbox_message 写入
-        publishSeckillSuccessEvent(userId, couponTemplateId, sessionId);
-
-        // 标记「领取请求」当前状态为 PENDING：消费者写库成功后会更新为 SUCCESS，
-        // 前端轮询 GET /seckill/result 据此判断是否已真正出券
-        String resultKey = String.format(RESULT_KEY, sessionId, couponTemplateId, userId);
-        stringRedisTemplate.opsForValue().set(resultKey, RESULT_PENDING, RESULT_KEY_TTL_SECONDS, TimeUnit.SECONDS);
+        // 4. Lua 脚本返回 0：预扣成功（防超卖/防重复已在 Redis 层原子保证）。
+        //    同一个 Lua 原子块已经写入 Redis Stream 和 PENDING 结果 Key。
+        //    这里继续走 Outbox 快路径；若进程在此之前崩溃，SeckillStreamRecoveryService
+        //    会从 Redis Stream 重放事件并补写 Outbox。
+        publishSeckillSuccessEvent(userId, couponTemplateId, sessionId, template, eventId, reservedAt);
 
         // Metrics：记录秒杀成功（用于计算成功率：success / attempts；
         // 此处「成功」指 Redis 预扣成功——用户已经锁定名额，DB 落库是异步保证，不影响这个口径）
@@ -388,35 +389,32 @@ public class SeckillService {
      * @param couponTemplateId 券模板 ID
      * @param sessionId        秒杀场次 ID
      */
-    private void publishSeckillSuccessEvent(Long userId, Long couponTemplateId, Long sessionId) {
-        // 查询券模板，获取有效天数（事件冗余字段，供消费者直接使用，无需异步链路回查）
-        CouponTemplate template = couponTemplateMapper.selectById(couponTemplateId);
-        if (template == null) {
-            log.error("券模板不存在，couponTemplateId: {}", couponTemplateId);
-            throw new BizException(ErrorCode.SYS_BUSY);
-        }
-
-        LocalDateTime now = LocalDateTime.now();
-        // eventId 全局唯一，格式：{sessionId}_{userId}_seckill
-        // 注：couponTemplateId 不参与拼接——validateSession 已校验「一个场次唯一对应一个券模板」，
-        // 所以 (sessionId, userId) 已足以唯一标识一次领取，无需再加 couponTemplateId。
-        // 这样做还有现实考量：三个雪花 ID（各最长 19 位）全部拼接可能超过
-        // outbox_message.event_id 的 VARCHAR(64) 长度上限，去掉冗余字段更安全。
-        // 与 outbox_message.uk_event_id 唯一索引配合，杜绝重复落表
-        String eventId = sessionId + "_" + userId + "_seckill";
-
+    private void publishSeckillSuccessEvent(
+            Long userId,
+            Long couponTemplateId,
+            Long sessionId,
+            CouponTemplate template,
+            String eventId,
+            LocalDateTime reservedAt) {
         SeckillSuccessEvent event = SeckillSuccessEvent.builder()
                 .eventId(eventId)
                 .sessionId(sessionId)
                 .couponTemplateId(couponTemplateId)
                 .userId(userId)
                 .validDays(template.getValidDays())
-                .succeededAt(now)
-                .eventAt(now)
+                .succeededAt(reservedAt)
+                .eventAt(LocalDateTime.now())
                 .build();
 
         outboxService.saveToOutbox(event, eventId, MqTopics.SECKILL_SUCCESS_TOPIC, MqTopics.TAG_SECKILL_SUCCESS);
         log.debug("[Seckill] 已写入 Outbox，等待异步落库: eventId={}, userId={}, couponTemplateId={}",
                 eventId, userId, couponTemplateId);
+    }
+
+    private String buildEventId(Long sessionId, Long userId) {
+        // eventId 全局唯一，格式：{sessionId}_{userId}_seckill。
+        // couponTemplateId 不参与拼接：validateSession 已校验一个场次唯一对应一个券模板，
+        // 且这样能避免三个雪花 ID 拼接超过 outbox_message.event_id 的 VARCHAR(64)。
+        return sessionId + "_" + userId + "_seckill";
     }
 }

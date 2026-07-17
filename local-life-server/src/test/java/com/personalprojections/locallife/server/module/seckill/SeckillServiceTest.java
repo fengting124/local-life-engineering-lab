@@ -27,7 +27,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
 import java.time.LocalDateTime;
-import java.util.concurrent.TimeUnit;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -195,15 +195,10 @@ class SeckillServiceTest {
     }
 
     @Test
-    void doSeckill_luaReturns0_success_publishesEventAndSetsPendingKey() {
-        // Lua 返回 0：预扣成功——应发布 Outbox 事件、写 PENDING 结果 Key
+    void doSeckill_luaReturns0_success_publishesEventAndWritesStreamInLua() {
+        // Lua 返回 0：预扣成功——Lua 原子写 Stream/PENDING，Java 补写 Outbox 快路径
         stubValidSession();
         stubLuaResult(0L);
-
-        CouponTemplate template = CouponTemplate.builder()
-                .id(TEMPLATE_ID).validDays(7).status("ACTIVE").build();
-        when(couponTemplateMapper.selectById(TEMPLATE_ID)).thenReturn(template);
-        when(stringRedisTemplate.opsForValue()).thenReturn(valueOps);
 
         SeckillResultVO result = seckillService.doSeckill(request());
 
@@ -212,12 +207,19 @@ class SeckillServiceTest {
         // 验证已写入 Outbox（交由 Relay 异步投递 MQ，触发真正的 user_coupon INSERT）
         verify(outboxService, times(1)).saveToOutbox(any(), anyString(), anyString(), anyString());
 
-        // 验证 RESULT_KEY 被写为 PENDING（供前端轮询使用）
-        verify(valueOps, times(1)).set(
-                eq(String.format("seckill:result:%d:%d:%d", SESSION_ID, TEMPLATE_ID, USER_ID)),
-                eq("PENDING"),
-                eq(86_400L),
-                eq(TimeUnit.SECONDS));
+        verify(stringRedisTemplate).execute(
+                any(),
+                eq(List.of(
+                        String.format("seckill:stock:%d:%d", SESSION_ID, TEMPLATE_ID),
+                        String.format("seckill:user:%d:%d", SESSION_ID, TEMPLATE_ID),
+                        "seckill:stream",
+                        String.format("seckill:result:%d:%d:%d", SESSION_ID, TEMPLATE_ID, USER_ID))),
+                eq(String.valueOf(USER_ID)),
+                eq(String.valueOf(SESSION_ID)),
+                eq(String.valueOf(TEMPLATE_ID)),
+                eq(SESSION_ID + "_" + USER_ID + "_seckill"),
+                eq("7"),
+                any(Object.class));
 
         // 验证 Metrics 记录
         verify(businessMetrics).recordSeckillSuccess(TEMPLATE_ID);
@@ -313,10 +315,20 @@ class SeckillServiceTest {
 
     private void stubValidSession() {
         when(seckillSessionMapper.selectById(SESSION_ID)).thenReturn(activeSession());
+        when(couponTemplateMapper.selectById(TEMPLATE_ID)).thenReturn(
+                CouponTemplate.builder().id(TEMPLATE_ID).validDays(7).status("ACTIVE").build());
     }
 
     @SuppressWarnings("unchecked")
     private void stubLuaResult(Long returnValue) {
-        doReturn(returnValue).when(stringRedisTemplate).execute(any(), anyList(), any(Object.class));
+        doReturn(returnValue).when(stringRedisTemplate).execute(
+                any(),
+                anyList(),
+                any(Object.class),
+                any(Object.class),
+                any(Object.class),
+                any(Object.class),
+                any(Object.class),
+                any(Object.class));
     }
 }
