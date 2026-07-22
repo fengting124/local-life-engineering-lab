@@ -556,17 +556,17 @@ public class PostService {
     /**
      * 判断当前登录用户是否已点赞指定笔记。
      *
-     * <p>未登录时（UserContext.getUserId() 返回 null），直接返回 false，
+     * <p>未登录时（UserContext.get() 返回 null），直接返回 false，
      * 不抛异常（点赞状态查询是公开接口的一部分）。
      *
      * @param postId 笔记 ID
      * @return true 已点赞 / false 未点赞或未登录
      */
     private boolean isLikedByCurrentUser(Long postId) {
-        Long userId = UserContext.getUserId();
-        if (userId == null) {
+        if (UserContext.get() == null) {
             return false;
         }
+        Long userId = UserContext.getUserId();
         String usersKey = String.format(LIKE_USERS_KEY, postId);
         return Boolean.TRUE.equals(
                 stringRedisTemplate.opsForSet().isMember(usersKey, String.valueOf(userId))

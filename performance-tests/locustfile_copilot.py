@@ -30,6 +30,9 @@ LocalLife Copilot 压测脚本（Locust）。
 import random
 import json
 import time
+import hmac
+import hashlib
+import os
 from locust import HttpUser, task, between, events
 
 # =========================================================
@@ -47,6 +50,29 @@ CS_HEADERS = {
     "X-User-Role": "cs",
     "Content-Type": "application/json",
 }
+
+MCP_CONTEXT_SIGNING_SECRET = os.environ.get(
+    "MCP_CONTEXT_SIGNING_SECRET",
+    "local-life-mcp-context-secret",
+)
+
+
+def signed_headers(base_headers: dict[str, str]) -> dict[str, str]:
+    """Add the same HMAC identity headers used by copilot-agent-service."""
+    headers = dict(base_headers)
+    user_id = headers.get("X-User-Id", "")
+    role = headers.get("X-User-Role", "")
+    merchant_id = headers.get("X-Merchant-Id", "")
+    timestamp = str(int(time.time()))
+    canonical = "\n".join([user_id, role, merchant_id, timestamp])
+    signature = hmac.new(
+        MCP_CONTEXT_SIGNING_SECRET.encode("utf-8"),
+        canonical.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    headers["X-Agent-Timestamp"] = timestamp
+    headers["X-Agent-Signature"] = signature
+    return headers
 
 
 class McpToolUser(HttpUser):
@@ -75,7 +101,7 @@ class McpToolUser(HttpUser):
             }
         }
         with self.client.post("/mcp", json=payload,
-                              headers=CS_HEADERS,
+                              headers=signed_headers(CS_HEADERS),
                               name="/mcp tools/call query_order",
                               catch_response=True) as resp:
             if resp.status_code == 200:
@@ -104,7 +130,7 @@ class McpToolUser(HttpUser):
             }
         }
         with self.client.post("/mcp", json=payload,
-                              headers=MERCHANT_HEADERS,
+                              headers=signed_headers(MERCHANT_HEADERS),
                               name="/mcp tools/call shop_metrics_query",
                               catch_response=True) as resp:
             if resp.status_code != 200:
@@ -117,7 +143,7 @@ class McpToolUser(HttpUser):
         """tools/list（Agent 启动时调用，权重低，主要测缓存效果）。"""
         payload = {"jsonrpc": "2.0", "id": "perf-003", "method": "tools/list", "params": {}}
         with self.client.post("/mcp", json=payload,
-                              headers=MERCHANT_HEADERS,
+                              headers=signed_headers(MERCHANT_HEADERS),
                               name="/mcp tools/list",
                               catch_response=True) as resp:
             if resp.status_code != 200:
@@ -136,7 +162,7 @@ class McpToolUser(HttpUser):
         }
         for _ in range(5):  # 快速调用 5 次
             self.client.post("/mcp", json=payload,
-                             headers=MERCHANT_HEADERS,
+                             headers=signed_headers(MERCHANT_HEADERS),
                              name="/mcp [rate_limit_test]",
                              catch_response=True)
 

@@ -37,18 +37,19 @@ import random
 import json
 import itertools
 import threading
+import os
 from locust import HttpUser, task, between, events
 from locust.runners import MasterRunner
 
 # =========================================================
 # 测试数据（真实环境应从 DB 查询，此处用固定值演示）
 # =========================================================
-SHOP_IDS         = list(range(1, 20))
-POST_IDS         = list(range(1, 50))
+SHOP_IDS         = [int(item) for item in os.environ.get("SHOP_IDS", "880000200001").split(",") if item]
+POST_IDS         = [int(item) for item in os.environ.get("POST_IDS", "880000600001").split(",") if item]
 # (sessionId, couponTemplateId)：必须是合法配对——seckill_session 一场次只绑一个券模板。
 # 与 scripts/seed-perf-data.sql 对齐：场次 1→模板 1，场次 2→模板 2。
 SECKILL_SESSIONS = [(1, 1), (2, 2)]
-TEST_MOBILE      = "13800000001"
+TEST_MOBILE      = os.environ.get("TEST_MOBILE", "18800000001")
 TEST_CODE        = "123456"  # 测试验证码（测试环境固定值）
 
 # 秒杀专项压测需要「不同用户」才能真实争抢库存：
@@ -110,6 +111,8 @@ class LocalLifeUser(HttpUser):
                              catch_response=True) as resp:
             if resp.status_code not in (200, 400):
                 resp.failure(f"Unexpected: {resp.status_code}")
+            else:
+                resp.success()
 
     @task(4)
     def browse_post(self):
@@ -120,6 +123,8 @@ class LocalLifeUser(HttpUser):
                              catch_response=True) as resp:
             if resp.status_code not in (200, 400):
                 resp.failure(f"Unexpected: {resp.status_code}")
+            else:
+                resp.success()
 
     @task(3)
     def view_coupon_templates(self):
