@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 # ── LocalLife Server Dockerfile ──
 # 多阶段构建：Build Stage 编译，Runtime Stage 只保留 jar，镜像更小
 
@@ -11,7 +13,7 @@ ENV MAVEN_OPTS="-Djava.net.preferIPv4Stack=true \
                 -Daether.connector.http.retryHandler.requestSentEnabled=true"
 ENV JAVA_TOOL_OPTIONS="${MAVEN_OPTS}"
 
-# 把 Maven Central 的下载改走阿里云镜像（见 infra/maven/settings.xml 注释）。
+# 显式使用当前 Docker 网络下延迟更低的 Maven Central（见 infra/maven/settings.xml）。
 # 放到默认用户 settings 路径 /root/.m2/settings.xml，Maven 自动读取，无需 -s 参数。
 COPY infra/maven/settings.xml /root/.m2/settings.xml
 
@@ -25,12 +27,14 @@ COPY local-life-copilot/pom.xml local-life-copilot/pom.xml
 #
 # 用重试循环包裹 mvn package：ShardingSphere 5.5.0 传递依赖庞大，镜像仓库偶发 502 /
 # 网络抖动会让个别构件解析失败，且 Maven 会把「解析失败」缓存进本地仓库、同一次构建内
-# 不再重试。加 -U 强制重新拉取这些被缓存的失败构件，最多重试 3 次——成功下载的构件留在
-# 同一镜像层的本地仓库里，重试只补拉失败的那几个，代价很小，却能消除单次抖动导致的整体失败。
-COPY . .
-RUN for i in 1 2 3; do \
+# 不再重试。首次构建正常读取持久化缓存；只有失败后的重试才加 -U，强制补拉被标记失败的
+# 构件。这样源码变化后的日常构建不会重新校验整个依赖树，瞬时网络错误仍有恢复路径。
+COPY local-life-server/src local-life-server/src
+RUN --mount=type=cache,id=local-life-server-maven-repository,target=/root/.m2/repository,sharing=locked \
+    for i in 1 2 3; do \
         echo "=== mvn package attempt $i ==="; \
-        mvn package -pl local-life-server -am -DskipTests -ntp -U && exit 0; \
+        if [ "$i" -eq 1 ]; then update_flag=""; else update_flag="-U"; fi; \
+        mvn -B -V package -pl local-life-server -am -DskipTests $update_flag && exit 0; \
         echo "attempt $i failed, retrying in 15s..."; sleep 15; \
     done; \
     echo "mvn package failed after 3 attempts" >&2; exit 1
