@@ -1,141 +1,141 @@
 # 后端与 Agent 性能基线报告
 
+- Status: Active
+- Type: Reference
+- Owners: Project maintainers
+- Last verified: 2026-07-22
+- Source of truth: `artifacts/performance/`, `docs/performance/baseline-summary.json`, Docker and test command output
+
 > 执行日期：2026-07-22  
 > 分支：`test/performance-agent-baseline`  
 > 基线：`main@659b2427178a07567f978541d94770407bed2b70`  
-> 说明：本文只记录统计值和脱敏结论，不记录 API Key、完整 Prompt、完整回答或工具原始返回。
+> 数据约束：只提交脱敏统计，不提交 API Key、完整 Prompt、原始回答或压测产物。
 
 ## 1. 执行环境
 
 | 项 | 结果 |
 | --- | --- |
-| Docker | 28.1.1 |
-| Docker Compose | 2.35.1 |
-| Java | OpenJDK 17.0.19 |
-| Python | 3.10.12 |
-| LLM Provider | `deepseek` |
-| LLM Model | `deepseek-v4-flash` |
-| Compose profiles | `app`, `search`, `mq`, `rag`, `observability` |
+| Docker / Compose | 28.1.1 / 2.35.1 |
+| Java / Python | OpenJDK 17.0.19 / Python 3.10.12 |
+| k6 | v2.1.0，安装于用户目录 |
+| LLM | DeepSeek `deepseek-v4-flash`，OpenAI-compatible API |
+| 完整依赖 | MySQL、Redis、Elasticsearch、RocketMQ、Milvus、Embedding、Reranker |
 
-## 2. Docker 与 Smoke
+API Key 仅从被 Git 忽略的 `infra/.env` 注入。报告、Git diff 和日志检查均不得出现密钥。
 
-完整 Compose 首次启动失败，根因是 `zilliz/attu:v2.4.10` 镜像 tag 不存在。已将 Attu 固定到可解析的 `zilliz/attu:v2.4.12`。
+## 2. Docker 构建与运行
 
-修复后完整栈启动成功：
+标准 `local-life-server/Dockerfile` 已从当前工作区源码完成真实构建和容器替换，不是 runtime Dockerfile 复用旧 JAR。
 
-| 服务 | 验证结果 |
+| 验证 | 结果 |
 | --- | --- |
-| `local-life-server` | `/actuator/health` = `UP`，MySQL/Redis/Elasticsearch 均 `UP` |
-| `local-life-copilot` | `/actuator/health` = `UP` |
-| `copilot-agent-service` | `/health` = `ok`，DeepSeek flash 配置生效 |
-| `embedding-service` | `/health` = `ok` |
-| `reranker-service` | `/health` = `ok` |
-| `milvus` | Agent 日志显示 standalone 连接成功并完成知识库入库 |
-| `rocketmq` | 容器启动 |
-| `observability` | Grafana/Alertmanager 可达；demo smoke 中 Loki `/ready` 可选检查不可达 |
+| 冷依赖构建 | 548.55 s，成功 |
+| 修改源码后的增量构建 | Maven 20.03 s，整镜像 42.51 s |
+| 源码不变重建 | 4.72 s，全层命中缓存 |
+| 最终业务修复镜像 | Maven 22.98 s，成功并健康启动 |
+| Server health | `UP`，MySQL/Redis/Elasticsearch 均 `UP` |
+| Agent health | healthy，实际加载 DeepSeek flash、Milvus、Embedding、Reranker |
 
-Smoke 结果：
-
-| 命令 | 结果 |
-| --- | --- |
-| `bash scripts/e2e-smoke.sh` | 通过：Server/Copilot/Agent/MCP tools/list/Agent fast path |
-| `bash scripts/demo-smoke.sh` | 通过：demo 数据、MCP query_order、Agent runtime replay、offline RAG |
+原先所谓“标准 Docker build 卡住”不是 Docker daemon 故障，而是 ShardingSphere、RocketMQ 等冷依赖较大，网络下载慢且 Maven 长时间缺少可见输出。修复包括：缩小 build context、只复制 server 源码、使用 BuildKit Maven cache、输出 Maven 版本和阶段、构件下载重试，以及在当前 Docker 网络中改用实测更稳定的 Maven Central。
 
 ## 3. 后端性能基线
 
-数据准备：
+最终统一产物位于本地忽略目录：
 
-| 命令 | 结果 |
-| --- | --- |
-| `bash scripts/seed-perf-data.sh` | 2000 用户、2 个秒杀场次、Redis 库存和验证码写入成功 |
+- `artifacts/performance/backend-verified-20260722-215902/`
+- `artifacts/performance/seckill-recovery-fix-20260722/`
 
-首轮短基线产物：
+Locust 场景：
 
-- `artifacts/performance/backend-20260722-194032/`
+| 场景 | 请求数 | 失败 | P50 | P95 | P99 | RPS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 混合读写 | 154 | 0 | 11 ms | 22 ms | 52 ms | 5.34 |
+| 搜索热查询 | 230 | 0 | 15 ms | 20 ms | 43 ms | 7.94 |
+| MCP 工具 | 424 | 0 | 5 ms | 9 ms | 13 ms | 14.63 |
+| 秒杀持续流量 | 1273 | 0 | 5 ms | 14 ms | 57 ms | 67.03 |
 
-| 场景 | 请求数 | 失败数 | P50 | P95 | P99 | RPS | 结论 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| 秒杀突发 | 1273 | 0 | 10 ms | 22 ms | 82 ms | 64.78 | 通过，claimed=38，未超卖 |
-| 搜索热查询 | 122 | 0 | 19 ms | 35 ms | 840 ms | 6.19 | 通过但 P99 有冷抖动 |
-| 混合读写 | 83 | 69 | 12 ms | 190 ms | 200 ms | 4.22 | 首轮失败，见问题记录 |
-| MCP 工具 | 347 | 347 | 4 ms | 6 ms | 11 ms | 17.62 | 首轮失败，见问题记录 |
-| k6 秒杀 | - | - | - | - | - | - | 本机未安装 `k6`，已标记 SKIPPED |
+秒杀 spike 使用 50 VU、每 VU 一次领取，避免把同一用户无限循环误当成独立抢购：
 
-修复后重跑产物：
+| 指标 | 最终热身后结果 |
+| --- | ---: |
+| claimed | 50 |
+| unexpected error | 0 |
+| oversold | NO |
+| 秒杀 P50 / P95 / max | 144.79 / 190.32 / 268.48 ms |
+| k6 thresholds | 通过：P95 < 200 ms、P99 < 500 ms |
 
-- `artifacts/performance/backend-rerun-20260722-194322/`
+标准镜像首次启动后的两轮 P95 分别为 235.61 ms 和 224.56 ms，业务均成功但未过 200 ms 门槛；第三轮 JVM/JIT 热身后为 190.32 ms。正式容量结论不能只引用热身值，生产压测应包含预热阶段和持续稳态阶段。
 
-| 场景 | 请求数 | 失败数 | P50 | P95 | P99 | RPS | 结论 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| MCP 工具 | 153 | 0 | 7 ms | 18 ms | 32 ms | 10.99 | 修复后通过 |
-| 混合读写 | 35 | 18 | 9 ms | 27 ms | 51 ms | 2.50 | 仍失败，暴露公开笔记 NPE 和测试手机号问题 |
+### 秒杀一致性缺陷与验证
 
-## 4. Agent DeepSeek 基线
+真实压测发现 `SeckillStreamRecoveryService` 捕获唯一键异常后，事务仍被 Spring 标记为 rollback-only，导致日志显示 recovered、reservation 实际全部回滚。修复为 recovery 专用的原子 `INSERT ... ON DUPLICATE KEY UPDATE` no-op，不再用异常表达幂等；正常业务 Outbox 写入仍保留严格插入。
 
-真实基线产物：
+修复后 50 次并发领取的事实核对：
 
-- `artifacts/performance/agent-20260722-195927/deepseek-flash-real-baseline.json`
-- `artifacts/performance/agent-20260722-195927/deepseek-flash-real-baseline.md`
+- Redis 两个场次库存合计精确减少 50，用户集合合计 50。
+- Redis Stream 写入 50 条压测事件。
+- `seckill_reservation` 写入 50 条，不再出现 `UnexpectedRollbackException`。
+- `outbox_message` 最终 `SENT=50`，`user_coupon=50`。
+- MQ 先于 recovery 时 reservation 会短暂为 PENDING，由 5 分钟 reconciliation 根据已存在用户券转为 CONFIRMED；这是可观测的最终一致性窗口，不是立即一致。
 
-用例：24 条抽样用例，覆盖 query/diagnosis/knowledge/boundary；每条执行 2 轮；并发组 1/3/5；总运行 144 次。
+## 4. DeepSeek Agent 基线
 
-| 并发 | Runs | Success | Task Done | Tool Acc | Keyword | Latency P50 | Latency P95 | Latency P99 | TTFT P50 | TTFT P95 |
+最终真实产物：
+
+- `artifacts/performance/agent-retry-final-20260722-212514/deepseek-flash-real-baseline.json`
+
+24 条用例、每条 2 轮、并发 1/3/5，共 144 次真实请求：
+
+| 并发 | Runs | Success | Task Done | Tool Acc | Keyword | P50 | P95 | P99 | TTFT P50 | TTFT P95 |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 48 | 0.917 | 0.250 | 0.375 | 0.578 | 15198 ms | 28503 ms | 35013 ms | 188 ms | 264 ms |
-| 3 | 48 | 0.917 | 0.229 | 0.354 | 0.575 | 21724 ms | 38738 ms | 41546 ms | 252 ms | 448 ms |
-| 5 | 48 | 0.917 | 0.208 | 0.375 | 0.571 | 22501 ms | 42097 ms | 47374 ms | 357 ms | 678 ms |
+| 1 | 48 | 100% | 25.0% | 37.5% | 61.5% | 15.33 s | 28.49 s | 35.62 s | 190 ms | 262 ms |
+| 3 | 48 | 100% | 27.1% | 37.5% | 63.7% | 19.71 s | 38.20 s | 46.02 s | 323 ms | 449 ms |
+| 5 | 48 | 100% | 27.1% | 37.5% | 64.6% | 20.14 s | 48.28 s | 59.39 s | 490 ms | 830 ms |
 
-解读：
+DeepSeek 的两个真实问题及修复：
 
-- DeepSeek flash 链路可用，真实请求中能看到 `llm.invoke`、`mcp.rpc`、`tool.*`、`rag.*` span。
-- TTFT 稳定在百毫秒级，但端到端延迟主要受多轮 LLM + RAG 影响。
-- Success 不是 100% 的主要原因包含 Guardrails 对 prompt injection 的 HTTP 400 拦截，以及少量工具/Agent 错误。安全拦截在边界用例里是预期行为，但当前 runner 仍按 HTTP 错误计入，后续应把预期拒答从技术失败中分离。
-- Task Done/Tool Acc 偏低，说明真实 Agent 与评测期望工具路径不完全一致，下一轮应调整评测集数据和 tool routing 期望。
+1. DeepSeek 的 OpenAI-compatible 接口要求 assistant `tool_calls` 后紧跟对应 ToolMessage。图在 reflection/compaction 时可能打断该序列，产生 HTTP 400；现先处理 pending tool calls。
+2. 基线中复现 5 次 `RemoteProtocolError/incomplete chunked read`。`llm_node` 只对 `httpx.TransportError` 做最多 3 次重试，不重试鉴权、Guardrail 或业务错误；5 次均恢复。
+
+预期的 prompt injection/越权拒绝现在按稳定错误码计为安全通过，不再误算成技术失败。每个 run 使用独立评测用户，避免评测器自身触发用户限流。
+
+**重要结论：100% success 只代表传输和预期拒绝分类稳定，不代表 Agent 质量达标。** Task Done 仅 25%-27%，Tool Acc 仅 37.5%，端到端 P95 在并发 5 时达到 48.28 s。下一阶段应优化工具路由、减少无效反思轮次，并逐条校准评测期望。
+
+当前 SSE 不返回可信 usage，因此 token 和费用仍标记为不可得，不能估算或虚构。
 
 ## 5. RAG Benchmark
 
-真实 RAG 产物：
+最终真实产物：
 
-- `artifacts/performance/agent-20260722-195927/real-rag-benchmark.json`
-- `artifacts/performance/agent-20260722-195927/real-rag-benchmark.md`
+- `artifacts/performance/agent-retry-final-20260722-212514/real-rag-benchmark.json`
 
 | 指标 | 结果 |
 | --- | ---: |
-| Case count | 4 |
+| Case count | 24（含 4 条拒答） |
 | Recall@5 before rerank | 1.000 |
 | Recall@5 after rerank | 1.000 |
-| Citation accuracy | 1.000 |
+| Citation accuracy | 0.917 |
 | Refusal accuracy | 1.000 |
-| Avg rerank delta | 0.000 |
+| Avg rerank delta | 0.094 |
 
-说明：当前 RAG benchmark 只有 4 条默认用例，适合作为冒烟基线，不足以作为正式质量门禁。后续应扩到至少 20-30 条，并增加 merchant scoped 文档、冲突文档和拒答边界。
+拒答指标来自真实 retrieval 结果，不是根据标签强行置空。两条 citation miss 暴露了证据跨 chunk 的问题；Recall@5 已满分时，下一步重点应是 chunk 边界和引用归因，而不是继续调大 top-k。
 
-## 6. 本轮发现与修复
+## 6. 测试与结论
 
-| 严重级别 | 问题 | 根因 | 修复状态 |
-| --- | --- | --- | --- |
-| High | 完整 Compose 首次无法启动 | `zilliz/attu:v2.4.10` 不存在 | 已修复为 `v2.4.12` |
-| High | MCP Locust 100% 401 | 压测脚本未带 `X-Agent-Timestamp` 和 `X-Agent-Signature` | 已补 HMAC 签名 |
-| High | 公开笔记详情 500 | 未登录公开接口调用 `UserContext.getUserId()` 导致 NPE | 已修复：未登录 liked=false |
-| Medium | 混合 Locust 登录 400 | 默认手机号与 demo/perf seed 的验证码不一致 | 已改默认 demo 手机号，可用环境变量覆盖 |
-| Medium | k6 未运行 | 本机未安装 `k6` | 未修复；后续可用 Docker k6 或安装 k6 |
-| Medium | 标准 server Docker build 卡住 | Maven build 阶段长时间无输出；本机 `clean compile` 通过 | 未完成；需后续重试或优化 Docker build 可观测性 |
-| Low | Agent baseline 脚本相对路径失败 | `cd` 后相对 `OUT_DIR` 失效 | 已改为绝对路径 |
-| Low | 本地 eval 读取 `DEBUG=release` 失败 | Pydantic 布尔解析不接受 `release` | 脚本内归一化非布尔 DEBUG 为 false |
-
-## 7. 本轮新增工程入口
-
-| 路径 | 作用 |
+| 验证 | 结果 |
 | --- | --- |
-| `scripts/run-backend-perf-baseline.sh` | 编排 Locust/k6 后端与 MCP 基线，采集 Docker snapshot |
-| `scripts/run-agent-deepseek-baseline.sh` | 编排 offline eval、offline RAG、真实 DeepSeek Agent、真实 RAG |
-| `copilot-agent-service/evals/deepseek_baseline.py` | 真实 DeepSeek 并发基线 runner，输出脱敏统计 |
-| `copilot-agent-service/rag/pipeline.py` | 新增 RAG 阶段 span：total、embedding、vector、bm25、reranker |
+| Agent 主镜像测试 | 277 passed |
+| Embedding 镜像测试 | 1 passed |
+| DeepSeek 错误分类回归 | 3 passed |
+| 标准 Java 镜像 | 构建成功、真实容器 healthy |
+| 后端四场景 | 0 HTTP failure |
+| k6 spike | 通过阈值、无超卖 |
 
-## 8. 下一步
+整体状态为 **PARTIAL**：Docker 构建、后端短基线、DeepSeek 传输恢复和 24 条 RAG 基线均已闭环；Agent 任务完成率与工具准确率仍不具备生产发布门槛，且本轮是轻量基线，不替代长稳压测、故障注入和容量规划。
 
-1. 重新完成标准 `locallife-server` Docker build，并用新镜像验证 `GET /api/v1/posts/{id}` 未登录返回 200。
-2. 扩充 RAG benchmark 至 20-30 条，覆盖商家隔离、冲突文档、拒答、引用错配。
-3. 调整 Agent eval runner：把预期 Guardrails 拦截计为安全通过，而不是 HTTP 技术失败。
-4. 用 Docker 版 k6 或安装本机 k6，补齐秒杀 k6 summary。
-5. 扩展后端业务正确性 SQL 快照：幂等账本、重复支付、Outbox 租约、秒杀 reservation/stream。
+## 7. 下一轮优先级
+
+1. 将失败 Agent case 按“未调用工具、调用错工具、答案缺关键事实、循环过长”聚类并逐类修复。
+2. 为 SSE 增加脱敏 token usage 统计，再建立单请求成本门槛。
+3. 跑 10-30 分钟稳态压测，采集 CPU、内存、Hikari、Redis、MQ backlog，而不是只看短峰值。
+4. 为 Stream recovery 增加真实数据库集成测试，覆盖“Outbox 已存在但 reservation 不存在”的事务场景。

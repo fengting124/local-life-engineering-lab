@@ -1,5 +1,11 @@
 # LocalLife 性能指标契约
 
+- Status: Active
+- Type: Reference
+- Owners: Project maintainers
+- Last verified: 2026-07-22
+- Source of truth: `performance-tests/`, `copilot-agent-service/evals/`, `scripts/run-backend-perf-baseline.sh`
+
 > 本文定义后端与 Agent 第一轮性能基线统一指标。所有指标禁止包含 API Key、完整手机号、完整订单敏感信息、完整 Prompt、未脱敏工具返回和用户私密数据。
 
 ## 标签约定
@@ -124,4 +130,3 @@
 - 不保存完整 Prompt 和完整 Agent 响应正文到性能汇总。
 - 不把未脱敏工具返回写入报告。
 - 不把真实 Key 注入 GitHub Actions、`.env.example`、Compose 文件或测试数据。
-

@@ -1,5 +1,11 @@
 # LocalLife 当前测试能力审计
 
+- Status: Active
+- Type: Reference
+- Owners: Project maintainers
+- Last verified: 2026-07-22
+- Source of truth: `performance-tests/`, `scripts/run-backend-perf-baseline.sh`, `scripts/run-agent-deepseek-baseline.sh`, `.github/workflows/`
+
 > 本文记录第一轮“后端与 Agent 性能基线测试”的阶段 0 审计结果。审计只记录能力、缺口和环境事实，不包含 API Key、Prompt 原文或敏感业务数据。
 
 ## 1. 基本信息
@@ -39,7 +45,7 @@
 | --- | --- | --- | --- |
 | `performance-tests/locustfile_locallife_server.py` | Locust | 普通浏览、订单查询、点赞、搜索、秒杀用户模型 | 已有用户模型，但缺统一分轮 runner 和业务一致性汇总 |
 | `performance-tests/locustfile_copilot.py` | Locust | MCP 工具调用、Agent SSE 简单对话 | 能测 MCP/Agent 基础延迟，但缺真实 DeepSeek 质量门槛汇总 |
-| `performance-tests/k6/seckill.js` | k6 | 秒杀突发争抢、claimed 计数、超卖初判 | 已有 k6 summary，仍需 DB/Redis/Outbox 事后核对 |
+| `performance-tests/k6/seckill.js` | k6 | 秒杀突发争抢、claimed 计数、超卖初判 | 已安装 k6 并完成 DB/Redis/Outbox/券包事后核对 |
 | `scripts/seed-perf-data.sh` | 数据准备 | 2000 压测用户、2 个秒杀场次、Redis 验证码和库存 | 数据号段固定，可重复执行 |
 | `scripts/e2e-smoke.sh` | Smoke | Java Server、Copilot MCP 最小链路 | 可作为压测前置门禁 |
 | `scripts/demo-smoke.sh` | Demo Smoke | 演示链路、RAG 检查 | 可作为端到端演示验收 |
@@ -64,25 +70,24 @@
 | --- | --- | --- |
 | RAG 内部阶段未统一输出 `embedding/vector/bm25/reranker` 独立 span | 难以定位 RAG 瓶颈 | 本轮补轻量 span，不引入新平台 |
 | Agent TTFT 未形成独立汇总指标 | SSE 首包体验不可量化 | 由 Agent baseline runner 消费 SSE 并计算 |
-| 真实 DeepSeek 的 token/cost 汇总不完整 | 无法估算成本基线 | 本轮记录 token；没有可靠单价时成本标记待配置 |
-| 后端业务一致性核对没有统一产物 | 压测结果可信度不足 | 本轮新增 runner/报告约定，短 smoke 至少验证脚本能生成产物 |
+| 真实 DeepSeek 的 token/cost 汇总不完整 | 无法估算成本基线 | SSE 当前不返回可信 usage，明确标记不可得，不推算成本 |
+| 后端业务一致性核对没有统一产物 | 压测结果可信度不足 | 已补固定数据分区和 Redis/MySQL/Outbox/券包一致性核对 |
 | Outbox `PENDING/PROCESSING/SENT` 与租约年龄没有统一快照 | 消息链路积压难定位 | 报告中定义 SQL/指标快照，完整 MQ 不可用时标记 BLOCKED |
 | Full Docker 环境可能受本机内存约束 | 重型组件可能无法全部健康 | 不静默降级；记录资源和失败组件 |
 
 ## 6. 当前环境快照
 
-审计时已有部分容器在运行，但不是完整健康状态：
+审计开始时只有部分容器健康；完成阶段已重新构建并启动完整测试依赖：
 
 | 服务 | 审计观察 |
 | --- | --- |
-| `copilot-agent-service` | healthy |
-| `local-life-server` | health starting |
-| `local-life-copilot` | unhealthy |
-| `embedding-service` | healthy |
-| `reranker-service` | healthy |
-| 日志/告警栈 | Loki/Promtail/Alertmanager 在运行 |
+| `copilot-agent-service` | healthy，真实 DeepSeek flash 基线已执行 |
+| `local-life-server` | 标准 Dockerfile 当前源码构建，healthy |
+| `local-life-copilot` | healthy，MCP Locust 0 failure |
+| `embedding-service` / `reranker-service` | healthy，24 条真实 RAG 基线已执行 |
+| MySQL / Redis / RocketMQ / Elasticsearch / Milvus | 已参与本轮完整后端或 Agent 验证 |
 
-因此，本轮在正式压测前必须重新执行 Compose 启动和 smoke。若完整环境仍无法健康，应先跑 Lite/短基线并将完整链路标记为 `BLOCKED`。
+当前结果仍是短基线，不等同于生产容量证明。长稳压测、故障注入、Agent 质量优化仍需后续执行。
 
 ## 7. 已有报告产物
 
@@ -103,4 +108,3 @@
 - 不用另一个 LLM 对真实 Agent 输出做主观打分。
 - 不把 Lite 环境的结果冒充完整 RocketMQ/Milvus/Elasticsearch 链路。
 - 不提交大型 Locust HTML、原始日志、数据库文件或 Milvus `.db` 文件。
-
