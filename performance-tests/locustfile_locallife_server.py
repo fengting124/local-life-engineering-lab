@@ -49,16 +49,21 @@ POST_IDS         = [int(item) for item in os.environ.get("POST_IDS", "8800006000
 # (sessionId, couponTemplateId)：必须是合法配对——seckill_session 一场次只绑一个券模板。
 # 与 scripts/seed-perf-data.sql 对齐：场次 1→模板 1，场次 2→模板 2。
 SECKILL_SESSIONS = [(1, 1), (2, 2)]
-TEST_MOBILE      = os.environ.get("TEST_MOBILE", "18800000001")
 TEST_CODE        = "123456"  # 测试验证码（测试环境固定值）
+
+# 2000 个 seed 账号按场景分段，避免一次性验证码在顺序压测中被前一场消费。
+MIXED_MOBILE_BASE  = int(os.environ.get("MIXED_MOBILE_BASE", "13900001500"))
+MIXED_MOBILE_COUNT = int(os.environ.get("MIXED_MOBILE_COUNT", "500"))
 
 # 秒杀专项压测需要「不同用户」才能真实争抢库存：
 # 如果所有虚拟用户都用同一个 mobile 登录，第一个抢到后其余全是「已领取(400)」，
 # 测不出超卖。这里用一段连号手机号池，每个虚拟用户取一个不同号。
 #   ⚠️ 前提：这些账号必须已在 DB 里存在（见 docs 里的「压测数据准备」），否则登录失败。
-SECKILL_MOBILE_BASE  = 13900000000
-SECKILL_MOBILE_COUNT = 2000
-_mobile_seq = itertools.count(0)   # 线程安全的自增（gevent 协作式调度下安全）
+SECKILL_MOBILE_BASE  = int(os.environ.get("SECKILL_MOBILE_BASE", "13900000000"))
+SECKILL_MOBILE_COUNT = int(os.environ.get("SECKILL_MOBILE_COUNT", "1000"))
+_mixed_mobile_seq = itertools.count(0)
+_seckill_mobile_seq = itertools.count(0)
+_search_ip_seq = itertools.count(0)
 
 # 秒杀结果计数器（HTTP 层校验超卖：claimed 总数应 <= 库存）
 _seckill_lock = threading.Lock()
@@ -68,6 +73,10 @@ _seckill_outcomes = {"claimed": 0, "sold_out": 0, "duplicated": 0, "rate_limited
 def _record_seckill(outcome: str):
     with _seckill_lock:
         _seckill_outcomes[outcome] = _seckill_outcomes.get(outcome, 0) + 1
+
+
+def _client_ip(subnet: int, index: int) -> str:
+    return f"10.{subnet}.{(index // 250) % 256}.{index % 250 + 1}"
 
 
 class LocalLifeUser(HttpUser):
@@ -82,12 +91,11 @@ class LocalLifeUser(HttpUser):
 
     def on_start(self):
         """每个虚拟用户启动时登录。"""
-        # 先发验证码（开发环境可跳过，但测试接口限流时需要）
-        self.client.post("/api/v1/auth/code", json={"mobile": TEST_MOBILE},
-                         name="/auth/code", catch_response=True)
-        # 登录
+        idx = next(_mixed_mobile_seq) % MIXED_MOBILE_COUNT
+        mobile = str(MIXED_MOBILE_BASE + idx)
+        self.client.headers.update({"X-Forwarded-For": _client_ip(10, idx)})
         with self.client.post("/api/v1/auth/login",
-                              json={"mobile": TEST_MOBILE, "code": TEST_CODE},
+                              json={"mobile": mobile, "code": TEST_CODE},
                               name="/auth/login", catch_response=True) as resp:
             if resp.status_code == 200:
                 data = resp.json().get("data", {})
@@ -170,8 +178,9 @@ class SeckillUser(HttpUser):
 
     def on_start(self):
         # 每个虚拟用户取一个不同的手机号，模拟「不同的人」同时抢同一批库存
-        idx = next(_mobile_seq) % SECKILL_MOBILE_COUNT
+        idx = next(_seckill_mobile_seq) % SECKILL_MOBILE_COUNT
         self.mobile = str(SECKILL_MOBILE_BASE + idx)
+        self.client.headers.update({"X-Forwarded-For": _client_ip(20, idx)})
         with self.client.post("/api/v1/auth/login",
                               json={"mobile": self.mobile, "code": TEST_CODE},
                               name="/auth/login [seckill]", catch_response=True) as resp:
@@ -222,6 +231,10 @@ class SearchUser(HttpUser):
     - 注意：ES 冷启动第一次查询较慢（缓存 miss）
     """
     wait_time = between(0.5, 2)
+
+    def on_start(self):
+        idx = next(_search_ip_seq)
+        self.client.headers.update({"X-Forwarded-For": _client_ip(30, idx)})
 
     @task(3)
     def search_shops_by_keyword(self):

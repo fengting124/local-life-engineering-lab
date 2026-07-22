@@ -24,6 +24,24 @@ USE `local_life`;
 SET SESSION cte_max_recursion_depth = 5000;
 
 -- -------------------------------------------------------
+-- 0. 清理上一轮压测的数据库事实
+--    只处理固定压测用户 ID 段和场次 1/2，不触碰开发业务数据。
+--    Redis 库存会在 seed-perf-data.sh 中重置；若不同时清理这些事实，确定性的
+--    event_id ({sessionId}_{userId}_seckill) 会命中 Outbox 唯一索引并返回 500。
+-- -------------------------------------------------------
+DELETE FROM `outbox_message`
+WHERE `tag` = 'SECKILL_SUCCESS'
+  AND `event_id` REGEXP '^[12]_900000[0-9]{4}_seckill$';
+
+DELETE FROM `seckill_reservation`
+WHERE `session_id` IN (1, 2)
+  AND `user_id` BETWEEN 9000000000 AND 9000001999;
+
+DELETE FROM `user_coupon`
+WHERE `coupon_template_id` IN (1, 2)
+  AND `user_id` BETWEEN 9000000000 AND 9000001999;
+
+-- -------------------------------------------------------
 -- 1. 2000 个测试用户
 --    id 用 9_000_000_000 + n，与雪花算法生成的真实 ID（~19 位）不冲突
 -- -------------------------------------------------------

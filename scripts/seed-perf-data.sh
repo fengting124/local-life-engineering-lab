@@ -9,7 +9,7 @@
 #        - 每个测试手机号一条登录验证码  login:code:{mobile} = 123456
 #          （verifyCode 一次性使用，登录后即删；所以每跑一轮压测前要重新执行本脚本）
 #        - 秒杀库存  seckill:stock:1:1 / seckill:stock:2:2 = $STOCK
-#   3. 清理上一轮残留：seckill:user:* 抢购集合、seckill:result:* 结果态
+#   3. 清理上一轮压测残留：用户集合、结果态、Stream 事件和消费幂等 Key
 #
 # 用法：
 #   bash scripts/seed-perf-data.sh                 # 用默认参数
@@ -68,6 +68,28 @@ docker exec -i "$REDIS_CONTAINER" redis-cli -n "$REDIS_DB" DEL seckill:user:1:1 
 # 结果态 key 是按用户散开的，用 SCAN 批量删（避免 KEYS 阻塞）
 docker exec -i "$REDIS_CONTAINER" sh -c \
     "redis-cli -n ${REDIS_DB} --scan --pattern 'seckill:result:*' | xargs -r redis-cli -n ${REDIS_DB} DEL" > /dev/null 2>&1 || true
+# 删除固定压测用户的 Stream 事件。Lua 在 Redis 内完成筛选，避免清空其他场次/用户事件。
+docker exec -i "$REDIS_CONTAINER" redis-cli -n "$REDIS_DB" --eval /dev/stdin seckill:stream , \
+    9000000000 9000001999 <<'LUA' > /dev/null
+local entries = redis.call('XRANGE', KEYS[1], '-', '+')
+local removed = 0
+for _, entry in ipairs(entries) do
+    local fields = entry[2]
+    for i = 1, #fields, 2 do
+        if fields[i] == 'userId' then
+            local user_id = tonumber(fields[i + 1])
+            if user_id and user_id >= tonumber(ARGV[1]) and user_id <= tonumber(ARGV[2]) then
+                removed = removed + redis.call('XDEL', KEYS[1], entry[1])
+            end
+            break
+        end
+    end
+end
+return removed
+LUA
+# 消费幂等 Key 也属于同一批可重复压测事实；业务 Key 不匹配该固定 ID 段。
+docker exec -i "$REDIS_CONTAINER" sh -c \
+    "redis-cli -n ${REDIS_DB} --scan --pattern 'consume:seckill_success:*_900000*_seckill' | xargs -r redis-cli -n ${REDIS_DB} DEL" > /dev/null 2>&1 || true
 
 echo ""
 echo "✅ 压测数据就绪："
