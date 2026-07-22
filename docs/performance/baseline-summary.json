@@ -1,0 +1,117 @@
+{
+  "branch": "test/performance-agent-baseline",
+  "base_sha": "659b2427178a07567f978541d94770407bed2b70",
+  "generated_at": "2026-07-22T20:22:00+08:00",
+  "environment": {
+    "docker": "28.1.1",
+    "docker_compose": "2.35.1",
+    "java": "OpenJDK 17.0.19",
+    "python": "3.10.12",
+    "llm_provider": "deepseek",
+    "llm_model": "deepseek-v4-flash"
+  },
+  "docker_smoke": {
+    "full_compose_started": true,
+    "e2e_smoke": "pass",
+    "demo_smoke": "pass",
+    "known_issue": "demo smoke optional Loki /ready check was not reachable"
+  },
+  "backend": {
+    "first_run_artifact": "artifacts/performance/backend-20260722-194032",
+    "rerun_artifact": "artifacts/performance/backend-rerun-20260722-194322",
+    "scenarios": {
+      "seckill_spike": {
+        "requests": 1273,
+        "failures": 0,
+        "p50_ms": 10,
+        "p95_ms": 22,
+        "p99_ms": 82,
+        "rps": 64.78,
+        "claimed": 38,
+        "oversell_observed": false
+      },
+      "search_hot": {
+        "requests": 122,
+        "failures": 0,
+        "p50_ms": 19,
+        "p95_ms": 35,
+        "p99_ms": 840,
+        "rps": 6.19
+      },
+      "mcp_tools_after_fix": {
+        "requests": 153,
+        "failures": 0,
+        "p50_ms": 7,
+        "p95_ms": 18,
+        "p99_ms": 32,
+        "rps": 10.99
+      },
+      "mixed_read_write_after_fix": {
+        "requests": 35,
+        "failures": 18,
+        "p50_ms": 9,
+        "p95_ms": 27,
+        "p99_ms": 51,
+        "rps": 2.5,
+        "status": "partial"
+      }
+    }
+  },
+  "agent": {
+    "artifact": "artifacts/performance/agent-20260722-195927/deepseek-flash-real-baseline.json",
+    "case_count": 24,
+    "total_runs": 144,
+    "groups": {
+      "1": {
+        "success_rate": 0.9166666666666666,
+        "task_completion_rate": 0.25,
+        "tool_call_accuracy": 0.375,
+        "keyword_coverage": 0.578125,
+        "latency_p50_ms": 15198,
+        "latency_p95_ms": 28503,
+        "latency_p99_ms": 35013,
+        "ttft_p50_ms": 188,
+        "ttft_p95_ms": 264
+      },
+      "3": {
+        "success_rate": 0.9166666666666666,
+        "task_completion_rate": 0.22916666666666666,
+        "tool_call_accuracy": 0.3541666666666667,
+        "keyword_coverage": 0.5746527777777778,
+        "latency_p50_ms": 21724,
+        "latency_p95_ms": 38738,
+        "latency_p99_ms": 41546,
+        "ttft_p50_ms": 252,
+        "ttft_p95_ms": 448
+      },
+      "5": {
+        "success_rate": 0.9166666666666666,
+        "task_completion_rate": 0.20833333333333334,
+        "tool_call_accuracy": 0.375,
+        "keyword_coverage": 0.5711805555555556,
+        "latency_p50_ms": 22501,
+        "latency_p95_ms": 42097,
+        "latency_p99_ms": 47374,
+        "ttft_p50_ms": 357,
+        "ttft_p95_ms": 678
+      }
+    }
+  },
+  "rag": {
+    "artifact": "artifacts/performance/agent-20260722-195927/real-rag-benchmark.json",
+    "case_count": 4,
+    "recall_at_5_before": 1,
+    "recall_at_5_after": 1,
+    "citation_accuracy": 1,
+    "refusal_accuracy": 1,
+    "avg_rerank_delta": 0
+  },
+  "overall_status": "partial",
+  "open_items": [
+    "standard locallife-server Docker build was interrupted after a long Maven no-output wait",
+    "mixed read/write baseline still needs rerun after rebuilding the server image with the PostService fix",
+    "k6 is not installed locally",
+    "RAG benchmark only has 4 cases",
+    "expected guardrail blocks are currently counted as HTTP errors in the DeepSeek baseline runner"
+  ]
+}
