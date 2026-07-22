@@ -1,4 +1,13 @@
-from evals.rag_benchmark import RagBenchmarkCase, RetrievalRun, _lexical_score, evaluate_cases
+from evals import rag_benchmark
+from evals.rag_benchmark import (
+    DEFAULT_CASES,
+    RagBenchmarkCase,
+    RetrievalRun,
+    _extract_answer,
+    _lexical_score,
+    evaluate_cases,
+    offline_retriever,
+)
 
 
 def _doc(doc_id: str, title: str = "") -> dict:
@@ -81,3 +90,58 @@ def test_expected_doc_can_match_ingested_source_alias():
 
 def test_lexical_score_matches_chinese_by_character():
     assert _lexical_score("退款审批", "已支付订单退款必须经过人工审批") > 0
+
+
+def test_default_benchmark_has_representative_unique_cases():
+    case_ids = [case.case_id for case in DEFAULT_CASES]
+    refusal_cases = [case for case in DEFAULT_CASES if case.should_refuse]
+    positive_cases = [case for case in DEFAULT_CASES if not case.should_refuse]
+
+    assert 20 <= len(DEFAULT_CASES) <= 30
+    assert len(case_ids) == len(set(case_ids))
+    assert len(refusal_cases) >= 4
+    assert all(case.expected_docs for case in positive_cases)
+    assert all(case.expected_answer_terms for case in positive_cases)
+
+
+def test_refusal_is_measured_from_retrieval_instead_of_expected_label(monkeypatch):
+    case = RagBenchmarkCase(
+        case_id="false_positive",
+        question="secret deployment token",
+        expected_docs=[],
+        expected_answer_terms=[],
+        should_refuse=True,
+    )
+    monkeypatch.setattr(
+        rag_benchmark,
+        "_load_kb_docs",
+        lambda: [{
+            "chunk_id": "leaky",
+            "doc_id": "leaky",
+            "title": "secret deployment token",
+            "source": "test",
+            "content": "secret deployment token must not be retrieved",
+        }],
+    )
+
+    result = offline_retriever(case)
+
+    assert result.refused is False
+
+
+def test_extract_answer_keeps_evidence_for_each_expected_term():
+    content = "\n".join([
+        "MQ first",
+        "MQ second",
+        "MQ third",
+        "MQ fourth",
+        "MQ fifth",
+        "Canal synchronization",
+        "difference alarm is 1%",
+    ])
+
+    answer = _extract_answer(content, ["MQ", "Canal", "1%"])
+
+    assert "MQ" in answer
+    assert "Canal" in answer
+    assert "1%" in answer
