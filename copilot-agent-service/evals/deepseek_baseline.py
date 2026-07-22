@@ -86,6 +86,7 @@ async def _run_one(
                 role=case.role,
                 merchant_id=case.merchant_id,
                 agent_url=agent_url,
+                user_id=_eval_user_id(case, concurrency, iteration),
             )
             latency_ms = response.get("latency_ms")
             if latency_ms is None:
@@ -96,6 +97,16 @@ async def _run_one(
             keyword_coverage = calc_keyword_coverage(case.expected_keywords, final_answer)
             task_completed = tool_match >= 0.6 and keyword_coverage >= 0.5
             error_msg = response.get("error")
+            expected_guardrail_block = (
+                case.category == "boundary"
+                and not case.expected_tools
+                and response.get("error_code") == "BLOCKED_BY_GUARDRAILS"
+            )
+            if expected_guardrail_block:
+                tool_match = 1.0
+                keyword_coverage = 1.0
+                task_completed = True
+                error_msg = None
             return BaselineCaseResult(
                 case_id=case.id,
                 category=case.category,
@@ -162,8 +173,14 @@ def _summarize_rows(rows: list[BaselineCaseResult]) -> dict:
         "latency_p99_ms": _percentile(latencies, 0.99),
         "ttft_p50_ms": _percentile(ttfts, 0.50),
         "ttft_p95_ms": _percentile(ttfts, 0.95),
+        "expected_guardrail_blocks": sum(row.stop_reason == "guardrails_blocked" for row in rows),
         "error_types": _count(row.error_type for row in rows if row.error_type),
     }
+
+
+def _eval_user_id(case: EvalCase, concurrency: int, iteration: int) -> int:
+    """Give each baseline job an isolated synthetic identity for fair rate-limit testing."""
+    return 9_000_000_000 + concurrency * 100_000 + iteration * 1_000 + case.id
 
 
 def _percentile(values: list[float | int], percentile: float) -> float | None:
@@ -187,6 +204,8 @@ def _classify_error(error: str | None) -> str | None:
     lowered = error.lower()
     if "timeout" in lowered:
         return "timeout"
+    if any(marker in lowered for marker in ("peer closed", "chunked read", "protocol error")):
+        return "transport_error"
     if "connection" in lowered:
         return "connection_error"
     if "http 4" in lowered:
@@ -212,8 +231,8 @@ def write_outputs(report: dict, output_dir: Path, run_name: str) -> tuple[Path, 
         f"- Total runs: `{report['total_runs']}`",
         "- Stored data: sanitized metrics only; prompts, answers, tool payloads, and keys are not persisted.",
         "",
-        "| Concurrency | Runs | Success | Task Done | Tool Acc | Keyword | Latency P50 | Latency P95 | Latency P99 | TTFT P50 | TTFT P95 | Errors |",
-        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| Concurrency | Runs | Success | Task Done | Tool Acc | Keyword | Latency P50 | Latency P95 | Latency P99 | TTFT P50 | TTFT P95 | Guardrail Blocks | Errors |",
+        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for concurrency, group in report["groups"].items():
         lines.append(
@@ -222,6 +241,7 @@ def write_outputs(report: dict, output_dir: Path, run_name: str) -> tuple[Path, 
             f"{group['keyword_coverage']:.3f} | {_fmt(group['latency_p50_ms'])} | "
             f"{_fmt(group['latency_p95_ms'])} | {_fmt(group['latency_p99_ms'])} | "
             f"{_fmt(group['ttft_p50_ms'])} | {_fmt(group['ttft_p95_ms'])} | "
+            f"{group['expected_guardrail_blocks']} | "
             f"{group['error_types']} |"
         )
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

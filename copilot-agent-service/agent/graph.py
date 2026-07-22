@@ -20,15 +20,31 @@ LangGraph ReAct Agent 状态图。
 终止条件（在路由判断中检查）：
   max_steps / token_budget / pending_hitl / final_answer
 """
+import httpx
 import structlog
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver  # 仅作为 fallback
+from langgraph.types import RetryPolicy
 
 from agent.state import AgentState
 from agent import nodes
 from config.settings import settings
 
 log = structlog.get_logger(__name__)
+
+
+def _is_transient_llm_error(exc: Exception) -> bool:
+    """Retry transport failures before a complete LLM node result is committed."""
+    return isinstance(exc, httpx.TransportError)
+
+
+LLM_RETRY_POLICY = RetryPolicy(
+    initial_interval=0.5,
+    backoff_factor=2.0,
+    max_interval=2.0,
+    max_attempts=3,
+    retry_on=_is_transient_llm_error,
+)
 
 
 def route_after_llm(state: AgentState) -> str:
@@ -59,6 +75,15 @@ def route_after_llm(state: AgentState) -> str:
     if state.get("final_answer"):
         return "final_node"
 
+    # A tool-calling assistant message must be followed immediately by all of
+    # its ToolMessages. Inserting compact/reflection messages first violates
+    # the OpenAI-compatible chat protocol used by DeepSeek.
+    messages = state.get("messages", [])
+    if messages:
+        last_msg = messages[-1]
+        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+            return "tool_node"
+
     # ---- Auto-Compact 触发检查 ----
     # 思路对照 Claude Code 的 autoCompact：不是等 token_count 顶满预算才终止会话，
     # 而是提前 compact_buffer_tokens 触发摘要压缩，把早期消息打薄成一段摘要继续跑。
@@ -84,14 +109,6 @@ def route_after_llm(state: AgentState) -> str:
     if should_reflect:
         return "reflection_node"
 
-    # ---- 工具调用检查 ----
-    # 检查最新的 assistant 消息是否包含 tool_calls
-    messages = state.get("messages", [])
-    if messages:
-        last_msg = messages[-1]
-        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
-            return "tool_node"
-
     # ---- 默认输出 Final Answer ----
     return "final_node"
 
@@ -112,7 +129,7 @@ def build_graph() -> StateGraph:
     builder = StateGraph(AgentState)
 
     # 注册节点
-    builder.add_node("llm_node",        nodes.llm_node)
+    builder.add_node("llm_node",        nodes.llm_node, retry=LLM_RETRY_POLICY)
     builder.add_node("tool_node",       nodes.tool_node)
     builder.add_node("reflection_node", nodes.reflection_node)
     builder.add_node("compact_node",    nodes.compact_node)

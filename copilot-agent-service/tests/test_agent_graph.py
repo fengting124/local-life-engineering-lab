@@ -11,8 +11,10 @@ agent/graph.py + agent/nodes.py 的「纯逻辑」单元测试 —— ReAct 循�
   - build_graph：图能编译，节点齐全
 """
 import types
+import httpx
 import pytest
 
+from agent import graph as graph_module
 from agent.graph import route_after_llm, route_after_tool, build_graph, agent_graph
 from agent import nodes
 from config.settings import settings
@@ -98,6 +100,22 @@ class TestRouteAfterTool:
 
     def test_tool_calls_present_goes_tool(self):
         state = base_state(step_count=1, messages=[msg_with_tool_calls()])
+        assert route_after_llm(state) == "tool_node"
+
+    def test_tool_calls_beat_scheduled_reflection(self):
+        state = base_state(
+            step_count=settings.reflection_interval,
+            messages=[msg_with_tool_calls()],
+        )
+        assert route_after_llm(state) == "tool_node"
+
+    def test_tool_calls_beat_compaction(self):
+        threshold = settings.session_token_budget - settings.compact_buffer_tokens
+        state = base_state(
+            token_count=threshold,
+            messages=[msg_without_tool_calls()] * (settings.compact_keep_recent_messages + 1)
+            + [msg_with_tool_calls()],
+        )
         assert route_after_llm(state) == "tool_node"
 
     def test_default_goes_final(self):
@@ -237,6 +255,18 @@ class TestConvertToLcTools:
 # =========================================================
 
 class TestBuildGraph:
+    def test_llm_retry_policy_only_retries_transport_errors(self):
+        policy = graph_module.LLM_RETRY_POLICY
+
+        assert policy.max_attempts == 3
+        assert policy.retry_on(httpx.RemoteProtocolError("incomplete chunked read")) is True
+        assert policy.retry_on(ValueError("invalid business input")) is False
+
+    def test_build_graph_attaches_retry_policy_to_llm_node(self):
+        compiled = build_graph()
+
+        assert compiled.builder.nodes["llm_node"].retry_policy == graph_module.LLM_RETRY_POLICY
+
     def test_global_graph_compiled(self):
         # 模块导入时即编译了单例 agent_graph（MySQL 不可用则回退 MemorySaver）
         assert agent_graph is not None
