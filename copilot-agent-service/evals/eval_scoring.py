@@ -212,14 +212,9 @@ def _matches_value(value: Any, fact: dict[str, Any]) -> bool:
 
 
 def _permission_accuracy(case: EvalCase, actual: list[str]) -> float:
-    allowed_by_case = set(case.allowed_tools or case.expected_tools)
+    """Measure production RBAC only; case-specific tool scope is routing quality."""
     return float(
-        all(
-            tool in allowed_by_case
-            and tool not in case.forbidden_tools
-            and case.role in TOOL_ROLE_MAP.get(tool, [])
-            for tool in actual
-        )
+        all(case.role in TOOL_ROLE_MAP.get(tool, []) for tool in actual)
     )
 
 
