@@ -73,7 +73,10 @@ async def invoke_real_agent(
     stop_reason:  str = "unknown"
     error_msg:    str | None = None
     started_at = time.perf_counter()
-    ttft_ms: int | None = None
+    time_to_first_sse_ms: int | None = None
+    session_id: str | None = None
+    thread_id: str | None = None
+    run_id: str | None = None
 
     try:
         async with httpx.AsyncClient(timeout=EVAL_CASE_TIMEOUT) as client:
@@ -93,17 +96,22 @@ async def invoke_real_agent(
                         "final_answer": "",
                         "tokens":       0,
                         "latency_ms":   latency_ms,
-                        "ttft_ms":      ttft_ms,
+                        "time_to_first_sse_ms": time_to_first_sse_ms,
                         "stop_reason":  "guardrails_blocked" if error_code == "BLOCKED_BY_GUARDRAILS" else "http_error",
                         "error":        error_msg,
                         "error_code":   error_code,
+                        "session_id":   session_id,
+                        "thread_id":    thread_id,
+                        "run_id":       run_id,
                     }
 
                 # 解析 SSE 事件流
                 current_event: str | None = None
                 async for line in response.aiter_lines():
-                    if ttft_ms is None:
-                        ttft_ms = int((time.perf_counter() - started_at) * 1000)
+                    if time_to_first_sse_ms is None:
+                        time_to_first_sse_ms = int(
+                            (time.perf_counter() - started_at) * 1000
+                        )
                     if not line:
                         continue
                     if line.startswith("event:"):
@@ -115,8 +123,13 @@ async def invoke_real_agent(
                         except json.JSONDecodeError:
                             continue
 
+                        if current_event == "session_started":
+                            session_id = data.get("session_id")
+                            thread_id = data.get("thread_id")
+                            run_id = data.get("run_id")
+
                         # 收集工具调用
-                        if current_event == "tool_call":
+                        elif current_event == "tool_call":
                             tool_name = data.get("tool", "unknown")
                             tools_called.append(tool_name)
                             log.debug("eval_tool_call", tool=tool_name)
@@ -154,7 +167,7 @@ async def invoke_real_agent(
         tool_count=len(tools_called),
         stop_reason=stop_reason,
         latency_ms=latency_ms,
-        ttft_ms=ttft_ms,
+        time_to_first_sse_ms=time_to_first_sse_ms,
     )
 
     return {
@@ -162,10 +175,13 @@ async def invoke_real_agent(
         "final_answer": final_answer,
         "tokens":       0,   # token 数从 stream 事件中提取需额外解析，当前简化为 0
         "latency_ms":   latency_ms,
-        "ttft_ms":      ttft_ms,
+        "time_to_first_sse_ms": time_to_first_sse_ms,
         "stop_reason":  stop_reason,
         "error":        error_msg,
         "error_code":   None,
+        "session_id":   session_id,
+        "thread_id":    thread_id,
+        "run_id":       run_id,
     }
 
 

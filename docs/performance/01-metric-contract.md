@@ -84,22 +84,23 @@
 
 | 指标 | 定义 | 单位 | 数据来源 | 标签维度 | 采集位置 | 已实现 | 本轮新增 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `task_completion_rate` | 完成任务的用例比例 | ratio | Eval runner | category, concurrency | `copilot-agent-service/evals` | 是 | 是 |
-| `tool_call_accuracy` | 期望工具集合/序列匹配度 | ratio | Eval runner | category | `evals.metrics` | 是 | 是 |
-| `tool_argument_accuracy` | 工具参数与期望事实匹配比例 | ratio | Baseline runner | category, tool | 新增 Agent baseline 汇总 | 部分 | 是 |
-| `factual_consistency_rate` | 回答事实与 DB/工具结果一致比例 | ratio | 确定性核对 | category | Eval report | 部分 | 是 |
+| `task_completion_rate` | 合同要求的路由、参数、事实、权限、HITL/拒答均通过的用例比例；不再由关键词阈值决定 | ratio | Eval contract runner | category | `evals.deepseek_baseline` | 是 | 是 |
+| `first_tool_accuracy` | 首个实际工具是否等于合同首工具 | ratio | `agent_message` / `tool_audit_log` | category | Agent baseline runner | 是 | 是 |
+| `tool_argument_accuracy` | 审计入参与 fixture 解析后的 `expected_args` 精确匹配比例 | ratio | MySQL audit + fixture | category, tool | Agent baseline runner | 是 | 是 |
+| `trajectory_accuracy` | 实际工具轨迹按顺序覆盖期望轨迹且不调用合同外工具的比例 | ratio | Agent message/audit | category | Agent baseline runner | 是 | 是 |
+| `final_fact_accuracy` | 工具结构化输出满足 `expected_facts` / `any_of_facts`，且关键状态在最终回答中一致表达的比例 | ratio | Agent message/audit + final answer | category | Agent baseline runner | 是 | 是 |
+| `permission_accuracy` | 实际工具同时满足 EvalCase allow/forbid 与生产 `TOOL_ROLE_MAP` 的比例 | ratio | Eval contract + audit | role | Agent baseline runner | 是 | 是 |
 | `citation_accuracy` | RAG 引用命中文档比例 | ratio | RAG benchmark | case_type | `evals.rag_benchmark` | 是 | 是 |
 | `recall_at_5` | 期望文档出现在前 5 候选的比例 | ratio | RAG benchmark | retriever_mode | `evals.rag_benchmark` | 是 | 是 |
-| `refusal_accuracy` | 应拒答场景正确拒答比例 | ratio | Eval/RAG benchmark | category | Eval report | 是 | 是 |
-| `hitl_trigger_accuracy` | 高风险动作正确触发 HITL 比例 | ratio | Eval runner/runtime events | action_type | Agent eval | 是 | 是 |
-| `permission_test_pass_rate` | 权限/注入用例通过比例 | ratio | Eval runner | role | Agent eval | 是 | 是 |
+| `hitl_accuracy` | 高风险动作停在 `pending_approval`、普通动作不误触发 HITL 的比例 | ratio | SSE stop reason + contract | action_type | Agent baseline runner | 是 | 是 |
+| `refusal_accuracy` | 拒答合同没有调用工具且返回 Guardrail、permission_denied、escalation 或 refused 等结构化终止原因的比例 | ratio | SSE + audit | category | Agent baseline runner | 是 | 是 |
 | `duplicate_side_effect_count` | Agent 重试/并发导致重复业务副作用数 | count | SQL/工具审计 | tool | MySQL + audit | 部分 | 是 |
 
 ## Agent 性能指标
 
 | 指标 | 定义 | 单位 | 数据来源 | 标签维度 | 采集位置 | 已实现 | 本轮新增 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `ttft_ms` | `/chat` 请求到首个 SSE 事件的时间 | ms | SSE client | category, concurrency | Agent baseline runner | 否 | 是 |
+| `time_to_first_sse_ms` | `/chat` 请求到首条 SSE 行的时间；不是模型首 Token 延迟 | ms | SSE client | category | Agent baseline runner | 是 | 是 |
 | `end_to_end_latency_ms` | `/chat` 请求到 final/error/HITL 结束 | ms | SSE client | category, concurrency | Agent baseline runner | 是 | 是 |
 | `guardrail_duration_ms` | 输入安全检查耗时 | ms | span/log | status | Agent API | 部分 | 是 |
 | `llm_duration_ms` | 单次 LLM 调用耗时 | ms | `genai_span` | provider, model | `agent.trace` | 是 | 否 |

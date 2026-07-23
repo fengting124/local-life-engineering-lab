@@ -69,7 +69,7 @@
 | 缺口 | 影响 | 本轮处理策略 |
 | --- | --- | --- |
 | RAG 内部阶段未统一输出 `embedding/vector/bm25/reranker` 独立 span | 难以定位 RAG 瓶颈 | 本轮补轻量 span，不引入新平台 |
-| Agent TTFT 未形成独立汇总指标 | SSE 首包体验不可量化 | 由 Agent baseline runner 消费 SSE 并计算 |
+| Agent 首条 SSE 延迟未形成独立汇总指标 | SSE 首包体验不可量化；该值不是 LLM TTFT | 由 Agent baseline runner 记录 `time_to_first_sse_ms` |
 | 真实 DeepSeek 的 token/cost 汇总不完整 | 无法估算成本基线 | SSE 当前不返回可信 usage，明确标记不可得，不推算成本 |
 | 后端业务一致性核对没有统一产物 | 压测结果可信度不足 | 已补固定数据分区和 Redis/MySQL/Outbox/券包一致性核对 |
 | Outbox `PENDING/PROCESSING/SENT` 与租约年龄没有统一快照 | 消息链路积压难定位 | 报告中定义 SQL/指标快照，完整 MQ 不可用时标记 BLOCKED |

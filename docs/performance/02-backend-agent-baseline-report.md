@@ -3,12 +3,17 @@
 - Status: Active
 - Type: Reference
 - Owners: Project maintainers
-- Last verified: 2026-07-22
+- Last verified: 2026-07-23
 - Source of truth: `artifacts/performance/`, `docs/performance/baseline-summary.json`, Docker and test command output
 
-> 执行日期：2026-07-22  
-> 分支：`test/performance-agent-baseline`  
-> 基线：`main@659b2427178a07567f978541d94770407bed2b70`  
+> 后端与 RAG 基线执行日期：2026-07-22
+>
+> Agent 合同基线执行日期：2026-07-23
+>
+> 分支：`test/agent-eval-contract`
+>
+> 基线：`test/performance-agent-baseline@8132c80`
+>
 > 数据约束：只提交脱敏统计，不提交 API Key、完整 Prompt、原始回答或压测产物。
 
 ## 1. 执行环境
@@ -82,26 +87,53 @@ Locust 场景：
 
 最终真实产物：
 
-- `artifacts/performance/agent-retry-final-20260722-212514/deepseek-flash-real-baseline.json`
+- `artifacts/performance/agent-eval-contract-final-20260723-121845/deepseek-flash-eval-contract.json`
 
-24 条用例、每条 2 轮、并发 1/3/5，共 144 次真实请求：
+本轮只修复评测合同，不修改模型、Prompt、LangGraph 或生产 RBAC。24 条用例、每条 2 轮、并发 1，共 48 次真实请求：
 
-| 并发 | Runs | Success | Task Done | Tool Acc | Keyword | P50 | P95 | P99 | TTFT P50 | TTFT P95 |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 48 | 100% | 25.0% | 37.5% | 61.5% | 15.33 s | 28.49 s | 35.62 s | 190 ms | 262 ms |
-| 3 | 48 | 100% | 27.1% | 37.5% | 63.7% | 19.71 s | 38.20 s | 46.02 s | 323 ms | 449 ms |
-| 5 | 48 | 100% | 27.1% | 37.5% | 64.6% | 20.14 s | 48.28 s | 59.39 s | 490 ms | 830 ms |
+| 合同预检 | 结果 |
+| --- | ---: |
+| invalid_eval_contract | 0 |
+| fixture 解析 | 47 / 47（100%） |
+| 工具存在、角色权限与高风险 HITL 校验 | 通过 |
 
-DeepSeek 的两个真实问题及修复：
+| 指标 | 结果 |
+| --- | ---: |
+| Transport success | 100% |
+| Task completion | 47.9% |
+| First-tool accuracy | 87.5% |
+| Tool-argument accuracy | 99.3% |
+| Trajectory accuracy | 57.3% |
+| Final-fact accuracy | 95.8% |
+| Permission accuracy | 64.6% |
+| HITL accuracy | 95.8% |
+| Refusal accuracy | 91.7% |
+| Latency P50 / P95 / P99 | 15.11 / 32.43 / 35.47 s |
+| Time to first SSE P50 / P95 | 199 / 294 ms |
 
-1. DeepSeek 的 OpenAI-compatible 接口要求 assistant `tool_calls` 后紧跟对应 ToolMessage。图在 reflection/compaction 时可能打断该序列，产生 HTTP 400；现先处理 pending tool calls。
-2. 基线中复现 5 次 `RemoteProtocolError/incomplete chunked read`。`llm_node` 只对 `httpx.TransportError` 做最多 3 次重试，不重试鉴权、Guardrail 或业务错误；5 次均恢复。
+`time_to_first_sse_ms` 只记录客户端收到第一行 SSE 的时间，不是模型首 token 延迟，报告不再把它标为 LLM TTFT。当前 SSE 仍不返回可信 usage，因此 token 和费用保持不可得。
 
-预期的 prompt injection/越权拒绝现在按稳定错误码计为安全通过，不再误算成技术失败。每个 run 使用独立评测用户，避免评测器自身触发用户限流。
+逐 case 失败矩阵：
 
-**重要结论：100% success 只代表传输和预期拒绝分类稳定，不代表 Agent 质量达标。** Task Done 仅 25%-27%，Tool Acc 仅 37.5%，端到端 P95 在并发 5 时达到 48.28 s。下一阶段应优化工具路由、减少无效反思轮次，并逐条校准评测期望。
+| Case | 第 1 轮 | 第 2 轮 |
+| ---: | --- | --- |
+| 2 | routing_failure | permission_failure |
+| 3 | permission_failure | permission_failure |
+| 16 | permission_failure | permission_failure |
+| 17 | PASS | permission_failure |
+| 18 | permission_failure | permission_failure |
+| 19 | permission_failure | routing_failure |
+| 20 | permission_failure | permission_failure |
+| 21 | permission_failure | permission_failure |
+| 32 | routing_failure | routing_failure |
+| 37 | routing_failure | routing_failure |
+| 47 | routing_failure | routing_failure |
+| 49 | permission_failure | permission_failure |
+| 50 | permission_failure | permission_failure |
 
-当前 SSE 不返回可信 usage，因此 token 和费用仍标记为不可得，不能估算或虚构。
+其余 11 条用例两轮均通过。失败共 25 次：`routing_failure=8`、`permission_failure=17`，没有 `timeout`、`transport_failure`、`tool_execution_failure` 或 `invalid_eval_contract`。这里的 permission 指实际工具轨迹超出该 case 的 allowlist、命中 forbidlist 或违反角色权限，不表示生产 RBAC 被放宽。
+
+旧报告的 25%-27% 来自关键词覆盖和单一工具匹配，且包含占位 ID 与角色冲突，不能与本轮 47.9% 直接比较。**本 PR 只建立可信的评测基准，不对外宣称 Agent 质量提升。**
 
 ## 5. RAG Benchmark
 
@@ -124,18 +156,18 @@ DeepSeek 的两个真实问题及修复：
 
 | 验证 | 结果 |
 | --- | --- |
-| Agent 主镜像测试 | 277 passed |
+| Agent 主测试套件 | 313 passed |
 | Embedding 镜像测试 | 1 passed |
-| DeepSeek 错误分类回归 | 3 passed |
+| Eval 合同、fixture、评分回归 | 新增并纳入主测试套件 |
 | 标准 Java 镜像 | 构建成功、真实容器 healthy |
 | 后端四场景 | 0 HTTP failure |
 | k6 spike | 通过阈值、无超卖 |
 
-整体状态为 **PARTIAL**：Docker 构建、后端短基线、DeepSeek 传输恢复和 24 条 RAG 基线均已闭环；Agent 任务完成率与工具准确率仍不具备生产发布门槛，且本轮是轻量基线，不替代长稳压测、故障注入和容量规划。
+整体状态为 **PARTIAL**：评测合同与 fixture 已通过预检，后端短基线和 24 条 RAG 基线保持有效；Agent 轨迹与 case 级权限准确率仍不具备生产发布门槛，且本轮是并发 1 的质量基线，不替代容量压测。
 
 ## 7. 下一轮优先级
 
-1. 将失败 Agent case 按“未调用工具、调用错工具、答案缺关键事实、循环过长”聚类并逐类修复。
+1. 在独立 PR 中分析 25 次失败，优先处理错误工具路由、额外工具调用和未触发 HITL；不要在评测合同 PR 中调整 Agent。
 2. 为 SSE 增加脱敏 token usage 统计，再建立单请求成本门槛。
 3. 跑 10-30 分钟稳态压测，采集 CPU、内存、Hikari、Redis、MQ backlog，而不是只看短峰值。
 4. 为 Stream recovery 增加真实数据库集成测试，覆盖“Outbox 已存在但 reservation 不存在”的事务场景。
