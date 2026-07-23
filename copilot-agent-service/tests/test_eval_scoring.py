@@ -92,9 +92,30 @@ def test_wrong_tool_argument_is_classified_separately():
     assert result.failure_category == "tool_argument_failure"
 
 
-def test_forbidden_tool_is_permission_failure():
+def test_forbidden_tool_in_case_scope_is_routing_failure():
     result = evaluate_case(
         _case(expected_tools=["query_order"], allowed_tools=["query_order"]),
+        actual_tools=["execute_refund"],
+        final_answer="",
+        stop_reason="completed",
+        error=None,
+        evidence=[],
+    )
+
+    assert result.permission_accuracy == 1.0
+    assert result.failure_category == "routing_failure"
+
+
+def test_role_forbidden_tool_is_permission_failure():
+    result = evaluate_case(
+        _case(
+            role="merchant",
+            expected_tools=["execute_refund"],
+            allowed_tools=["execute_refund"],
+            forbidden_tools=[],
+            expected_args={},
+            expected_facts=[],
+        ),
         actual_tools=["execute_refund"],
         final_answer="",
         stop_reason="completed",
