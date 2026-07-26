@@ -213,6 +213,23 @@ def test_strong_high_risk_execution_overrides_policy_semantics(message, task_typ
     assert decision.next_tool == "query_order"
 
 
+@pytest.mark.parametrize(
+    ("action", "task_type"),
+    [
+        ("退款", "refund_action"),
+        ("补券", "compensation_action"),
+    ],
+)
+def test_later_clause_query_terms_do_not_cancel_strong_action(action, task_type):
+    decision = classify_request(
+        "admin",
+        f"给订单 202606100001 执行{action}，支付状态已确认",
+    )
+
+    assert decision.task_type == task_type
+    assert decision.next_tool == "query_order"
+
+
 @pytest.mark.parametrize("action", ["退款", "补券"])
 def test_strong_execution_phrase_can_be_the_subject_of_knowledge_query(action):
     decision = classify_request(

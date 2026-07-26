@@ -173,11 +173,11 @@ def _has_high_risk_query(text: str) -> bool:
 
 
 def _strong_action_clause_is_query(text: str, start: int, end: int) -> bool:
+    separator_pattern = "|".join(
+        re.escape(term) for term in ACTION_CLAUSE_SEPARATORS
+    )
     prefix = text[:start]
-    clause_prefix = re.split(
-        "|".join(re.escape(term) for term in ACTION_CLAUSE_SEPARATORS),
-        prefix,
-    )[-1]
+    clause_prefix = re.split(separator_pattern, prefix)[-1]
     if _contains_any(clause_prefix, HIGH_RISK_INTERROGATIVE_TERMS):
         return True
 
@@ -192,9 +192,9 @@ def _strong_action_clause_is_query(text: str, start: int, end: int) -> bool:
     if query_position >= 0 and sequence_position < query_position:
         return True
 
-    suffix = text[end:]
+    clause_suffix = re.split(separator_pattern, text[end:], maxsplit=1)[0]
     return _contains_any(
-        suffix,
+        clause_suffix,
         (
             *HIGH_RISK_QUERY_TERMS,
             *HIGH_RISK_INTERROGATIVE_TERMS,
