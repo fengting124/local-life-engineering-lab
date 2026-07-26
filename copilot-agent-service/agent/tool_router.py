@@ -73,6 +73,17 @@ TASK_TOOL_PLANS: dict[str, tuple[str, ...]] = {
         "issue_compensation_coupon",
     ),
 }
+STRONG_EXECUTION_TERMS = ("执行", "发起", "进行", "办理", "操作")
+WEAK_EXECUTION_TERMS = ("申请", "给我", "帮我", "帮忙", "帮", "给", "为", "对")
+HIGH_RISK_QUERY_TERMS = ("查", "查询", "规则", "政策", "状态", "情况", "进度", "进展")
+REFUND_ACTION_TERMS = ("退款", "退钱", "退回")
+COMPENSATION_ACTION_TERMS = (
+    "补券",
+    "补发券",
+    "补发优惠券",
+    "赔付券",
+    "补偿券",
+)
 
 
 @dataclass(frozen=True)
@@ -144,6 +155,21 @@ def _contains_any(text: str, terms: Sequence[str]) -> bool:
 def _order_ids(text: str) -> tuple[str, ...]:
     matches = re.findall(r"(?<!\d)\d{12,}(?!\d)", text)
     return tuple(dict.fromkeys(matches))
+
+
+def _has_high_risk_query(text: str) -> bool:
+    return _contains_any(text, HIGH_RISK_QUERY_TERMS)
+
+
+def _has_high_risk_execution(text: str, action_terms: Sequence[str]) -> bool:
+    action_pattern = "|".join(re.escape(term) for term in action_terms)
+    strong_pattern = "|".join(re.escape(term) for term in STRONG_EXECUTION_TERMS)
+    if re.search(rf"(?:{strong_pattern}).{{0,24}}(?:{action_pattern})", text):
+        return True
+    if _has_high_risk_query(text):
+        return False
+    weak_pattern = "|".join(re.escape(term) for term in WEAK_EXECUTION_TERMS)
+    return bool(re.search(rf"(?:{weak_pattern}).{{0,24}}(?:{action_pattern})", text))
 
 
 def _clarification(user_role: str, task_type: str, score: int, field: str) -> RouteDecision:
@@ -222,18 +248,11 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
     )
     analytics_intent = has_aggregate or has_metric or has_unsupported_date
 
-    refund_intent = bool(
-        re.search(
-            r"(?:执行|发起|进行|办理|操作|申请|给|为|对|帮(?:我|忙)?).{0,24}(?:退款|退钱|退回)",
-            text,
-        )
-    ) and not has_knowledge
-    compensation_intent = bool(
-        re.search(
-            r"(?:执行|发起|进行|办理|操作|申请|给|为|对|帮(?:我|忙)?).{0,24}(?:补券|补发券|补发优惠券|赔付券|补偿券)",
-            text,
-        )
-    ) and not has_knowledge
+    refund_intent = _has_high_risk_execution(text, REFUND_ACTION_TERMS)
+    compensation_intent = _has_high_risk_execution(
+        text,
+        COMPENSATION_ACTION_TERMS,
+    )
 
     has_mq = _contains_any(text, ("mq", "消息队列", "死信", "dead letter", "消费失败", "消费者失败"))
     has_coupon_issue = _contains_any(
@@ -257,7 +276,7 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
         and not campaign_intent
     )
     order_query_intent = has_order_reference and _contains_any(
-        text, ("查", "查询", "状态", "详情", "情况", "订单")
+        text, ("查", "查询", "状态", "详情", "情况", "进度", "进展", "订单")
     )
 
     if refund_intent:

@@ -180,7 +180,14 @@ def test_high_risk_actions_require_explicit_execution_intent(
             "knowledge",
             "knowledge_search",
         ),
+        (
+            "merchant",
+            "给我查订单 202606100001 的补券规则",
+            "knowledge",
+            "knowledge_search",
+        ),
         ("cs", "给订单 202606100001 退款", "refund_action", "query_order"),
+        ("cs", "给订单 202606100001 补券", "compensation_action", "query_order"),
     ],
 )
 def test_policy_semantics_override_generic_high_risk_wording(
@@ -190,6 +197,36 @@ def test_policy_semantics_override_generic_high_risk_wording(
 
     assert decision.task_type == task_type
     assert decision.next_tool == next_tool
+
+
+@pytest.mark.parametrize(
+    ("message", "task_type"),
+    [
+        ("按照退款规则给订单 202606100001 执行退款", "refund_action"),
+        ("按照补券规则给订单 202606100001 执行补券", "compensation_action"),
+    ],
+)
+def test_strong_high_risk_execution_overrides_policy_semantics(message, task_type):
+    decision = classify_request("admin", message)
+
+    assert decision.task_type == task_type
+    assert decision.next_tool == "query_order"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "帮我查订单 202606100001 的退款进度",
+        "帮我查订单 202606100001 的补券进度",
+    ],
+)
+def test_high_risk_progress_queries_remain_read_only(message):
+    decision = classify_request("admin", message)
+
+    assert decision.task_type == "order_query"
+    assert decision.required_tools == ("query_order",)
+    assert "execute_refund" not in decision.authorized_tools
+    assert "issue_compensation_coupon" not in decision.authorized_tools
 
 
 def test_campaign_labels_without_values_keep_policy_lookup():
