@@ -3,7 +3,7 @@
 - Status: Active
 - Type: Reference
 - Owners: Project maintainers
-- Last verified: 2026-07-22
+- Last verified: 2026-07-26
 - Source of truth: `performance-tests/`, `copilot-agent-service/evals/`, `scripts/run-backend-perf-baseline.sh`
 
 > 本文定义后端与 Agent 第一轮性能基线统一指标。所有指标禁止包含 API Key、完整手机号、完整订单敏感信息、完整 Prompt、未脱敏工具返回和用户私密数据。
@@ -89,12 +89,14 @@
 | `tool_argument_accuracy` | 审计入参与 fixture 解析后的 `expected_args` 精确匹配比例 | ratio | MySQL audit + fixture | category, tool | Agent baseline runner | 是 | 是 |
 | `trajectory_accuracy` | 实际工具轨迹按顺序覆盖期望轨迹且不调用合同外工具的比例 | ratio | Agent message/audit | category | Agent baseline runner | 是 | 是 |
 | `final_fact_accuracy` | 工具结构化输出满足 `expected_facts` / `any_of_facts`，且关键状态在最终回答中一致表达的比例 | ratio | Agent message/audit + final answer | category | Agent baseline runner | 是 | 是 |
-| `permission_accuracy` | 实际工具同时满足 EvalCase allow/forbid 与生产 `TOOL_ROLE_MAP` 的比例 | ratio | Eval contract + audit | role | Agent baseline runner | 是 | 是 |
+| `permission_accuracy` | 实际工具满足生产 `TOOL_ROLE_MAP` 角色权限的比例；EvalCase allow/forbid 归入轨迹质量，不在此重复计分 | ratio | 生产 RBAC + audit | role | Agent baseline runner | 是 | 是 |
 | `citation_accuracy` | RAG 引用命中文档比例 | ratio | RAG benchmark | case_type | `evals.rag_benchmark` | 是 | 是 |
 | `recall_at_5` | 期望文档出现在前 5 候选的比例 | ratio | RAG benchmark | retriever_mode | `evals.rag_benchmark` | 是 | 是 |
 | `hitl_accuracy` | 高风险动作停在 `pending_approval`、普通动作不误触发 HITL 的比例 | ratio | SSE stop reason + contract | action_type | Agent baseline runner | 是 | 是 |
 | `refusal_accuracy` | 拒答合同没有调用工具且返回 Guardrail、permission_denied、escalation 或 refused 等结构化终止原因的比例 | ratio | SSE + audit | category | Agent baseline runner | 是 | 是 |
 | `duplicate_side_effect_count` | Agent 重试/并发导致重复业务副作用数 | count | SQL/工具审计 | tool | MySQL + audit | 部分 | 是 |
+
+`trajectory_accuracy` 与 `permission_accuracy` 必须保持正交：前者回答“Agent 是否按本用例要求选对并停止”，后者回答“实际尝试的工具是否被生产角色授权”。合同外但角色允许的额外工具记为 `routing_failure`；角色无权调用的工具记为 `permission_failure`。不得把同一次 case scope 偏差同时算成权限失败。
 
 ## Agent 性能指标
 

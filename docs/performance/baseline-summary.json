@@ -1,7 +1,7 @@
 {
-  "branch": "test/agent-eval-contract",
-  "base_sha": "8132c80",
-  "generated_at": "2026-07-23T12:31:51+08:00",
+  "branch": "fix/agent-eval-failure-classification",
+  "base_sha": "659b242",
+  "generated_at": "2026-07-26T09:24:26",
   "environment": {
     "docker": "28.1.1",
     "docker_compose": "2.35.1",
@@ -28,7 +28,7 @@
     "seckill_consistency": {"reservations": 50, "outbox_sent": 50, "user_coupons": 50, "status": "pass_with_5_minute_reconciliation_window"}
   },
   "agent": {
-    "artifact": "artifacts/performance/agent-eval-contract-final-20260723-121845/deepseek-flash-eval-contract.json",
+    "artifact": "artifacts/performance/agent-eval-rbac-20260726-091015/deepseek-flash-eval-contract.json",
     "case_count": 24,
     "total_runs": 48,
     "contract": {
@@ -40,26 +40,34 @@
     "groups": {
       "1": {
         "runs": 48,
-        "success_rate": 1.0,
-        "task_completion_rate": 0.479167,
+        "success_rate": 0.9791666666666666,
+        "task_completion_rate": 0.5,
         "first_tool_accuracy": 0.875,
-        "tool_argument_accuracy": 0.993056,
-        "trajectory_accuracy": 0.572917,
-        "final_fact_accuracy": 0.958333,
-        "permission_accuracy": 0.645833,
-        "hitl_accuracy": 0.958333,
-        "refusal_accuracy": 0.916667,
-        "latency_p50_ms": 15106,
-        "latency_p95_ms": 32431,
-        "latency_p99_ms": 35472,
-        "time_to_first_sse_p50_ms": 199,
-        "time_to_first_sse_p95_ms": 294,
+        "tool_argument_accuracy": 1.0,
+        "trajectory_accuracy": 0.6041666666666666,
+        "final_fact_accuracy": 0.9583333333333334,
+        "permission_accuracy": 0.8958333333333334,
+        "hitl_accuracy": 0.9583333333333334,
+        "refusal_accuracy": 0.9166666666666666,
+        "latency_p50_ms": 13683,
+        "latency_p95_ms": 36164,
+        "latency_p99_ms": 58614,
+        "time_to_first_sse_p50_ms": 114,
+        "time_to_first_sse_p95_ms": 181,
+        "expected_guardrail_blocks": 2,
         "failure_categories": {
-          "routing_failure": 8,
-          "permission_failure": 17
+          "routing_failure": 18,
+          "permission_failure": 5,
+          "transport_failure": 1
         }
       }
     },
+    "permission_definition": "production TOOL_ROLE_MAP only; case scope belongs to trajectory",
+    "notable_findings": [
+      "CS invoked knowledge_search in 5 runs although production TOOL_ROLE_MAP denies it",
+      "case 3 iteration 2 made 28 tool calls, including 27 shop_metrics_query calls",
+      "one DeepSeek transport failure occurred after knowledge_search"
+    ],
     "quality_gate": "baseline_only",
     "quality_improvement_claimed": false
   },
@@ -74,9 +82,10 @@
   },
   "overall_status": "partial",
   "open_items": [
-    "25 of 48 Agent runs fail the structured task contract",
-    "Agent trajectory accuracy is 57.3%",
-    "Agent case-level permission accuracy is 64.6%",
+    "24 of 48 Agent runs fail the structured task contract",
+    "Agent trajectory accuracy is 60.4%",
+    "Agent production-role permission accuracy is 89.6% with 5 CS knowledge_search violations",
+    "one of 48 Agent runs ended in a transport failure",
     "SSE does not expose reliable token usage or cost",
     "long-duration capacity and fault-injection tests remain"
   ]
