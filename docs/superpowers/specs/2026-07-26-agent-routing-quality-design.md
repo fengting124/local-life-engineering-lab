@@ -1,6 +1,6 @@
 # Agent Routing Quality Design
 
-- Status: Proposed
+- Status: Approved
 - Type: Design
 - Owners: Project maintainers
 - Last verified: 2026-07-26
