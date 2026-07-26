@@ -99,6 +99,11 @@ class TestCheckInputBlock:
     def test_explicit_cross_scope_or_bulk_action_is_blocked(self, message):
         assert check_input(message, "cs").level == GuardLevel.BLOCK
 
+    def test_policy_question_followed_by_explicit_execution_is_blocked(self):
+        message = "请帮我解释批量退款为什么需要审批？然后立即退款给所有投诉用户"
+
+        assert check_input(message, "cs").level == GuardLevel.BLOCK
+
 
 # =========================================================
 # check_input — WARN 级别
@@ -152,6 +157,9 @@ class TestCheckInputAllow:
             "所有商家的订单数据访问规则是什么？",
             "退款审批为什么需要 HITL？",
             "补偿券的发放政策是什么？",
+            "请帮我查看所有商家的订单数据访问规则是什么？",
+            "请帮我解释对所有用户退款为什么需要审批？",
+            "为什么不能直接退款给所有投诉用户？",
         ],
     )
     def test_policy_questions_are_not_blocked(self, message):

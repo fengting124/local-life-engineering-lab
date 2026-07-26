@@ -109,10 +109,44 @@ _WARN_PATTERNS: list[tuple[str, str]] = [
     (r"<(script|iframe|img)[^>]*>",                        "html_injection_attempt"),
 ]
 
+_POLICY_QUESTION_EXEMPT_RULES = frozenset({
+    "cross_merchant_access_prefix",
+    "bulk_sensitive_action",
+    "bulk_sensitive_action_reversed",
+})
+
+_CLEAR_POLICY_QUESTION_PATTERNS: tuple[str, ...] = (
+    (
+        r"^(?:请|麻烦)?(?:帮我)?(?:查看|了解|查询)?"
+        r"[^。！？!?；;\n]{0,80}(?:规则|政策|流程|审批|权限)"
+        r"(?:是什么|有哪些|为什么[^。！？!?；;\n]{0,30}|为何[^。！？!?；;\n]{0,30}|"
+        r"如何[^。！？!?；;\n]{0,30}|怎么[^。！？!?；;\n]{0,30}|"
+        r"是否[^。！？!?；;\n]{0,30}|能否[^。！？!?；;\n]{0,30})[?？]$"
+    ),
+    (
+        r"^(?:请|麻烦)?(?:帮我)?(?:解释|说明|介绍)"
+        r"[^。！？!?；;\n]{0,80}(?:为什么|为何|规则|政策|流程|审批|权限)"
+        r"[^。！？!?；;\n]{0,40}[?？]$"
+    ),
+    (
+        r"^(?:请|麻烦)?(?:帮我)?(?:解释|说明)?(?:为什么|为何)"
+        r"(?:不能|不可以|需要|必须|不允许)[^。！？!?；;\n]{1,80}[?？]$"
+    ),
+)
+
 
 # =========================================================
 # 检测函数
 # =========================================================
+
+def _is_clear_policy_question(text: str) -> bool:
+    """只识别完整的单句政策或原因问句。"""
+    stripped = text.strip()
+    return any(
+        re.fullmatch(pattern, stripped, re.IGNORECASE)
+        for pattern in _CLEAR_POLICY_QUESTION_PATTERNS
+    )
+
 
 def check_input(user_message: str, user_role: str = "merchant") -> GuardResult:
     """
@@ -127,6 +161,11 @@ def check_input(user_message: str, user_role: str = "merchant") -> GuardResult:
     # ---- BLOCK 级别检测 ----
     for pattern, rule_name in _BLOCK_PATTERNS:
         if re.search(pattern, text, re.IGNORECASE | re.DOTALL):
+            if (
+                rule_name in _POLICY_QUESTION_EXEMPT_RULES
+                and _is_clear_policy_question(text)
+            ):
+                continue
             log.warning(
                 "guardrails_blocked",
                 rule=rule_name,
