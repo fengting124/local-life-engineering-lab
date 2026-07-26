@@ -76,6 +76,24 @@ tool_duration_seconds = Histogram(
     buckets=(0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10),
 )
 
+agent_tool_policy_denied_total = Counter(
+    "agent_tool_policy_denied_total",
+    "Agent tools rejected by execution-stage role policy",
+    ["tool", "role"],
+)
+
+agent_tool_budget_exhausted_total = Counter(
+    "agent_tool_budget_exhausted_total",
+    "Agent tool batches rejected by a deterministic call budget",
+    ["reason", "tool"],
+)
+
+agent_tool_calls_per_run = Histogram(
+    "agent_tool_calls_per_run",
+    "Tool calls admitted per Agent run",
+    buckets=(0, 1, 2, 3, 4, 5, 6, 8),
+)
+
 # =========================================================
 # RAG 指标
 # =========================================================
@@ -137,10 +155,33 @@ rate_limit_triggered_total = Counter(
     ["limit_type"],   # tool / user
 )
 
+_KNOWN_ROLES = frozenset({"merchant", "cs", "admin"})
+_KNOWN_BUDGET_REASONS = frozenset(
+    {
+        "per_turn_limit",
+        "total_limit",
+        "per_tool_limit",
+        "identical_call_limit",
+    }
+)
+
 
 # =========================================================
 # 辅助函数
 # =========================================================
+
+def _tool_label(tool: str) -> str:
+    from agent.tool_router import TOOL_ROLE_MAP
+
+    return tool if tool in TOOL_ROLE_MAP else "unknown"
+
+
+def _role_label(role: str) -> str:
+    return role if role in _KNOWN_ROLES else "unknown"
+
+
+def _budget_reason_label(reason: str) -> str:
+    return reason if reason in _KNOWN_BUDGET_REASONS else "unknown"
 
 def record_session_end(status: str, role: str, step_count: int):
     """会话结束时统一调用此函数。"""
@@ -157,6 +198,24 @@ def record_tool_call(tool_name: str, result: str, duration_seconds: float):
     """工具调用完成时（无论成功失败）统一调用。"""
     tool_calls_total.labels(tool_name=tool_name, result=result).inc()
     tool_duration_seconds.labels(tool_name=tool_name).observe(duration_seconds)
+
+
+def record_tool_policy_denied(tool: str, role: str):
+    agent_tool_policy_denied_total.labels(
+        tool=_tool_label(tool),
+        role=_role_label(role),
+    ).inc()
+
+
+def record_tool_budget_exhausted(reason: str, tool: str):
+    agent_tool_budget_exhausted_total.labels(
+        reason=_budget_reason_label(reason),
+        tool=_tool_label(tool),
+    ).inc()
+
+
+def record_tool_calls_per_run(count: int):
+    agent_tool_calls_per_run.observe(count)
 
 
 def record_llm_call(role: str, input_tokens: int, output_tokens: int, duration_seconds: float):

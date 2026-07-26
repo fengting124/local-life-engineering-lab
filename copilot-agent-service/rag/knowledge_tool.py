@@ -17,14 +17,39 @@
 
 使用场景：
   - 商家询问平台规则（退款规则、活动政策）
-  - 客服询问 FAQ（常见订单问题、支付异常）
+  - 管理员查询 FAQ（常见订单问题、支付异常）
   - 故障排查（MQ 异常案例、支付回调异常案例）
 """
+import copy
 import json
 import structlog
 from langchain_core.tools import tool
 
 log = structlog.get_logger(__name__)
+
+_KNOWLEDGE_SEARCH_TOOL_SPEC = {
+    "name": "knowledge_search",
+    "description": (
+        "在平台知识库中搜索规则、FAQ、商家手册和故障案例。"
+        "不用于查询订单、支付或经营数据等实时业务信息。"
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "用户的问题或需要检索的关键词",
+            },
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+}
+
+
+def get_knowledge_search_tool_spec() -> dict:
+    """Return an isolated MCP-shaped schema for routing and prompt rendering."""
+    return copy.deepcopy(_KNOWLEDGE_SEARCH_TOOL_SPEC)
 
 
 def make_knowledge_search_tool(merchant_id: int | None):
@@ -53,7 +78,11 @@ def make_knowledge_search_tool(merchant_id: int | None):
         :return: 相关文档内容（格式化的上下文文本）
         """
         from rag.pipeline import retrieve
-        log.info("knowledge_search_called", query=query[:50], merchant_id=merchant_id)
+        log.info(
+            "knowledge_search_called",
+            query_length=len(query),
+            merchant_id=merchant_id,
+        )
 
         result = await retrieve(query=query, merchant_id=merchant_id, top_k=5)
 

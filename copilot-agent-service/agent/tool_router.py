@@ -41,6 +41,12 @@ TOOL_ROLE_MAP: dict[str, list[str]] = {
     "knowledge_search":          ["merchant", "admin"],
 }
 
+
+def is_tool_allowed_for_role(tool_name: str, user_role: str) -> bool:
+    """Return whether a registered tool is available to the role."""
+    return user_role in TOOL_ROLE_MAP.get(tool_name, ())
+
+
 # =========================================================
 # 工具并发安全分级
 # =========================================================
@@ -175,8 +181,7 @@ class ToolRouter:
 
     def _check_role(self, tool_name: str) -> bool:
         """检查当前角色是否有权使用此工具。"""
-        allowed = TOOL_ROLE_MAP.get(tool_name, ["admin"])
-        return self.user_role in allowed
+        return is_tool_allowed_for_role(tool_name, self.user_role)
 
     def _filter_by_task(self, tools: list[dict]) -> list[dict]:
         """只保留与当前任务类型相关的工具。"""
