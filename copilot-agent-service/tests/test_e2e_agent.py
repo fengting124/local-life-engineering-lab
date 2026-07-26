@@ -21,6 +21,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 import session.checkpointer as ckpt_mod
 from agent import nodes
+from agent.evidence_gate import initial_evidence_state
+from agent.tool_router import classify_request
 
 
 class ScriptedLLM:
@@ -29,7 +31,9 @@ class ScriptedLLM:
         self._responses = responses
         self._i = 0
 
-    def bind_tools(self, tools):
+    def bind_tools(self, tools, tool_choice=None):
+        self.bound_tools = tools
+        self.tool_choice = tool_choice
         return self
 
     async def ainvoke(self, messages):
@@ -74,6 +78,7 @@ async def test_full_react_loop_llm_tool_llm_final(monkeypatch):
     from agent.graph import build_graph
     graph = build_graph()
 
+    decision = classify_request("merchant", "今天卖了多少？")
     initial_state = {
         "messages": [HumanMessage(content="今天卖了多少？")],
         "step_count": 0,
@@ -88,6 +93,8 @@ async def test_full_react_loop_llm_tool_llm_final(monkeypatch):
         "compact_failures": 0,
         "needs_reflection": False,
         "last_tool_failed": False,
+        **decision.to_state(),
+        **initial_evidence_state(decision),
     }
     config = {"configurable": {"thread_id": "e2e-thread-1"}}
 
@@ -123,12 +130,15 @@ async def test_react_loop_direct_answer_no_tool(monkeypatch):
     from agent.graph import build_graph
     graph = build_graph()
 
+    decision = classify_request("merchant", "你好")
     state = {
         "messages": [HumanMessage(content="你好")],
         "step_count": 0, "token_count": 0, "session_id": 0, "thread_id": "e2e-2",
         "user_id": 1, "user_role": "merchant", "merchant_id": 42,
         "pending_hitl": False, "final_answer": None, "compact_failures": 0,
         "needs_reflection": False, "last_tool_failed": False,
+        **decision.to_state(),
+        **initial_evidence_state(decision),
     }
     final_state = await graph.ainvoke(state, config={"configurable": {"thread_id": "e2e-2"}})
 

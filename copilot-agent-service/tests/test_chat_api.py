@@ -259,7 +259,51 @@ class TestChatEndpointGuardrails:
         assert resp.status_code == 400
         body = resp.json()
         assert body["detail"]["code"] == "BLOCKED_BY_GUARDRAILS"
-        assert any(call.args and call.args[0] == "security_audit" for call in warn.call_args_list)
+        audit_call = next(
+            call for call in warn.call_args_list
+            if call.args and call.args[0] == "security_audit"
+        )
+        assert audit_call.kwargs["route_mode"] == "terminal"
+        assert audit_call.kwargs["stop_reason"] == "guardrail_blocked"
+
+
+class TestChatInitialRouteState:
+    def test_react_initial_state_includes_route_and_evidence(self):
+        captured = {}
+
+        async def fake_stream(initial_state, config=None, version=None):
+            captured.update(initial_state)
+            if False:
+                yield
+
+        runtime = AsyncMock()
+        runtime.create_run.return_value = "run-route-state"
+
+        with (
+            patch("api.chat.session_manager.create_session", new=AsyncMock(return_value=1001)),
+            patch("api.chat.session_manager.save_message", new=AsyncMock()),
+            patch("api.chat._try_fast_path", new=AsyncMock(return_value=None)),
+            patch("api.chat.agent_graph.astream_events", fake_stream),
+            patch("api.chat.runtime_store", runtime),
+        ):
+            response = client.post(
+                "/chat",
+                json={"message": "订单 123456789012 支付失败了"},
+                headers={
+                    "X-User-Id": "9001",
+                    "X-User-Role": "merchant",
+                    "X-Merchant-Id": "8001",
+                },
+            )
+
+        assert response.status_code == 200
+        assert captured["route_task_type"] == "payment_diagnosis"
+        assert captured["route_mode"] == "controlled"
+        assert captured["route_required_tools"] == ["query_order", "query_payment"]
+        assert captured["route_next_tool"] == "query_order"
+        assert captured["evidence_collected"] == {}
+        assert captured["evidence_complete"] is False
+        assert captured["synthesis_only"] is False
 
     def test_guardrails_block_cn_injection(self):
         resp = client.post(

@@ -59,6 +59,26 @@ class AgentState(TypedDict):
     merchant_id: int | None
 
     # =========================================================
+    # Checkpointed route and evidence state
+    # =========================================================
+
+    # Deterministic request route, serialized as JSON-safe primitives.
+    route_task_type: str
+    route_mode: str
+    route_confidence: int
+    route_required_tools: list[str]
+    route_authorized_tools: list[str]
+    route_next_tool: str | None
+    route_missing_fields: list[str]
+
+    # Bounded tool evidence used to gate synthesis; never raw request or tool data.
+    required_evidence: list[str]
+    evidence_collected: dict[str, dict[str, object]]
+    evidence_complete: bool
+    evidence_stop_reason: str | None
+    synthesis_only: bool
+
+    # =========================================================
     # ReAct 控制标志
     # =========================================================
 

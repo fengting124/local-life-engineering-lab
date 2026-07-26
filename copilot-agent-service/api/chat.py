@@ -440,6 +440,8 @@ async def chat(
             reason=guard_result.reason,
             pattern=guard_result.pattern,
             snippet=request.message[:120],
+            route_mode="terminal",
+            stop_reason="guardrail_blocked",
         )
         raise HTTPException(
             status_code=400,
@@ -548,6 +550,13 @@ async def chat(
         return StreamingResponse(fast_stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+    from agent.evidence_gate import initial_evidence_state
+    from agent.tool_router import classify_request
+
+    route_decision = classify_request(user_role, request.message)
+    route_state = route_decision.to_state()
+    evidence_state = initial_evidence_state(route_decision)
+
     # 初始化 Agent 状态
     initial_state: AgentState = {
         "messages":       [HumanMessage(content=request.message)],
@@ -573,6 +582,8 @@ async def chat(
         "tool_budget_exhausted": False,
         "tool_budget_reason": None,
         "policy_denied_tool": None,
+        **route_state,
+        **evidence_state,
     }
 
     config = {"configurable": {"thread_id": thread_id}}
