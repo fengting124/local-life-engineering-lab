@@ -62,7 +62,11 @@ FACT_KEYS_BY_TOOL = {
     "knowledge_search": {"knowledge_found"},
     "coupon_policy_lookup": {"policy_available"},
     "campaign_draft_generate": {"campaign_draft_generated"},
+    "shop_metrics_query": set(),
+    "execute_refund": set(),
+    "issue_compensation_coupon": set(),
 }
+KNOWN_EVIDENCE_TOOLS = set(FACT_KEYS_BY_TOOL)
 ENUM_FACTS = {
     "order_status": ORDER_STATUSES,
     "payment_status": PAYMENT_STATUSES,
@@ -134,14 +138,21 @@ def _normalize_payment(data: Mapping[str, object]) -> dict[str, object] | None:
     payments = data.get("payments")
     if not isinstance(payments, list):
         return None
-    if not payments:
+    payment_records: list[Mapping[str, object]] = []
+    for raw_payment in payments:
+        payment = _mapping(raw_payment)
+        if payment is None:
+            return None
+        if "pay_status" in payment:
+            payment_records.append(payment)
+    if not payment_records:
         return {"found": False, "payment_status": "UNKNOWN"}
-    payment = _mapping(payments[0])
-    if payment is None:
-        return None
     return {
         "found": True,
-        "payment_status": _enum(payment.get("pay_status"), PAYMENT_STATUSES),
+        "payment_status": _enum(
+            payment_records[0].get("pay_status"),
+            PAYMENT_STATUSES,
+        ),
     }
 
 
@@ -192,6 +203,35 @@ def _normalize_mq_dead_letter(data: Mapping[str, object]) -> dict[str, object] |
     }
 
 
+def _has_coupon_template_identity(data: Mapping[str, object]) -> bool:
+    identity = data.get("coupon_template_id")
+    if isinstance(identity, bool) or isinstance(identity, (Mapping, list)):
+        return False
+    return identity is not None and bool(str(identity).strip())
+
+
+def _normalize_policy(data: Mapping[str, object]) -> dict[str, object] | None:
+    is_wrapper = "count" in data or "coupons" in data
+    if not is_wrapper:
+        return (
+            {"policy_available": True}
+            if _has_coupon_template_identity(data)
+            else None
+        )
+
+    count = data.get("count")
+    coupons = data.get("coupons")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return None
+    if not isinstance(coupons, list) or len(coupons) != count:
+        return None
+    for raw_coupon in coupons:
+        coupon = _mapping(raw_coupon)
+        if coupon is None or not _has_coupon_template_identity(coupon):
+            return None
+    return {"policy_available": count > 0}
+
+
 def _normalize_facts(tool_name: str, data: Mapping[str, object]) -> dict[str, object] | None:
     if tool_name == "query_order":
         return _normalize_order(data)
@@ -205,7 +245,7 @@ def _normalize_facts(tool_name: str, data: Mapping[str, object]) -> dict[str, ob
         found = data.get("found")
         return {"knowledge_found": found} if isinstance(found, bool) else None
     if tool_name == "coupon_policy_lookup":
-        return {"policy_available": bool(data)}
+        return _normalize_policy(data)
     return {}
 
 
@@ -247,6 +287,8 @@ def normalize_tool_outcome(
         return ToolOutcome(tool_name, "not_found", facts)
     if tool_name == "query_coupon_issue_log" and facts["found"] is False:
         return ToolOutcome(tool_name, "not_found", facts)
+    if tool_name == "coupon_policy_lookup" and facts["policy_available"] is False:
+        return ToolOutcome(tool_name, "not_found", facts)
     return ToolOutcome(tool_name, "success", facts)
 
 
@@ -273,10 +315,17 @@ def _bounded_facts(tool_name: str, facts: Mapping[str, object]) -> dict[str, obj
             bounded[key] = _enum(value, ENUM_FACTS[key])
         elif key in BOOLEAN_FACTS and isinstance(value, bool):
             bounded[key] = value
-        elif key == "coupon_failure_confirmed" and (
-            isinstance(value, bool) or value == "UNKNOWN"
-        ):
-            bounded[key] = value
+    if tool_name == "query_coupon_issue_log" and (
+        "coupon_issue_status" in bounded or "coupon_failure_confirmed" in facts
+    ):
+        issue_status = bounded.get("coupon_issue_status")
+        incoming_confirmation = facts.get("coupon_failure_confirmed")
+        if issue_status == "FAILED" and incoming_confirmation is True:
+            bounded["coupon_failure_confirmed"] = True
+        elif issue_status == "SENT":
+            bounded["coupon_failure_confirmed"] = False
+        else:
+            bounded["coupon_failure_confirmed"] = "UNKNOWN"
     return bounded
 
 
@@ -284,7 +333,73 @@ def _attempts(record: object) -> int:
     if not isinstance(record, Mapping):
         return 0
     attempts = record.get("attempts")
-    return attempts if isinstance(attempts, int) and not isinstance(attempts, bool) else 0
+    return (
+        attempts
+        if isinstance(attempts, int)
+        and not isinstance(attempts, bool)
+        and attempts >= 0
+        else 0
+    )
+
+
+def _rebound_status(
+    tool_name: str,
+    status: str,
+    facts: Mapping[str, object],
+) -> str:
+    if tool_name == "coupon_policy_lookup" and status == "success":
+        if facts.get("policy_available") is False:
+            return "not_found"
+        if facts.get("policy_available") is not True:
+            return "internal_error"
+    return status
+
+
+def _sanitize_records(records: object) -> dict[str, dict[str, object]]:
+    if not isinstance(records, Mapping):
+        return {}
+    sanitized: dict[str, dict[str, object]] = {}
+    for tool_name, raw_record in records.items():
+        if tool_name not in KNOWN_EVIDENCE_TOOLS:
+            continue
+        if not isinstance(raw_record, Mapping):
+            continue
+        status = raw_record.get("status")
+        attempts = raw_record.get("attempts")
+        facts = raw_record.get("facts")
+        if status not in VALID_STATUSES:
+            continue
+        if (
+            not isinstance(attempts, int)
+            or isinstance(attempts, bool)
+            or attempts < 0
+            or not isinstance(facts, Mapping)
+        ):
+            continue
+        bounded_facts = _bounded_facts(tool_name, facts)
+        sanitized[tool_name] = {
+            "status": _rebound_status(tool_name, status, bounded_facts),
+            "attempts": attempts,
+            "facts": bounded_facts,
+        }
+    return sanitized
+
+
+def _invalid_outcome_reason(
+    state: Mapping[str, object],
+    outcome: ToolOutcome,
+) -> str | None:
+    if outcome.tool_name not in KNOWN_EVIDENCE_TOOLS:
+        return "internal_error"
+    required = state.get("route_required_tools", ())
+    if (
+        outcome.tool_name != state.get("route_next_tool")
+        or outcome.tool_name not in required
+    ):
+        return "internal_error"
+    if outcome.tool_name not in state.get("route_authorized_tools", ()):
+        return "permission_denied"
+    return None
 
 
 def _terminal(update: dict[str, object], reason: str) -> dict[str, object]:
@@ -316,7 +431,10 @@ def _allows_next_action(
         return order_facts.get("order_status") in {"PAID", "COMPLETED"}
     if candidate == "issue_compensation_coupon" and task_type == "compensation_action":
         coupon_facts = _stored_facts(records, "query_coupon_issue_log")
-        return coupon_facts.get("coupon_failure_confirmed") is True
+        return (
+            coupon_facts.get("coupon_issue_status") == "FAILED"
+            and coupon_facts.get("coupon_failure_confirmed") is True
+        )
     return True
 
 
@@ -326,7 +444,7 @@ def advance_evidence(
     """Store one normalized outcome and choose the next controlled evidence step."""
     update = dict(state)
     if (
-        state.get("route_mode") == "general_fallback"
+        state.get("route_mode") != "controlled"
         or state.get("evidence_stop_reason") is not None
         or state.get("evidence_complete") is True
         or not outcomes
@@ -334,9 +452,15 @@ def advance_evidence(
         return update
 
     outcome = outcomes[0]
-    records = dict(state.get("evidence_collected", {}))
+    records = _sanitize_records(state.get("evidence_collected", {}))
+    update["evidence_collected"] = records
+    invalid_reason = _invalid_outcome_reason(state, outcome)
+    if invalid_reason is not None:
+        return _terminal(update, invalid_reason)
+
     status = outcome.status if outcome.status in VALID_STATUSES else "internal_error"
     facts = _bounded_facts(outcome.tool_name, outcome.facts)
+    status = _rebound_status(outcome.tool_name, status, facts)
     records[outcome.tool_name] = {
         "status": status,
         "attempts": _attempts(records.get(outcome.tool_name)) + 1,
@@ -359,9 +483,6 @@ def advance_evidence(
         return _terminal(update, status)
 
     required = list(state.get("route_required_tools", ()))
-    current_tool = state.get("route_next_tool")
-    if outcome.tool_name != current_tool or outcome.tool_name not in required:
-        return _terminal(update, "internal_error")
     current_index = required.index(outcome.tool_name)
     remaining = required[current_index + 1 :]
     if not remaining:

@@ -66,6 +66,26 @@ def test_query_payment_reads_status_from_payments_entries_only():
     assert "SECRET" not in repr(outcome)
 
 
+def test_query_payment_note_only_entry_is_not_found():
+    outcome = normalize_tool_outcome(
+        "query_payment",
+        '{"payments":[{"note":"该订单从未发起过支付"}]}',
+    )
+
+    assert outcome.status == "not_found"
+    assert outcome.facts == {"found": False, "payment_status": "UNKNOWN"}
+
+
+def test_query_payment_preserves_valid_status_after_note_entry():
+    outcome = normalize_tool_outcome(
+        "query_payment",
+        '{"payments":[{"note":"no payment"},{"pay_status":"SUCCESS"}]}',
+    )
+
+    assert outcome.status == "success"
+    assert outcome.facts == {"found": True, "payment_status": "SUCCESS"}
+
+
 def test_query_coupon_log_uses_nested_coupon_and_structured_outbox_status():
     outcome = normalize_tool_outcome(
         "query_coupon_issue_log",
@@ -134,7 +154,11 @@ def test_query_mq_dead_letter_normalizes_presence_without_records():
     ("tool_name", "raw_result", "expected_facts"),
     [
         ("knowledge_search", '{"found":false,"sources":["SECRET"]}', {"knowledge_found": False}),
-        ("coupon_policy_lookup", '{"policy":"SECRET"}', {"policy_available": True}),
+        (
+            "coupon_policy_lookup",
+            '{"coupon_template_id":"SECRET"}',
+            {"policy_available": True},
+        ),
         ("campaign_draft_generate", "draft created", {"campaign_draft_generated": True}),
     ],
 )
@@ -145,6 +169,47 @@ def test_non_sensitive_control_facts_are_normalized(tool_name, raw_result, expec
     assert outcome.status == expected_status
     assert outcome.facts == expected_facts
     assert "SECRET" not in repr(outcome)
+
+
+@pytest.mark.parametrize(
+    ("raw_result", "status", "available"),
+    [
+        ('{"count":0,"coupons":[]}', "not_found", False),
+        (
+            '{"count":1,"coupons":[{"coupon_template_id":"SECRET"}]}',
+            "success",
+            True,
+        ),
+        ('{"coupon_template_id":"SECRET"}', "success", True),
+    ],
+)
+def test_coupon_policy_lookup_normalizes_real_java_shapes(
+    raw_result, status, available
+):
+    outcome = normalize_tool_outcome("coupon_policy_lookup", raw_result)
+
+    assert outcome.status == status
+    assert outcome.facts == {"policy_available": available}
+    assert "SECRET" not in repr(outcome)
+
+
+@pytest.mark.parametrize(
+    "raw_result",
+    [
+        '{"count":1}',
+        '{"coupons":[]}',
+        '{"count":1,"coupons":[]}',
+        '{"count":0,"coupons":[{"coupon_template_id":"SECRET"}]}',
+        '{"count":"1","coupons":[{"coupon_template_id":"SECRET"}]}',
+        '{"count":1,"coupons":[{"coupon_name":"missing identity"}]}',
+        '{"coupon_name":"missing identity"}',
+    ],
+)
+def test_malformed_coupon_policy_wrappers_fail_closed(raw_result):
+    outcome = normalize_tool_outcome("coupon_policy_lookup", raw_result)
+
+    assert outcome.status == "internal_error"
+    assert outcome.facts == {}
 
 
 @pytest.mark.parametrize(
@@ -327,6 +392,42 @@ def test_compensation_unlocks_only_after_confirmed_coupon_failure():
     assert update["route_next_tool"] == "issue_compensation_coupon"
 
 
+def test_inconsistent_coupon_failure_pair_is_rebound_and_cannot_unlock_compensation():
+    records = {
+        "query_order": {
+            "status": "success",
+            "attempts": 1,
+            "facts": {"found": True, "order_status": "PAID"},
+        }
+    }
+    update = advance_evidence(
+        _state(
+            "compensation_action",
+            ["query_order", "query_coupon_issue_log", "issue_compensation_coupon"],
+            ["query_order", "query_coupon_issue_log", "issue_compensation_coupon"],
+            "query_coupon_issue_log",
+            records,
+        ),
+        [
+            ToolOutcome(
+                "query_coupon_issue_log",
+                "success",
+                {
+                    "found": True,
+                    "coupon_issue_status": "SENT",
+                    "coupon_failure_confirmed": True,
+                },
+            )
+        ],
+    )
+
+    assert update["route_next_tool"] is None
+    assert update["evidence_stop_reason"] == "business_rejected"
+    assert update["evidence_collected"]["query_coupon_issue_log"]["facts"][
+        "coupon_failure_confirmed"
+    ] is False
+
+
 def test_coupon_root_cause_queries_mq_only_for_failed_coupon_log():
     records = {
         "query_order": {
@@ -378,6 +479,28 @@ def test_campaign_chain_is_conditional_on_required_policy_lookup():
     assert update["route_next_tool"] == "campaign_draft_generate"
 
 
+def test_false_policy_success_is_rebound_to_not_found_and_stops_campaign():
+    update = advance_evidence(
+        _state(
+            "campaign_draft",
+            ["coupon_policy_lookup", "campaign_draft_generate"],
+            ["coupon_policy_lookup", "campaign_draft_generate"],
+            "coupon_policy_lookup",
+        ),
+        [
+            ToolOutcome(
+                "coupon_policy_lookup",
+                "success",
+                {"policy_available": False},
+            )
+        ],
+    )
+
+    assert update["route_next_tool"] is None
+    assert update["evidence_stop_reason"] == "not_found"
+    assert update["evidence_collected"]["coupon_policy_lookup"]["status"] == "not_found"
+
+
 @pytest.mark.parametrize("status", ["parameter_error", "timeout"])
 def test_parameter_and_timeout_each_retry_once(status):
     first = advance_evidence(
@@ -400,6 +523,34 @@ def test_parameter_and_timeout_each_retry_once(status):
     assert second["route_next_tool"] is None
     assert second["evidence_stop_reason"] == status
     assert second["evidence_collected"]["query_order"]["attempts"] == 2
+
+
+@pytest.mark.parametrize(
+    ("required", "authorized", "next_tool", "outcome_tool", "stop_reason"),
+    [
+        (
+            ["query_order", "query_payment"],
+            ["query_order", "query_payment"],
+            "query_order",
+            "query_payment",
+            "internal_error",
+        ),
+        ([], ["query_payment"], "query_payment", "query_payment", "internal_error"),
+        (["query_order"], [], "query_order", "query_order", "permission_denied"),
+        (["invented_tool"], ["invented_tool"], "invented_tool", "invented_tool", "internal_error"),
+    ],
+)
+def test_invalid_outcome_is_rejected_before_storage_or_retry(
+    required, authorized, next_tool, outcome_tool, stop_reason
+):
+    update = advance_evidence(
+        _state("order_query", required, authorized, next_tool),
+        [ToolOutcome(outcome_tool, "timeout", {})],
+    )
+
+    assert update["route_next_tool"] is None
+    assert update["evidence_stop_reason"] == stop_reason
+    assert update["evidence_collected"] == {}
 
 
 @pytest.mark.parametrize(
@@ -428,6 +579,21 @@ def test_general_fallback_does_not_apply_deterministic_progression():
     assert advance_evidence(state, [ToolOutcome("query_order", "success", {"found": True})]) == state
 
 
+def test_clarification_does_not_apply_deterministic_progression():
+    state = _state(
+        "order_query",
+        ["query_order"],
+        ["query_order"],
+        "query_order",
+        route_mode="clarification",
+    )
+
+    assert advance_evidence(
+        state,
+        [ToolOutcome("query_order", "success", {"found": True})],
+    ) == state
+
+
 def test_existing_budget_terminal_state_is_preserved():
     state = _state(
         "order_query",
@@ -450,3 +616,90 @@ def test_last_successful_evidence_step_completes_for_synthesis_only():
     assert update["evidence_complete"] is True
     assert update["evidence_stop_reason"] is None
     assert update["synthesis_only"] is True
+
+
+def test_preexisting_records_are_resanitized_before_transition():
+    records = {
+        "query_order": {
+            "status": "success",
+            "attempts": 1,
+            "facts": {
+                "found": True,
+                "order_status": "PAID",
+                "order_id": "SECRET-ID",
+                "amount": 9900,
+                "diagnosis": "SECRET-DIAGNOSIS",
+            },
+            "payload": "SECRET-PAYLOAD",
+            "raw_output": "SECRET-RAW",
+        },
+        "query_coupon_issue_log": {
+            "status": "success",
+            "attempts": 2,
+            "facts": {
+                "coupon_issue_status": "SENT",
+                "coupon_failure_confirmed": True,
+                "sources": ["SECRET-SOURCE"],
+            },
+            "unknown_record_key": "SECRET-RECORD",
+        },
+        "query_mq_dead_letter": {
+            "status": "success",
+            "attempts": -1,
+            "facts": {"mq_dead_letter_present": True},
+        },
+        "query_payment": {
+            "status": "forged",
+            "attempts": 4,
+            "facts": {"payment_status": "SUCCESS"},
+        },
+        "invented_tool": {
+            "status": "success",
+            "attempts": 1,
+            "facts": {"found": True},
+        },
+    }
+
+    update = advance_evidence(
+        _state(
+            "payment_diagnosis",
+            ["query_order", "query_payment"],
+            ["query_order", "query_payment"],
+            "query_payment",
+            records,
+        ),
+        [
+            ToolOutcome(
+                "query_payment",
+                "success",
+                {
+                    "found": True,
+                    "payment_status": "SUCCESS",
+                    "trade_no": "SECRET-TRADE",
+                },
+            )
+        ],
+    )
+
+    assert update["evidence_collected"] == {
+        "query_order": {
+            "status": "success",
+            "attempts": 1,
+            "facts": {"found": True, "order_status": "PAID"},
+        },
+        "query_coupon_issue_log": {
+            "status": "success",
+            "attempts": 2,
+            "facts": {
+                "coupon_issue_status": "SENT",
+                "coupon_failure_confirmed": False,
+            },
+        },
+        "query_payment": {
+            "status": "success",
+            "attempts": 1,
+            "facts": {"found": True, "payment_status": "SUCCESS"},
+        },
+    }
+    assert "SECRET" not in repr(update["evidence_collected"])
+    assert "9900" not in repr(update["evidence_collected"])
