@@ -154,9 +154,19 @@ def _clarification(user_role: str, task_type: str, score: int, field: str) -> Ro
 
 
 def _campaign_plan(text: str) -> tuple[str, ...]:
-    has_threshold = _contains_any(text, ("满", "门槛", "阈值", "threshold"))
-    has_validity = _contains_any(text, ("有效期", "天", "日期", "validity"))
-    has_purchase_limit = _contains_any(text, ("限购", "每人限", "purchase limit"))
+    has_threshold = bool(re.search(r"(?:满|门槛|阈值|threshold)\s*\d+", text))
+    has_validity = bool(
+        re.search(
+            r"(?:有效期|validity)\s*(?:为|至|到|:|：)?\s*(?:\d+\s*(?:天|日)|\d{4}[-/]\d{1,2}[-/]\d{1,2})",
+            text,
+        )
+    )
+    has_purchase_limit = bool(
+        re.search(
+            r"(?:每人(?:限购|最多)?|限购|purchase limit)\s*(?:为|:|：)?\s*\d+",
+            text,
+        )
+    )
     if has_threshold and has_validity and has_purchase_limit:
         return ("campaign_draft_generate",)
     return ("coupon_policy_lookup", "campaign_draft_generate")
@@ -169,6 +179,7 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
     has_one_order = len(order_ids) == 1
     has_order_reference = has_one_order or _contains_any(text, ("订单", "order"))
 
+    has_campaign_object = _contains_any(text, ("活动", "优惠券", "campaign", "coupon"))
     knowledge_terms = (
         "规则",
         "政策",
@@ -181,12 +192,18 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
         "怎么",
         "为何",
     )
-    has_knowledge = _contains_any(text, knowledge_terms)
     has_question = _contains_any(text, ("？", "?", "什么", "为什么", "如何", "怎么", "吗"))
+    has_knowledge = (
+        _contains_any(text, knowledge_terms) and "怎么样" not in text
+    ) or (
+        has_campaign_object
+        and has_question
+        and _contains_any(text, ("发布", "申请", "提前"))
+    )
     has_metric = _contains_any(
         text,
         ("订单量", "多少笔订单", "多少单", "gmv", "营业额", "销售额", "交易额", "卖了多少", "多少钱"),
-    )
+    ) or bool(re.search(r"核销.*(?:多少|几|张|笔|量)", text))
     has_aggregate = has_metric or _contains_any(text, ("数据", "统计", "总共", "汇总"))
     has_supported_date = _contains_any(text, ("今天", "昨日", "昨天", "today", "yesterday")) or bool(
         re.search(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{4}年\d{1,2}月\d{1,2}日", text)
@@ -202,11 +219,18 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
     )
     analytics_intent = has_aggregate or has_metric or has_unsupported_date
 
-    refund_words = ("退款", "退钱", "退回")
-    compensation_words = ("补券", "补发券", "补发优惠券", "赔付券", "补偿券")
-    is_policy_question = has_knowledge and not has_one_order
-    refund_intent = _contains_any(text, refund_words) and not is_policy_question
-    compensation_intent = _contains_any(text, compensation_words) and not is_policy_question
+    refund_intent = bool(
+        re.search(
+            r"(?:执行|发起|进行|办理|操作|申请|给|为|对|帮(?:我|忙)?).{0,24}(?:退款|退钱|退回)",
+            text,
+        )
+    )
+    compensation_intent = bool(
+        re.search(
+            r"(?:执行|发起|进行|办理|操作|申请|给|为|对|帮(?:我|忙)?).{0,24}(?:补券|补发券|补发优惠券|赔付券|补偿券)",
+            text,
+        )
+    )
 
     has_mq = _contains_any(text, ("mq", "消息队列", "死信", "dead letter", "消费失败", "消费者失败"))
     has_coupon_issue = _contains_any(
@@ -216,19 +240,18 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
     has_root_cause = _contains_any(text, ("根因", "根本原因", "查原因", "为什么"))
     has_explicit_payment_issue = _contains_any(
         text,
-        ("支付失败", "支付异常", "支付状态", "支付回调", "支付不一致"),
-    )
-    has_payment_issue = has_explicit_payment_issue or ("支付" in text and has_coupon_issue)
-    has_campaign_object = _contains_any(text, ("活动", "优惠券", "campaign", "coupon"))
+        ("支付失败", "支付异常", "支付状态", "支付情况", "支付回调", "支付不一致"),
+    ) or bool(re.search(r"支付(?:和|与).{0,12}异常", text))
+    has_payment_issue = has_explicit_payment_issue
     has_campaign_verb = _contains_any(text, ("创建", "新建", "生成", "草拟", "起草", "draft"))
     campaign_intent = has_campaign_object and has_campaign_verb
     configuration_intent = (
-        has_knowledge
+        _contains_any(text, ("配置", "设置", "设定"))
         and _contains_any(text, ("配置", "门槛", "限购", "阈值", "有效期"))
         and not campaign_intent
     )
     order_query_intent = has_order_reference and _contains_any(
-        text, ("查", "查询", "状态", "详情", "订单")
+        text, ("查", "查询", "状态", "详情", "情况", "订单")
     )
 
     if refund_intent:
@@ -267,13 +290,18 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
     scored_families: dict[str, int] = dict(diagnostic_scores)
     if analytics_intent:
         scored_families["analytics"] = analytics_score
-    if has_knowledge and not campaign_intent:
+    if (has_knowledge or configuration_intent) and not campaign_intent:
         scored_families["policy_configuration" if configuration_intent else "knowledge"] = (
             60 + (20 if has_question else 0) + (20 if not has_one_order else 0) + (30 if configuration_intent else 0)
         )
     if campaign_intent:
         scored_families["campaign_draft"] = 100
-    if order_query_intent and not diagnostic_scores and not analytics_intent:
+    if (
+        order_query_intent
+        and not diagnostic_scores
+        and not analytics_intent
+        and not has_knowledge
+    ):
         scored_families["order_query"] = 50 + (30 if has_order_reference else 0)
 
     unrelated_scores = sorted(scored_families.values(), reverse=True)

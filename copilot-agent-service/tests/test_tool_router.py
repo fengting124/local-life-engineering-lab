@@ -145,6 +145,75 @@ def test_complete_campaign_constraints_skip_policy_lookup():
     assert decision.next_tool == "campaign_draft_generate"
 
 
+@pytest.mark.parametrize(
+    ("role", "message", "task_type", "next_tool"),
+    [
+        ("merchant", "订单 202606100001 退款规则是什么？", "knowledge", "knowledge_search"),
+        ("cs", "订单 202606100001 的退款情况怎么样？", "order_query", "query_order"),
+        ("cs", "给订单 202606100001 执行退款", "refund_action", "query_order"),
+        ("merchant", "订单 202606100001 的补券规则是什么？", "knowledge", "knowledge_search"),
+        ("cs", "订单 202606100001 的补券情况怎么样？", "order_query", "query_order"),
+        ("cs", "给订单 202606100001 执行补券", "compensation_action", "query_order"),
+    ],
+)
+def test_high_risk_actions_require_explicit_execution_intent(
+    role, message, task_type, next_tool
+):
+    decision = classify_request(role, message)
+
+    assert decision.task_type == task_type
+    assert decision.next_tool == next_tool
+
+
+def test_campaign_labels_without_values_keep_policy_lookup():
+    decision = classify_request(
+        "merchant",
+        "创建优惠券活动，满减，有效期，每人限购",
+    )
+
+    assert decision.task_type == "campaign_draft"
+    assert decision.required_tools == (
+        "coupon_policy_lookup",
+        "campaign_draft_generate",
+    )
+
+
+def test_direct_coupon_configuration_is_policy_configuration():
+    decision = classify_request("merchant", "配置优惠券门槛和限购")
+
+    assert decision.task_type == "policy_configuration"
+    assert decision.next_tool == "knowledge_search"
+
+
+@pytest.mark.parametrize(
+    ("message", "task_type"),
+    [
+        ("订单 202606100001 支付了但没收到券", "coupon_issue"),
+        ("订单 202606100001 支付了但没收到券，查根因", "coupon_root_cause"),
+    ],
+)
+def test_coupon_delivery_diagnosis_ignores_payment_success_context(message, task_type):
+    decision = classify_request("admin", message)
+
+    assert decision.task_type == task_type
+    assert decision.next_tool == "query_order"
+
+
+@pytest.mark.parametrize(
+    ("role", "message", "task_type", "next_tool"),
+    [
+        ("admin", "帮我查一下 202606100001 的支付情况", "payment_diagnosis", "query_order"),
+        ("merchant", "昨天的优惠券核销了多少张？", "analytics", "shop_metrics_query"),
+        ("merchant", "发布活动需要提前几天申请？", "knowledge", "knowledge_search"),
+    ],
+)
+def test_supported_query_equivalence_classes(role, message, task_type, next_tool):
+    decision = classify_request(role, message)
+
+    assert decision.task_type == task_type
+    assert decision.next_tool == next_tool
+
+
 def test_conversation_context_is_accepted_but_does_not_classify_request():
     router = ToolRouter(
         "cs",
