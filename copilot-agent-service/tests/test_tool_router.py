@@ -10,6 +10,7 @@ ToolRouter 和 is_tool_concurrency_safe 均为纯逻辑（无 I/O），直接实
   - 并发安全分级：fail-closed 原则（未知工具默认不安全）
 """
 import pytest
+from agent import tool_router
 from agent.tool_router import ToolRouter, is_tool_concurrency_safe, TOOL_ROLE_MAP
 
 
@@ -59,6 +60,27 @@ class TestConcurrencySafe:
 # =========================================================
 
 class TestRbacFilter:
+    @pytest.mark.parametrize(
+        ("tool_name", "role", "expected"),
+        [
+            ("knowledge_search", "merchant", True),
+            ("knowledge_search", "admin", True),
+            ("knowledge_search", "cs", False),
+            ("brand_new_unknown_tool", "admin", False),
+        ],
+    )
+    def test_shared_role_check_is_fail_closed(self, tool_name, role, expected):
+        assert tool_router.is_tool_allowed_for_role(tool_name, role) is expected
+
+    def test_router_and_execution_check_share_the_same_role_map(self, monkeypatch):
+        monkeypatch.setitem(TOOL_ROLE_MAP, "knowledge_search", ["cs"])
+        router = ToolRouter(user_role="cs", user_message="平台规则是什么")
+
+        result = router.route(_tools("knowledge_search"))
+
+        assert [item["name"] for item in result] == ["knowledge_search"]
+        assert tool_router.is_tool_allowed_for_role("knowledge_search", "cs") is True
+
     def test_merchant_can_see_query_order(self):
         router = ToolRouter(user_role="merchant")
         result = router.route(_tools("query_order"))

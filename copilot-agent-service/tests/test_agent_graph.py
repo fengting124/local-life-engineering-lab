@@ -82,6 +82,16 @@ class TestRouteAfterLlm:
 
 
 class TestRouteAfterTool:
+    def test_permission_denied_goes_final(self):
+        assert route_after_tool(
+            base_state(policy_denied_tool="knowledge_search")
+        ) == "final_node"
+
+    def test_tool_budget_exhausted_goes_final(self):
+        assert route_after_tool(
+            base_state(tool_budget_exhausted=True)
+        ) == "final_node"
+
     def test_pending_hitl_goes_hitl(self):
         assert route_after_tool(base_state(pending_hitl=True)) == "hitl_node"
 
