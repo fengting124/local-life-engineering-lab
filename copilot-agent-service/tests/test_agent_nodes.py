@@ -43,7 +43,9 @@ def make_state(messages, **over) -> dict:
         route_authorized_tools=[],
         route_next_tool=None,
         route_missing_fields=[],
+        required_evidence=[],
         evidence_collected={},
+        evidence_complete=False,
         evidence_stop_reason=None,
         synthesis_only=False,
     )
@@ -59,6 +61,25 @@ def ai_with_tool_calls(calls):
     return AIMessage(
         content="",
         tool_calls=[{**call, "type": "tool_call"} for call in calls],
+    )
+
+
+def controlled_state(messages, task, required, authorized, next_tool, **over):
+    return make_state(
+        messages,
+        route_task_type=task,
+        route_mode="controlled",
+        route_confidence=100,
+        route_required_tools=required,
+        route_authorized_tools=authorized,
+        route_next_tool=next_tool,
+        route_missing_fields=[],
+        required_evidence=required,
+        evidence_collected={},
+        evidence_complete=False,
+        evidence_stop_reason=None,
+        synthesis_only=False,
+        **over,
     )
 
 
@@ -100,6 +121,97 @@ class TestHitlNode:
 
 class TestToolNode:
     @pytest.mark.asyncio
+    async def test_tool_success_advances_payment_route(self, monkeypatch):
+        mock_mcp = MagicMock()
+        mock_mcp.call_tool = AsyncMock(return_value=json.dumps({
+            "order_status": "WAIT_PAY",
+            "payment": {"pay_status": "SUCCESS"},
+            "coupon": {"coupon_status": None},
+        }))
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        state = controlled_state(
+            [ai_with_tool_call(
+                "query_order", {"order_id": "202606100001"}
+            )],
+            "payment_diagnosis",
+            ["query_order", "query_payment"],
+            ["query_order", "query_payment"],
+            "query_order",
+            user_role="admin",
+        )
+
+        result = await nodes.tool_node(state)
+
+        assert result["route_next_tool"] == "query_payment"
+        assert result["evidence_collected"]["query_order"]["facts"] == {
+            "found": True,
+            "order_status": "WAIT_PAY",
+            "payment_status": "SUCCESS",
+            "coupon_usage_status": "NONE",
+        }
+
+    @pytest.mark.asyncio
+    async def test_not_found_is_valid_terminal_evidence(self, monkeypatch):
+        mock_mcp = MagicMock()
+        mock_mcp.call_tool = AsyncMock(
+            side_effect=McpToolError("not_found", "订单不存在")
+        )
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        state = controlled_state(
+            [ai_with_tool_call(
+                "query_order", {"order_id": "202606100001"}
+            )],
+            "order_query",
+            ["query_order"],
+            ["query_order"],
+            "query_order",
+        )
+
+        result = await nodes.tool_node(state)
+
+        assert result["last_tool_failed"] is False
+        assert result["evidence_stop_reason"] == "not_found"
+        assert route_after_tool({**state, **result}) == "final_node"
+
+    @pytest.mark.asyncio
+    async def test_refund_handoff_reaches_hitl_only_after_evidence(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.call_tool = AsyncMock(return_value=json.dumps({
+            "order_status": "PAID",
+            "payment": {"pay_status": "SUCCESS"},
+            "coupon": {"coupon_status": None},
+        }))
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        state = controlled_state(
+            [ai_with_tool_call(
+                "query_order", {"order_id": "202606100001"}
+            )],
+            "refund_action",
+            ["query_order", "execute_refund"],
+            ["query_order", "execute_refund"],
+            "query_order",
+            user_role="cs",
+        )
+
+        first = await nodes.tool_node(state)
+
+        assert first["route_next_tool"] == "execute_refund"
+        refund_args = {
+            "order_id": "202606100001",
+            "amount": 100,
+            "reason": "订单异常",
+        }
+        proposed = state | first | {
+            "messages": [ai_with_tool_call("execute_refund", refund_args)],
+        }
+        second = await nodes.tool_node(proposed)
+
+        assert second["pending_hitl"] is True
+        mock_mcp.call_tool.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_cs_native_tool_call_is_denied_before_rag_or_mcp(self, monkeypatch):
         from rag import knowledge_tool
 
@@ -118,6 +230,8 @@ class TestToolNode:
 
         assert result["policy_denied_tool"] == "knowledge_search"
         assert result["stop_reason"] == "permission_denied"
+        assert result["route_next_tool"] is None
+        assert result["evidence_stop_reason"] == "permission_denied"
         assert route_after_tool({**state, **result}) == "final_node"
         assert json.loads(result["messages"][0].content) == {
             "error": "permission_denied",
@@ -231,7 +345,12 @@ class TestToolNode:
     @pytest.mark.asyncio
     async def test_success_returns_tool_message(self, monkeypatch, capsys):
         mock_mcp = MagicMock()
-        mock_mcp.call_tool = AsyncMock(return_value="订单状态：已支付")
+        raw_result = json.dumps({
+            "order_status": "PAID",
+            "payment": {"pay_status": "SUCCESS"},
+            "coupon": {"coupon_status": None},
+        })
+        mock_mcp.call_tool = AsyncMock(return_value=raw_result)
         monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
 
         state = make_state(
@@ -248,12 +367,12 @@ class TestToolNode:
         assert len(result["messages"]) == 1
         tm = result["messages"][0]
         assert isinstance(tm, ToolMessage)
-        assert tm.content == "订单状态：已支付"
+        assert tm.content == raw_result
         mock_mcp.call_tool.assert_awaited_once()
         assert "ORDER_SECRET_123" not in capsys.readouterr().out
 
     @pytest.mark.asyncio
-    async def test_mcp_tool_error_marks_failed(self, monkeypatch):
+    async def test_mcp_not_found_is_not_a_technical_failure(self, monkeypatch):
         mock_mcp = MagicMock()
         mock_mcp.call_tool = AsyncMock(side_effect=McpToolError("not_found", "订单不存在", "确认订单号"))
         monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
@@ -261,7 +380,7 @@ class TestToolNode:
         state = make_state([ai_with_tool_call("query_order", {"order_no": "X1"})])
         result = await nodes.tool_node(state)
 
-        assert result["last_tool_failed"] is True
+        assert result["last_tool_failed"] is False
         assert result["last_tool_error"] is not None
         # 工具错误被包成给 LLM 看的 ToolMessage，带 [工具错误] 前缀 + 结构化 reason
         content = str(result["messages"][0].content)
@@ -297,6 +416,8 @@ class TestToolNode:
         }
         assert result["tool_budget_exhausted"] is True
         assert result["tool_budget_reason"] == "identical_call_limit"
+        assert result["route_next_tool"] is None
+        assert result["evidence_stop_reason"] == "tool_budget_exhausted"
         mock_mcp.call_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -451,6 +572,25 @@ class TestFinalNode:
 
         assert result["stop_reason"] == reason
         assert answer_fragment in result["final_answer"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("reason", "answer"),
+        [
+            ("not_found", "未找到与请求匹配的业务记录，未继续调用下游工具。"),
+            ("parameter_error", "工具参数仍不符合要求，请核对必要信息后重试。"),
+            ("timeout", "依赖工具连续超时，本次任务已停止，请稍后重试。"),
+            ("business_rejected", "当前业务状态不满足继续处理的前置条件。"),
+            ("internal_error", "依赖工具返回异常，本次任务未生成未经证实的结论。"),
+        ],
+    )
+    async def test_evidence_stop_reason_survives_finalization(self, reason, answer):
+        result = await nodes.final_node(
+            make_state([], evidence_stop_reason=reason, final_answer=None)
+        )
+
+        assert result["stop_reason"] == reason
+        assert result["final_answer"] == answer
 
 
 # =========================================================

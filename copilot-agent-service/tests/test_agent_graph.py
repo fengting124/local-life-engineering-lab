@@ -95,6 +95,23 @@ class TestRouteAfterTool:
     def test_pending_hitl_goes_hitl(self):
         assert route_after_tool(base_state(pending_hitl=True)) == "hitl_node"
 
+    def test_terminal_evidence_goes_final(self):
+        assert route_after_tool(
+            base_state(evidence_stop_reason="not_found")
+        ) == "final_node"
+
+    def test_complete_evidence_goes_to_synthesis_llm(self):
+        assert route_after_tool(
+            base_state(evidence_complete=True, synthesis_only=True)
+        ) == "llm_node"
+
+    def test_pending_hitl_beats_evidence_completion(self):
+        assert route_after_tool(base_state(
+            pending_hitl=True,
+            evidence_complete=True,
+            synthesis_only=True,
+        )) == "hitl_node"
+
     def test_default_goes_llm(self):
         assert route_after_tool(base_state()) == "llm_node"
 

@@ -30,8 +30,14 @@ class ScriptedLLM:
     def __init__(self, responses):
         self._responses = responses
         self._i = 0
+        self.bindings = []
 
     def bind_tools(self, tools, tool_choice=None):
+        names = tuple(
+            tool["name"] if isinstance(tool, dict) else tool.name
+            for tool in tools
+        )
+        self.bindings.append((names, tool_choice))
         self.bound_tools = tools
         self.tool_choice = tool_choice
         return self
@@ -108,6 +114,11 @@ async def test_full_react_loop_llm_tool_llm_final(monkeypatch):
     # 3) 最终答案正确收口
     assert final_state["final_answer"] == "今天 GMV 500 元，共 10 单。"
     assert final_state["stop_reason"] == "completed"
+    assert scripted.bindings == [
+        (("shop_metrics_query",), "shop_metrics_query"),
+    ]
+    assert final_state["evidence_complete"] is True
+    assert final_state["route_next_tool"] is None
     # 4) 走了至少 2 步（llm → tool → llm）
     assert final_state["step_count"] >= 2
     # 5) 消息历史里出现过工具观测（ToolMessage）

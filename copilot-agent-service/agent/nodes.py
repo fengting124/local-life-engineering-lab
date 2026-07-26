@@ -16,6 +16,11 @@ import structlog
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage, RemoveMessage
 from langchain_core.language_models import BaseChatModel
 
+from agent.evidence_gate import (
+    ToolOutcome,
+    advance_evidence,
+    normalize_tool_outcome,
+)
 from agent.state import AgentState
 from agent.trace import genai_span
 from mcp.mcp_client import McpClient, McpToolError
@@ -489,6 +494,8 @@ async def tool_node(state: AgentState) -> dict:
             "last_tool_failed": True,
             "policy_denied_tool": denied_tool,
             "stop_reason": "permission_denied",
+            "route_next_tool": None,
+            "evidence_stop_reason": "permission_denied",
         }
 
     budget = evaluate_tool_batch(
@@ -536,6 +543,8 @@ async def tool_node(state: AgentState) -> dict:
             "tool_budget_exhausted": True,
             "tool_budget_reason": budget.reason,
             "stop_reason": "tool_budget_exhausted",
+            "route_next_tool": None,
+            "evidence_stop_reason": "tool_budget_exhausted",
         }
 
     pending_action = state.get("pending_action") or {}
@@ -571,8 +580,10 @@ async def tool_node(state: AgentState) -> dict:
         merchant_id=state.get("merchant_id"),
     )
 
-    async def _execute_single_tool(tool_call: dict) -> ToolMessage:
-        """执行单个工具调用，返回 ToolMessage（无论成功或失败）。"""
+    async def _execute_single_tool(
+        tool_call: dict,
+    ) -> tuple[ToolMessage, ToolOutcome]:
+        """执行单个工具调用，返回配对的消息与规范化结果。"""
         tool_name = tool_call["name"]
         tool_args = tool_call.get("args", {})
         call_id   = tool_call.get("id", "")
@@ -607,23 +618,42 @@ async def tool_node(state: AgentState) -> dict:
                     )
             record_tool_call(tool_name, "success", _time.time() - start)
             log.info("tool_success", tool=tool_name, elapsed_ms=int((_time.time()-start)*1000))
-            return ToolMessage(content=result, tool_call_id=call_id, name=tool_name)
+            outcome = normalize_tool_outcome(tool_name, raw_result=result)
+            return (
+                ToolMessage(
+                    content=result,
+                    tool_call_id=call_id,
+                    name=tool_name,
+                ),
+                outcome,
+            )
 
         except McpToolError as e:
             record_tool_call(tool_name, e.reason, _time.time() - start)
             log.warning("tool_failed", tool=tool_name, reason=e.reason, detail=e.detail)
-            return ToolMessage(
-                content=f"[工具错误] {json.dumps(e.to_dict(), ensure_ascii=False)}",
-                tool_call_id=call_id,
-                name=tool_name,
+            outcome = normalize_tool_outcome(tool_name, error_reason=e.reason)
+            return (
+                ToolMessage(
+                    content=f"[工具错误] {json.dumps(e.to_dict(), ensure_ascii=False)}",
+                    tool_call_id=call_id,
+                    name=tool_name,
+                ),
+                outcome,
             )
         except Exception as e:
             record_tool_call(tool_name, "internal_error", _time.time() - start)
             log.error("tool_exception", tool=tool_name, error=str(e))
-            return ToolMessage(
-                content=f"[工具异常] {tool_name} 执行时发生内部错误: {str(e)[:200]}",
-                tool_call_id=call_id,
-                name=tool_name,
+            outcome = normalize_tool_outcome(
+                tool_name,
+                error_reason="internal_error",
+            )
+            return (
+                ToolMessage(
+                    content=f"[工具异常] {tool_name} 执行时发生内部错误: {str(e)[:200]}",
+                    tool_call_id=call_id,
+                    name=tool_name,
+                ),
+                outcome,
             )
 
     # ---- 按并发安全性分批执行 ----
@@ -652,7 +682,7 @@ async def tool_node(state: AgentState) -> dict:
             results[idx] = r
 
     tool_messages = []
-    any_failed = False
+    tool_outcomes = []
     last_error = None
 
     for i, result in enumerate(results):
@@ -660,22 +690,21 @@ async def tool_node(state: AgentState) -> dict:
             # gather 捕获的未预期异常（不应该发生，_execute_single_tool 已处理所有异常）
             call_id = tool_calls[i].get("id", "")
             tool_name = tool_calls[i]["name"]
-            tool_messages.append(ToolMessage(
+            tool_message = ToolMessage(
                 content=f"[系统异常] {str(result)[:200]}",
                 tool_call_id=call_id,
                 name=tool_name,
-            ))
-            any_failed = True
-            last_error = str(result)
+            )
+            outcome = normalize_tool_outcome(
+                tool_name,
+                error_reason="internal_error",
+            )
         else:
-            tm: ToolMessage = result
-            tool_messages.append(tm)
-            # 检查是否是错误消息
-            content_str = str(tm.content or "")
-            if content_str.startswith("[工具错误]") or content_str.startswith("[工具异常]") \
-                    or content_str.startswith("[系统异常]"):
-                any_failed = True
-                last_error = content_str[:200]
+            tool_message, outcome = result
+        tool_messages.append(tool_message)
+        tool_outcomes.append(outcome)
+        if outcome.status != "success":
+            last_error = str(tool_message.content or "")[:200]
 
     # ---- 持久化所有工具消息 ----
     try:
@@ -700,10 +729,26 @@ async def tool_node(state: AgentState) -> dict:
     except Exception as e:
         log.warning("save_tool_message_failed", error=str(e))
 
+    evidence_update = advance_evidence(
+        {**state, **budget_state},
+        tool_outcomes,
+    )
+    evidence_update.pop("messages", None)
+    technical_failure_statuses = {
+        "parameter_error",
+        "permission_denied",
+        "timeout",
+        "business_rejected",
+        "internal_error",
+    }
     return {
         **budget_state,
+        **evidence_update,
         "messages": tool_messages,
-        "last_tool_failed": any_failed,
+        "last_tool_failed": any(
+            outcome.status in technical_failure_statuses
+            for outcome in tool_outcomes
+        ),
         "last_tool_error": last_error,
     }
 
@@ -1018,7 +1063,10 @@ async def final_node(state: AgentState) -> dict:
     final_answer = state.get("final_answer")
 
     # 策略终止优先于通用上限，避免被误记为正常完成。
-    requested_stop = state.get("stop_reason")
+    requested_stop = (
+        state.get("evidence_stop_reason")
+        or state.get("stop_reason")
+    )
     if requested_stop == "permission_denied" or state.get("policy_denied_tool"):
         stop_reason = "permission_denied"
         final_answer = final_answer or "当前角色没有权限执行该工具，任务已安全终止。"
@@ -1028,6 +1076,21 @@ async def final_node(state: AgentState) -> dict:
     elif requested_stop == "tool_loop_detected":
         stop_reason = "tool_loop_detected"
         final_answer = final_answer or "检测到重复工具调用，已停止继续执行。"
+    elif requested_stop in {
+        "not_found",
+        "parameter_error",
+        "timeout",
+        "business_rejected",
+        "internal_error",
+    }:
+        stop_reason = requested_stop
+        final_answer = final_answer or {
+            "not_found": "未找到与请求匹配的业务记录，未继续调用下游工具。",
+            "parameter_error": "工具参数仍不符合要求，请核对必要信息后重试。",
+            "timeout": "依赖工具连续超时，本次任务已停止，请稍后重试。",
+            "business_rejected": "当前业务状态不满足继续处理的前置条件。",
+            "internal_error": "依赖工具返回异常，本次任务未生成未经证实的结论。",
+        }[requested_stop]
     elif step_count >= settings.agent_max_steps:
         stop_reason = "max_steps"
         if not final_answer:
