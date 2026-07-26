@@ -177,6 +177,29 @@ def _build_system_prompt(tools: list[dict], conversation_summary: str | None = N
 # 节点实现
 # =========================================================
 
+def _direct_route_answer(state: AgentState) -> str | None:
+    if state.get("route_mode") == "clarification":
+        labels = {
+            "order_id": "具体订单号",
+            "metric": "需要查询的经营指标",
+            "date": "一个具体日期",
+            "supported_date": "今天、昨天或一个具体日期",
+            "target": "一个具体业务目标",
+        }
+        fields = [
+            labels.get(field, field)
+            for field in state.get("route_missing_fields", [])
+        ]
+        requested = "、".join(fields) or "更具体的业务信息"
+        return f"请补充{requested}，我再继续处理。"
+    if (
+        state.get("evidence_stop_reason") == "permission_denied"
+        and not state.get("evidence_collected")
+    ):
+        return "当前角色无法获取完成该任务所需的证据，请升级给有权限的管理员处理。"
+    return None
+
+
 async def llm_node(state: AgentState) -> dict:
     """
     LLM 节点：调用 Claude 决定下一步动作。
@@ -184,79 +207,100 @@ async def llm_node(state: AgentState) -> dict:
     输入：完整消息历史 + 系统提示
     输出：新的 assistant 消息（含 tool_calls 或 Final Answer）
     """
-    # 构建 MCP Client 获取工具列表
-    mcp = McpClient(
-        user_id=state["user_id"],
-        user_role=state["user_role"],
-        merchant_id=state.get("merchant_id"),
-    )
+    direct_answer = _direct_route_answer(state)
+    response = AIMessage(content=direct_answer) if direct_answer is not None else None
+    if response is None:
+        tools = []
+        llm_with_tools = _llm
 
-    try:
-        all_tools = await mcp.list_tools()
-    except Exception as e:
-        log.error("mcp_list_tools_failed", error=str(e))
-        all_tools = []  # 工具获取失败时降级为纯 LLM 回答
+        if not state.get("synthesis_only"):
+            # 原生工具和 MCP 工具共用一条路由，确保 Prompt 与 bind_tools 权限一致。
+            from agent.tool_router import ToolRouter
+            from rag import knowledge_tool
 
-    # ---- Tool Router：按角色和任务类型过滤完整工具集合 ----
-    # 原生工具和 MCP 工具共用一条路由，确保 Prompt 与 bind_tools 权限一致。
-    from agent.tool_router import ToolRouter
-    from rag import knowledge_tool
-    messages = state.get("messages", [])
-    last_user_msg = ""
-    for msg in reversed(messages):
-        if hasattr(msg, "type") and msg.type == "human":
-            last_user_msg = msg.content if isinstance(msg.content, str) else ""
-            break
-    # 将历史消息文本拼接作为上下文（供 context_filter 使用）
-    context_text = " ".join([
-        m.content for m in messages[-10:]  # 只取最近 10 条
-        if isinstance(getattr(m, "content", ""), str)
-    ])
-    router = ToolRouter(
-        user_role=state.get("user_role", "merchant"),
-        user_message=last_user_msg,
-        conversation_context=context_text,
-    )
-    complete_tool_specs = [*all_tools, knowledge_tool.get_knowledge_search_tool_spec()]
-    tools = router.route(complete_tool_specs)
-
-    native_selected = any(t["name"] == "knowledge_search" for t in tools)
-    mcp_tools = [t for t in tools if t["name"] != "knowledge_search"]
-    lc_tools = _convert_to_lc_tools(mcp_tools)
-    if native_selected:
-        lc_tools.append(
-            knowledge_tool.make_knowledge_search_tool(
-                merchant_id=state.get("merchant_id")
+            mcp = McpClient(
+                user_id=state["user_id"],
+                user_role=state["user_role"],
+                merchant_id=state.get("merchant_id"),
             )
-        )
+            try:
+                all_tools = await mcp.list_tools()
+                mcp_available = True
+            except Exception as e:
+                log.error("mcp_list_tools_failed", error=str(e))
+                all_tools = []
+                mcp_available = False
 
-    # 绑定工具到 LLM
-    llm_with_tools = _llm.bind_tools(lc_tools) if lc_tools else _llm
+            next_tool = state.get("route_next_tool")
+            if (
+                not mcp_available
+                and state.get("route_mode") == "controlled"
+                and next_tool
+                and next_tool != "knowledge_search"
+            ):
+                response = AIMessage(
+                    content="抱歉，发生内部错误，完成该请求所需的工具暂时不可用，请稍后重试。"
+                )
+            else:
+                router = ToolRouter.from_state(state)
+                complete_tool_specs = [
+                    *all_tools,
+                    knowledge_tool.get_knowledge_search_tool_spec(),
+                ]
+                tools = router.route(complete_tool_specs)
 
-    # 构建消息列表（System + 历史消息）
-    # ---- Prompt Caching（Claude 专属优化，节省 80-90% input token 成本）----
-    # cache_control={"type":"ephemeral"} 告知 Claude 将此消息缓存 5 分钟。
-    # 系统提示（角色定义 + 工具说明）是每轮对话都重复的稳定内容，适合缓存。
-    # 注意：只缓存稳定内容；用户消息和工具结果不缓存（每次都不同）。
-    # 面试说法：「通过 Prompt Caching 将稳定的 System Prompt 缓存，
-    #   多轮对话中 input tokens 减少约 80%，成本从 ~$0.006/次降至 ~$0.001/次」
-    system_msg = SystemMessage(
-        content=_build_system_prompt(tools, conversation_summary=state.get("conversation_summary")),
-        additional_kwargs={"cache_control": {"type": "ephemeral"}},
-    )
-    messages = [system_msg] + state["messages"]
+                native_selected = any(
+                    tool["name"] == "knowledge_search" for tool in tools
+                )
+                mcp_tools = [
+                    tool for tool in tools if tool["name"] != "knowledge_search"
+                ]
+                lc_tools = _convert_to_lc_tools(mcp_tools)
+                if native_selected:
+                    lc_tools.append(
+                        knowledge_tool.make_knowledge_search_tool(
+                            merchant_id=state.get("merchant_id")
+                        )
+                    )
 
-    # 调用 LLM
-    async with genai_span(
-        "llm.invoke",
-        "llm",
-        provider=settings.llm_provider,
-        model=settings.llm_model or "provider-default",
-        step=state["step_count"],
-        session_id=state.get("session_id"),
-        thread_id=state.get("thread_id"),
-    ):
-        response = await llm_with_tools.ainvoke(messages)
+                tool_choice = (
+                    next_tool
+                    if state.get("route_mode") == "controlled" and tools
+                    else None
+                )
+                if lc_tools:
+                    llm_with_tools = _llm.bind_tools(
+                        lc_tools,
+                        **({"tool_choice": tool_choice} if tool_choice else {}),
+                    )
+
+        if response is None:
+            # 构建消息列表（System + 历史消息）
+            # ---- Prompt Caching（Claude 专属优化，节省 80-90% input token 成本）----
+            # cache_control={"type":"ephemeral"} 告知 Claude 将此消息缓存 5 分钟。
+            # 系统提示（角色定义 + 工具说明）是每轮对话都重复的稳定内容，适合缓存。
+            # 注意：只缓存稳定内容；用户消息和工具结果不缓存（每次都不同）。
+            # 面试说法：「通过 Prompt Caching 将稳定的 System Prompt 缓存，
+            #   多轮对话中 input tokens 减少约 80%，成本从 ~$0.006/次降至 ~$0.001/次」
+            system_msg = SystemMessage(
+                content=_build_system_prompt(
+                    tools,
+                    conversation_summary=state.get("conversation_summary"),
+                ),
+                additional_kwargs={"cache_control": {"type": "ephemeral"}},
+            )
+            messages = [system_msg] + state["messages"]
+
+            async with genai_span(
+                "llm.invoke",
+                "llm",
+                provider=settings.llm_provider,
+                model=settings.llm_model or "provider-default",
+                step=state["step_count"],
+                session_id=state.get("session_id"),
+                thread_id=state.get("thread_id"),
+            ):
+                response = await llm_with_tools.ainvoke(messages)
 
     log.info(
         "llm_response",

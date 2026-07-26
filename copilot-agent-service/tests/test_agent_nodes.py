@@ -36,6 +36,16 @@ def make_state(messages, **over) -> dict:
         tool_budget_exhausted=False,
         tool_budget_reason=None,
         policy_denied_tool=None,
+        route_task_type="unknown",
+        route_mode="general_fallback",
+        route_confidence=0,
+        route_required_tools=[],
+        route_authorized_tools=[],
+        route_next_tool=None,
+        route_missing_fields=[],
+        evidence_collected={},
+        evidence_stop_reason=None,
+        synthesis_only=False,
     )
     s.update(over)
     return s
@@ -452,10 +462,12 @@ class FakeLLM:
     def __init__(self, response):
         self._response = response
         self.bound_tools = []
+        self.tool_choice = None
         self.seen_messages = []
 
-    def bind_tools(self, tools):
+    def bind_tools(self, tools, tool_choice=None):
         self.bound_tools = tools
+        self.tool_choice = tool_choice
         return self
 
     async def ainvoke(self, messages):
@@ -464,6 +476,220 @@ class FakeLLM:
 
 
 class TestLlmNode:
+    def test_chat_openai_binding_keeps_named_choice(self, monkeypatch):
+        import langchain_openai
+
+        class FakeChatOpenAI:
+            def __init__(self, **kwargs):
+                self.init_kwargs = kwargs
+                self.bound_tools = []
+                self.tool_choice = None
+
+            def bind_tools(self, tools, tool_choice=None):
+                self.bound_tools = tools
+                self.tool_choice = tool_choice
+                return self
+
+        monkeypatch.setattr(langchain_openai, "ChatOpenAI", FakeChatOpenAI)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
+        llm = nodes._create_llm()
+
+        assert llm.bind_tools([], tool_choice="query_order") is llm
+        assert llm.tool_choice == "query_order"
+
+    @pytest.mark.asyncio
+    async def test_controlled_route_binds_one_named_tool(self, monkeypatch):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[
+            {"name": "query_order", "description": "查订单"},
+            {"name": "query_payment", "description": "查支付"},
+        ])
+        fake_llm = FakeLLM(ai_with_tool_call(
+            "query_order", {"order_id": "202606100001"}
+        ))
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="查订单 202606100001")],
+            route_task_type="order_query",
+            route_mode="controlled",
+            route_required_tools=["query_order"],
+            route_authorized_tools=["query_order"],
+            route_next_tool="query_order",
+            route_missing_fields=[],
+        ))
+
+        names = {
+            tool["name"] if isinstance(tool, dict) else tool.name
+            for tool in fake_llm.bound_tools
+        }
+        assert names == {"query_order"}
+        assert fake_llm.tool_choice == "query_order"
+        assert result["final_answer"] is None
+
+    @pytest.mark.asyncio
+    async def test_later_controlled_turn_keeps_retained_payment_tool(self, monkeypatch):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[
+            {"name": "query_order", "description": "查订单"},
+            {"name": "query_payment", "description": "查支付"},
+        ])
+        fake_llm = FakeLLM(ai_with_tool_call(
+            "query_payment", {"order_id": "202606100001"}
+        ))
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+
+        result = await nodes.llm_node(make_state(
+            [
+                HumanMessage(content="查询订单 202606100001 的支付状态"),
+                ai_with_tool_call("query_order", {"order_id": "202606100001"}),
+                ToolMessage(
+                    content='{"order_status":"PAID"}',
+                    tool_call_id="c1",
+                    name="query_order",
+                ),
+            ],
+            user_role="admin",
+            route_task_type="payment_diagnosis",
+            route_mode="controlled",
+            route_required_tools=["query_order", "query_payment"],
+            route_authorized_tools=["query_order", "query_payment"],
+            route_next_tool="query_payment",
+        ))
+
+        names = {
+            tool["name"] if isinstance(tool, dict) else tool.name
+            for tool in fake_llm.bound_tools
+        }
+        assert names == {"query_payment"}
+        assert fake_llm.tool_choice == "query_payment"
+        assert result["messages"][0].tool_calls[0]["name"] == "query_payment"
+
+    @pytest.mark.asyncio
+    async def test_synthesis_only_binds_no_tools(self, monkeypatch):
+        from rag import knowledge_tool
+
+        mcp_factory = MagicMock()
+        fake_llm = FakeLLM(AIMessage(content="订单已支付。"))
+        native_factory = MagicMock()
+        monkeypatch.setattr(nodes, "McpClient", mcp_factory)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(knowledge_tool, "make_knowledge_search_tool", native_factory)
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="查订单"), ToolMessage(
+                content='{"order_status":"PAID"}',
+                tool_call_id="c1",
+                name="query_order",
+            )],
+            synthesis_only=True,
+            evidence_complete=True,
+            route_next_tool=None,
+        ))
+
+        assert fake_llm.bound_tools == []
+        assert result["final_answer"] == "订单已支付。"
+        mcp_factory.assert_not_called()
+        native_factory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_clarification_skips_mcp_rag_and_llm(self, monkeypatch):
+        from rag import knowledge_tool
+
+        mcp_factory = MagicMock()
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        native_factory = MagicMock()
+        monkeypatch.setattr(nodes, "McpClient", mcp_factory)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(knowledge_tool, "make_knowledge_search_tool", native_factory)
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="帮我查一下")],
+            route_mode="clarification",
+            route_missing_fields=["order_id"],
+            route_next_tool=None,
+        ))
+
+        assert "具体订单号" in result["final_answer"]
+        mcp_factory.assert_not_called()
+        native_factory.assert_not_called()
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_initial_permission_denial_skips_mcp_rag_and_llm(self, monkeypatch):
+        from rag import knowledge_tool
+
+        mcp_factory = MagicMock()
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        native_factory = MagicMock()
+        monkeypatch.setattr(nodes, "McpClient", mcp_factory)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(knowledge_tool, "make_knowledge_search_tool", native_factory)
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="查询支付状态")],
+            evidence_stop_reason="permission_denied",
+            evidence_collected={},
+        ))
+
+        assert "当前角色无法获取" in result["final_answer"]
+        mcp_factory.assert_not_called()
+        native_factory.assert_not_called()
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_controlled_mcp_list_failure_returns_internal_error(self, monkeypatch):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(side_effect=Exception("MCP down"))
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="查订单 202606100001")],
+            route_task_type="order_query",
+            route_mode="controlled",
+            route_required_tools=["query_order"],
+            route_authorized_tools=["query_order"],
+            route_next_tool="query_order",
+        ))
+
+        assert "内部错误" in result["final_answer"]
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_controlled_native_knowledge_route_survives_mcp_failure(
+        self, monkeypatch
+    ):
+        from rag import knowledge_tool
+
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(side_effect=Exception("MCP down"))
+        fake_llm = FakeLLM(ai_with_tool_call("knowledge_search", {"query": "规则"}))
+        native_tool = SimpleNamespace(name="knowledge_search")
+        native_factory = MagicMock(return_value=native_tool)
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(knowledge_tool, "make_knowledge_search_tool", native_factory)
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="平台规则是什么")],
+            route_task_type="knowledge",
+            route_mode="controlled",
+            route_required_tools=["knowledge_search"],
+            route_authorized_tools=["knowledge_search"],
+            route_next_tool="knowledge_search",
+        ))
+
+        assert fake_llm.bound_tools == [native_tool]
+        assert fake_llm.tool_choice == "knowledge_search"
+        assert result["final_answer"] is None
+
     @pytest.mark.asyncio
     async def test_cs_prompt_and_bindings_exclude_native_knowledge_tool(
         self, monkeypatch
