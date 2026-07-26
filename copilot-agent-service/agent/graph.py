@@ -115,6 +115,8 @@ def route_after_llm(state: AgentState) -> str:
 
 def route_after_tool(state: AgentState) -> str:
     """工具节点之后：高风险动作挂起去 HITL，其余继续回 LLM。"""
+    if state.get("policy_denied_tool") or state.get("tool_budget_exhausted"):
+        return "final_node"
     if state.get("pending_hitl"):
         return "hitl_node"
     return "llm_node"
@@ -159,6 +161,7 @@ def build_graph() -> StateGraph:
         {
             "llm_node": "llm_node",
             "hitl_node": "hitl_node",
+            "final_node": "final_node",
         },
     )
 

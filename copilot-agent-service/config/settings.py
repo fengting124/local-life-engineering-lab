@@ -17,6 +17,7 @@ Agent Service 全局配置。
   LLM_MODEL=deepseek-v4-flash
   # LLM_BASE_URL 不填则用各 provider 默认地址
 """
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -59,6 +60,10 @@ class Settings(BaseSettings):
 
     # ===== Agent 运行参数 =====
     agent_max_steps: int = 15
+    agent_max_tool_calls_per_turn: int = Field(default=4, ge=1)
+    agent_max_tool_calls_total: int = Field(default=8, ge=1)
+    agent_max_calls_per_tool: int = Field(default=3, ge=1)
+    agent_max_identical_tool_calls: int = Field(default=2, ge=1)
     session_token_budget: int = 50_000
     reflection_interval: int = 5
 

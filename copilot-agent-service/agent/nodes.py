@@ -197,9 +197,10 @@ async def llm_node(state: AgentState) -> dict:
         log.error("mcp_list_tools_failed", error=str(e))
         all_tools = []  # 工具获取失败时降级为纯 LLM 回答
 
-    # ---- Tool Router：按角色和任务类型过滤工具 ----
-    # 不把所有工具都传给 LLM：减少 token 消耗 + 降低决策噪音 + 权限边界清晰
+    # ---- Tool Router：按角色和任务类型过滤完整工具集合 ----
+    # 原生工具和 MCP 工具共用一条路由，确保 Prompt 与 bind_tools 权限一致。
     from agent.tool_router import ToolRouter
+    from rag import knowledge_tool
     messages = state.get("messages", [])
     last_user_msg = ""
     for msg in reversed(messages):
@@ -216,18 +217,18 @@ async def llm_node(state: AgentState) -> dict:
         user_message=last_user_msg,
         conversation_context=context_text,
     )
-    tools = router.route(all_tools)
+    complete_tool_specs = [*all_tools, knowledge_tool.get_knowledge_search_tool_spec()]
+    tools = router.route(complete_tool_specs)
 
-    # ---- 注入 Python 原生工具：knowledge_search（RAG） ----
-    # knowledge_search 不通过 MCP（向量检索在 Python 侧本地执行，避免跨语言传输大向量）
-    # 它作为 LangChain 原生 tool 绑定到 LLM，tool_node 中会被特判调用本地函数
-    from rag.knowledge_tool import make_knowledge_search_tool
-    native_knowledge_tool = make_knowledge_search_tool(merchant_id=state.get("merchant_id"))
-
-    # 将过滤后的 MCP 工具转换为 LangChain tool 格式
-    lc_mcp_tools = _convert_to_lc_tools(tools)
-    # 合并 MCP 工具 + Python 原生工具
-    lc_tools = lc_mcp_tools + [native_knowledge_tool]
+    native_selected = any(t["name"] == "knowledge_search" for t in tools)
+    mcp_tools = [t for t in tools if t["name"] != "knowledge_search"]
+    lc_tools = _convert_to_lc_tools(mcp_tools)
+    if native_selected:
+        lc_tools.append(
+            knowledge_tool.make_knowledge_search_tool(
+                merchant_id=state.get("merchant_id")
+            )
+        )
 
     # 绑定工具到 LLM
     llm_with_tools = _llm.bind_tools(lc_tools) if lc_tools else _llm
@@ -402,6 +403,91 @@ async def tool_node(state: AgentState) -> dict:
     if not tool_calls:
         return {"messages": []}
 
+    # Tool visibility is not an authorization boundary. Re-check every model
+    # generated call immediately before any HITL, MCP, or native execution.
+    from agent.metrics import (
+        record_tool_budget_exhausted,
+        record_tool_policy_denied,
+    )
+    from agent.tool_policy import evaluate_tool_batch, first_denied_tool
+
+    user_role = state.get("user_role", "")
+    denied_tool = first_denied_tool(tool_calls, user_role)
+    if denied_tool:
+        log.warning(
+            "tool_permission_denied",
+            tool=denied_tool,
+            role=state.get("user_role", "unknown"),
+        )
+        record_tool_policy_denied(denied_tool, user_role or "unknown")
+        denied_messages = [
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "error": "permission_denied",
+                        "tool": tool_call["name"],
+                    },
+                    ensure_ascii=False,
+                ),
+                tool_call_id=tool_call.get("id", ""),
+                name=tool_call["name"],
+            )
+            for tool_call in tool_calls
+        ]
+        return {
+            "messages": denied_messages,
+            "last_tool_failed": True,
+            "policy_denied_tool": denied_tool,
+            "stop_reason": "permission_denied",
+        }
+
+    budget = evaluate_tool_batch(
+        tool_calls,
+        tool_call_count=state.get("tool_call_count", 0),
+        tool_call_counts=state.get("tool_call_counts", {}),
+        tool_signature_counts=state.get("tool_signature_counts", {}),
+        max_per_turn=settings.agent_max_tool_calls_per_turn,
+        max_total=settings.agent_max_tool_calls_total,
+        max_per_tool=settings.agent_max_calls_per_tool,
+        max_identical=settings.agent_max_identical_tool_calls,
+    )
+    budget_state = {
+        "tool_call_count": budget.tool_call_count,
+        "tool_call_counts": budget.tool_call_counts,
+        "tool_signature_counts": budget.tool_signature_counts,
+    }
+    if not budget.allowed:
+        rejected_tool = budget.tool or "unknown"
+        log.warning(
+            "tool_budget_exhausted",
+            reason=budget.reason,
+            tool=rejected_tool,
+        )
+        record_tool_budget_exhausted(budget.reason or "unknown", rejected_tool)
+        budget_messages = [
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "error": "tool_budget_exhausted",
+                        "reason": budget.reason,
+                        "tool": tool_call["name"],
+                    },
+                    ensure_ascii=False,
+                ),
+                tool_call_id=tool_call.get("id", ""),
+                name=tool_call["name"],
+            )
+            for tool_call in tool_calls
+        ]
+        return {
+            **budget_state,
+            "messages": budget_messages,
+            "last_tool_failed": True,
+            "tool_budget_exhausted": True,
+            "tool_budget_reason": budget.reason,
+            "stop_reason": "tool_budget_exhausted",
+        }
+
     pending_action = state.get("pending_action") or {}
     for tool_call in tool_calls:
         tool_name = tool_call["name"]
@@ -416,6 +502,7 @@ async def tool_node(state: AgentState) -> dict:
                 thread_id=state.get("thread_id"),
             )
             return {
+                **budget_state,
                 "messages": [],
                 "pending_hitl": True,
                 "pending_action": {
@@ -440,20 +527,12 @@ async def tool_node(state: AgentState) -> dict:
         tool_args = tool_call.get("args", {})
         call_id   = tool_call.get("id", "")
 
-        # ---- 循环检测（在执行前检查）----
-        if _detect_loop(messages, tool_name, tool_args):
-            log.warning("tool_loop_detected", tool=tool_name, args=tool_args,
-                        step=state["step_count"])
-            return ToolMessage(
-                content=(
-                    f"[循环检测] 工具 '{tool_name}' 以相同参数已调用 3 次，"
-                    "停止重复调用。请尝试其他工具或换一种方式解决问题。"
-                ),
-                tool_call_id=call_id,
-                name=tool_name,
-            )
-
-        log.info("tool_calling", tool=tool_name, args=tool_args, step=state["step_count"])
+        log.info(
+            "tool_calling",
+            tool=tool_name,
+            argument_keys=sorted(tool_args),
+            step=state["step_count"],
+        )
         start = _time.time()
 
         try:
@@ -572,6 +651,7 @@ async def tool_node(state: AgentState) -> dict:
         log.warning("save_tool_message_failed", error=str(e))
 
     return {
+        **budget_state,
         "messages": tool_messages,
         "last_tool_failed": any_failed,
         "last_tool_error": last_error,
@@ -887,8 +967,18 @@ async def final_node(state: AgentState) -> dict:
     token_count  = state["token_count"]
     final_answer = state.get("final_answer")
 
-    # 确定终止原因
-    if step_count >= settings.agent_max_steps:
+    # 策略终止优先于通用上限，避免被误记为正常完成。
+    requested_stop = state.get("stop_reason")
+    if requested_stop == "permission_denied" or state.get("policy_denied_tool"):
+        stop_reason = "permission_denied"
+        final_answer = final_answer or "当前角色没有权限执行该工具，任务已安全终止。"
+    elif requested_stop == "tool_budget_exhausted" or state.get("tool_budget_exhausted"):
+        stop_reason = "tool_budget_exhausted"
+        final_answer = final_answer or "本次任务已达到工具调用预算，已停止继续执行。"
+    elif requested_stop == "tool_loop_detected":
+        stop_reason = "tool_loop_detected"
+        final_answer = final_answer or "检测到重复工具调用，已停止继续执行。"
+    elif step_count >= settings.agent_max_steps:
         stop_reason = "max_steps"
         if not final_answer:
             final_answer = (
@@ -911,12 +1001,13 @@ async def final_node(state: AgentState) -> dict:
 
     # ---- Prometheus 业务指标 ----
     try:
-        from agent.metrics import record_session_end
+        from agent.metrics import record_session_end, record_tool_calls_per_run
         record_session_end(
             status=stop_reason,
             role=state.get("user_role", "unknown"),
             step_count=step_count,
         )
+        record_tool_calls_per_run(state.get("tool_call_count", 0))
     except Exception as e:
         log.warning("metrics_record_failed", error=str(e))
 

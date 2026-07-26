@@ -553,6 +553,9 @@ async def chat(
         "messages":       [HumanMessage(content=request.message)],
         "step_count":     0,
         "token_count":    0,
+        "tool_call_count": 0,
+        "tool_call_counts": {},
+        "tool_signature_counts": {},
         "session_id":     actual_session_id,
         "thread_id":      thread_id,
         "user_id":        user_id,
@@ -567,6 +570,9 @@ async def chat(
         "pending_action": None,
         "final_answer":   None,
         "stop_reason":    None,
+        "tool_budget_exhausted": False,
+        "tool_budget_reason": None,
+        "policy_denied_tool": None,
     }
 
     config = {"configurable": {"thread_id": thread_id}}

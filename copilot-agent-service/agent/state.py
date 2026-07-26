@@ -37,6 +37,12 @@ class AgentState(TypedDict):
     # 当前会话已消耗 token 数（控制 token 预算终止条件）
     token_count: int
 
+    # 已通过策略预检的工具调用计数。失败调用也保留，防止重试绕过预算。
+    tool_call_count: int
+    tool_call_counts: dict[str, int]
+    # key 为工具名和 canonical 参数的 SHA-256，不保存完整参数。
+    tool_signature_counts: dict[str, int]
+
     # =========================================================
     # 会话元数据
     # =========================================================
@@ -96,5 +102,11 @@ class AgentState(TypedDict):
     final_answer: str | None
 
     # 终止原因（用于日志和前端展示）
-    # 可能值：completed / max_steps / token_budget / pending_approval / error
+    # 可能值：completed / max_steps / token_budget / pending_approval /
+    # permission_denied / tool_budget_exhausted / tool_loop_detected / error
     stop_reason: str | None
+
+    # 工具策略终止详情
+    tool_budget_exhausted: bool
+    tool_budget_reason: str | None
+    policy_denied_tool: str | None
