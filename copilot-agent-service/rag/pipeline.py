@@ -17,6 +17,7 @@ from functools import lru_cache
 
 import structlog
 
+from agent.trace import genai_span
 from rag.embedding_client import embed_query
 from rag.reranker_client import rerank
 from rag.vector_store_base import VectorStore
@@ -103,53 +104,87 @@ async def retrieve(
 
     normalized_query = normalize_query(query)
     loop = asyncio.get_running_loop()
+    merchant_scoped = merchant_id is not None
 
-    query_vector = await loop.run_in_executor(None, embed_query, normalized_query)
-    vector_store = _get_vector_store()
-    vector_docs = await loop.run_in_executor(
-        None,
-        vector_store.search,
-        query_vector,
-        merchant_id,
-        20,
-    )
+    async with genai_span(
+        "rag.total",
+        "rag",
+        top_k=top_k,
+        merchant_scoped=merchant_scoped,
+        query_len=len(normalized_query),
+    ):
+        async with genai_span(
+            "rag.embedding",
+            "embedding",
+            merchant_scoped=merchant_scoped,
+            query_len=len(normalized_query),
+        ):
+            query_vector = await loop.run_in_executor(None, embed_query, normalized_query)
 
-    from rag.bm25_store import bm25_store
+        vector_store = _get_vector_store()
+        async with genai_span(
+            "rag.vector_search",
+            "vector_store",
+            merchant_scoped=merchant_scoped,
+            top_k=20,
+        ):
+            vector_docs = await loop.run_in_executor(
+                None,
+                vector_store.search,
+                query_vector,
+                merchant_id,
+                20,
+            )
 
-    bm25_docs = await loop.run_in_executor(
-        None,
-        bm25_store.search,
-        normalized_query,
-        merchant_id,
-        20,
-    )
+        from rag.bm25_store import bm25_store
 
-    log.info(
-        "rag_dual_recall",
-        vector_count=len(vector_docs),
-        bm25_count=len(bm25_docs),
-    )
+        async with genai_span(
+            "rag.bm25_search",
+            "keyword_store",
+            merchant_scoped=merchant_scoped,
+            top_k=20,
+        ):
+            bm25_docs = await loop.run_in_executor(
+                None,
+                bm25_store.search,
+                normalized_query,
+                merchant_id,
+                20,
+            )
 
-    merged = _rrf_merge([vector_docs, bm25_docs], k=60) if bm25_docs else vector_docs
-    if not merged:
-        log.info("rag_no_candidates", query=query[:50])
-        return RagResult(docs=[], refused=True)
+        log.info(
+            "rag_dual_recall",
+            vector_count=len(vector_docs),
+            bm25_count=len(bm25_docs),
+        )
 
-    reranked = await loop.run_in_executor(None, rerank, normalized_query, merged[:20])
-    if not reranked:
-        log.info("rag_below_threshold", query=query[:50])
-        return RagResult(docs=[], refused=True)
+        merged = _rrf_merge([vector_docs, bm25_docs], k=60) if bm25_docs else vector_docs
+        if not merged:
+            log.info("rag_no_candidates", query=query[:50])
+            return RagResult(docs=[], refused=True)
 
-    log.info(
-        "rag_retrieve_done",
-        query=query[:50],
-        vector_count=len(vector_docs),
-        bm25_count=len(bm25_docs),
-        merged_count=len(merged),
-        final_count=len(reranked),
-        top_score=reranked[0].get("rerank_score", 0),
-    )
-    return RagResult(docs=reranked[:top_k])
+        async with genai_span(
+            "rag.rerank",
+            "reranker",
+            candidate_count=len(merged[:20]),
+            merchant_scoped=merchant_scoped,
+            top_k=top_k,
+        ):
+            reranked = await loop.run_in_executor(None, rerank, normalized_query, merged[:20])
+        if not reranked:
+            log.info("rag_below_threshold", query=query[:50])
+            return RagResult(docs=[], refused=True)
+
+        log.info(
+            "rag_retrieve_done",
+            query=query[:50],
+            vector_count=len(vector_docs),
+            bm25_count=len(bm25_docs),
+            merged_count=len(merged),
+            final_count=len(reranked),
+            top_score=reranked[0].get("rerank_score", 0),
+        )
+        return RagResult(docs=reranked[:top_k])
 
 
 def normalize_query(query: str) -> str:

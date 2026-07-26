@@ -11,6 +11,7 @@ retrieve() 依赖外部服务（embedding、Milvus、reranker），全部 mock �
 """
 import pytest
 from unittest.mock import patch, MagicMock
+from contextlib import asynccontextmanager
 
 from rag.pipeline import _rrf_merge, _split_text, _simple_rewrite, retrieve, RagResult
 from rag.vector_store import MilvusVectorStore
@@ -258,6 +259,48 @@ class TestRetrieve:
             result = await retrieve("退款政策是什么", merchant_id=None)
         assert not result.refused
         assert len(result.docs) == 1
+
+    @pytest.mark.asyncio
+    async def test_retrieve_emits_stage_spans_without_raw_query(self):
+        """RAG 性能埋点应覆盖关键阶段，且 span 属性不能包含原始用户问题。"""
+        spans = []
+        raw_query = "请查询订单 ORD-SECRET-001 的退款政策"
+
+        @asynccontextmanager
+        async def fake_span(name, kind, **attrs):
+            spans.append((name, kind, attrs))
+            yield "fake-span"
+
+        ranked = [
+            {
+                "chunk_id": "c1",
+                "content": "退款政策内容",
+                "title": "退款政策",
+                "source": "platform_rule",
+                "rerank_score": 0.9,
+            }
+        ]
+        with patch("rag.pipeline.genai_span", side_effect=fake_span), \
+             patch("rag.pipeline.embed_query", return_value=[0.1] * 768), \
+             patch("rag.pipeline._get_vector_store") as mock_vs, \
+             patch("rag.bm25_store.bm25_store") as mock_bm25, \
+             patch("rag.pipeline.rerank", return_value=ranked):
+            mock_vs.return_value.search.return_value = [{"chunk_id": "c1", "content": "退款政策内容"}]
+            mock_bm25.search.return_value = []
+
+            result = await retrieve(raw_query, merchant_id=101, top_k=3)
+
+        assert not result.refused
+        assert [name for name, _, _ in spans] == [
+            "rag.total",
+            "rag.embedding",
+            "rag.vector_search",
+            "rag.bm25_search",
+            "rag.rerank",
+        ]
+        assert all(attrs.get("query") is None for _, _, attrs in spans)
+        assert all(raw_query not in str(attrs) for _, _, attrs in spans)
+        assert spans[0][2]["query_len"] == len(raw_query)
         assert "政策" in result.context_text
 
     @pytest.mark.asyncio

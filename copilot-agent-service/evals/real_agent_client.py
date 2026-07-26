@@ -19,6 +19,7 @@ EvalRunner 的真实 Agent 客户端（HTTP SSE Consumer）。
 """
 import asyncio
 import json
+import time
 import structlog
 import httpx
 
@@ -35,6 +36,7 @@ async def invoke_real_agent(
     role: str,
     merchant_id: int | None,
     agent_url: str | None = None,
+    user_id: int = 9999,
 ) -> dict:
     """
     调用真实的 Copilot Agent Service，消费 SSE 流，返回结构化评测结果。
@@ -52,9 +54,8 @@ async def invoke_real_agent(
     """
     base_url = agent_url or f"http://localhost:{settings.app_port}"
 
-    # 评测用 user_id：固定 9999（区分于真实用户）
     headers = {
-        "X-User-Id":    "9999",
+        "X-User-Id":    str(user_id),
         "X-User-Role":  role,
         "Accept":       "text/event-stream",
         "Content-Type": "application/json",
@@ -71,6 +72,8 @@ async def invoke_real_agent(
     final_answer: str = ""
     stop_reason:  str = "unknown"
     error_msg:    str | None = None
+    started_at = time.perf_counter()
+    ttft_ms: int | None = None
 
     try:
         async with httpx.AsyncClient(timeout=EVAL_CASE_TIMEOUT) as client:
@@ -80,20 +83,27 @@ async def invoke_real_agent(
             ) as response:
                 if response.status_code != 200:
                     error_msg = f"HTTP {response.status_code}"
-                    text = await response.aread()
+                    body = await response.aread()
+                    error_code = _parse_http_error(body)
                     log.warning("eval_agent_http_error",
-                                status=response.status_code, body=text[:200])
+                                status=response.status_code, error_code=error_code)
+                    latency_ms = int((time.perf_counter() - started_at) * 1000)
                     return {
                         "tools_called": [],
                         "final_answer": "",
                         "tokens":       0,
-                        "stop_reason":  "http_error",
+                        "latency_ms":   latency_ms,
+                        "ttft_ms":      ttft_ms,
+                        "stop_reason":  "guardrails_blocked" if error_code == "BLOCKED_BY_GUARDRAILS" else "http_error",
                         "error":        error_msg,
+                        "error_code":   error_code,
                     }
 
                 # 解析 SSE 事件流
                 current_event: str | None = None
                 async for line in response.aiter_lines():
+                    if ttft_ms is None:
+                        ttft_ms = int((time.perf_counter() - started_at) * 1000)
                     if not line:
                         continue
                     if line.startswith("event:"):
@@ -138,17 +148,35 @@ async def invoke_real_agent(
         error_msg = f"unexpected: {e}"
         stop_reason = "error"
 
+    latency_ms = int((time.perf_counter() - started_at) * 1000)
     log.info(
         "eval_case_done",
-        tools=tools_called,
+        tool_count=len(tools_called),
         stop_reason=stop_reason,
-        answer_preview=final_answer[:80] if final_answer else "",
+        latency_ms=latency_ms,
+        ttft_ms=ttft_ms,
     )
 
     return {
         "tools_called": tools_called,
         "final_answer": final_answer,
         "tokens":       0,   # token 数从 stream 事件中提取需额外解析，当前简化为 0
+        "latency_ms":   latency_ms,
+        "ttft_ms":      ttft_ms,
         "stop_reason":  stop_reason,
         "error":        error_msg,
+        "error_code":   None,
     }
+
+
+def _parse_http_error(body: bytes) -> str | None:
+    """Extract a stable machine error code without retaining response content."""
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
+        return None
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if isinstance(detail, dict):
+        code = detail.get("code")
+        return str(code) if code else None
+    return None

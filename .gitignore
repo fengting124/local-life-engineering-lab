@@ -63,6 +63,7 @@ logs/
 
 # Python venv
 .venv/
+.venv-*/
 venv/
 
 # Build output

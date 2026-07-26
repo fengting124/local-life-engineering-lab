@@ -1,6 +1,7 @@
 package com.personalprojections.locallife.server.module.mq.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.personalprojections.locallife.server.domain.entity.OutboxMessage;
@@ -46,6 +47,22 @@ public class OutboxService {
     /** Writes an event in the caller's existing business transaction. */
     @Transactional(propagation = Propagation.MANDATORY)
     public void saveToOutbox(Object event, String eventId, String topic, String tag) {
+        OutboxMessage message = buildMessage(event, eventId, topic, tag);
+        outboxMessageMapper.insert(message);
+        log.debug("[Outbox] event persisted: eventId={}, topic={}", eventId, topic);
+    }
+
+    /** Idempotent writer for replay paths where the event may already exist. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void saveToOutboxIfAbsent(Object event, String eventId, String topic, String tag) {
+        OutboxMessage message = buildMessage(event, eventId, topic, tag);
+        int inserted = outboxMessageMapper.insertIfAbsent(message);
+        if (inserted == 0) {
+            log.debug("[Outbox] event already exists: eventId={}", eventId);
+        }
+    }
+
+    private OutboxMessage buildMessage(Object event, String eventId, String topic, String tag) {
         String payload;
         try {
             payload = objectMapper.writeValueAsString(event);
@@ -54,6 +71,7 @@ public class OutboxService {
         }
 
         OutboxMessage message = OutboxMessage.builder()
+                .id(IdWorker.getId())
                 .eventId(eventId)
                 .topic(topic)
                 .tag(tag == null ? "" : tag)
@@ -62,8 +80,7 @@ public class OutboxService {
                 .retryCount(0)
                 .nextRetryAt(LocalDateTime.now())
                 .build();
-        outboxMessageMapper.insert(message);
-        log.debug("[Outbox] event persisted: eventId={}, topic={}", eventId, topic);
+        return message;
     }
 
     /** Claims and sends one batch. MQ I/O occurs outside the claim transaction. */

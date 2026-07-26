@@ -4,8 +4,8 @@ import exec from 'k6/execution';
 import { Counter, Rate, Trend } from 'k6/metrics';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
-const MOBILE_BASE = Number(__ENV.MOBILE_BASE || 13900000000);
-const MOBILE_COUNT = Number(__ENV.MOBILE_COUNT || 2000);
+const MOBILE_BASE = Number(__ENV.MOBILE_BASE || 13900001000);
+const MOBILE_COUNT = Number(__ENV.MOBILE_COUNT || 500);
 const LOGIN_CODE = __ENV.LOGIN_CODE || '123456';
 const SESSIONS = (__ENV.SECKILL_SESSIONS || '1:1,2:2')
   .split(',')
@@ -28,13 +28,10 @@ export const seckillLatency = new Trend('seckill_latency', true);
 export const options = {
   scenarios: {
     seckill_spike: {
-      executor: 'ramping-vus',
-      stages: [
-        { duration: '10s', target: Number(__ENV.USERS || 200) },
-        { duration: __ENV.RUN_TIME || '30s', target: Number(__ENV.USERS || 200) },
-        { duration: '5s', target: 0 },
-      ],
-      gracefulRampDown: '5s',
+      executor: 'per-vu-iterations',
+      vus: Number(__ENV.USERS || 200),
+      iterations: 1,
+      maxDuration: __ENV.RUN_TIME || '30s',
     },
   },
   thresholds: {

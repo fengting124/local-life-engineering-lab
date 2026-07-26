@@ -1,0 +1,57 @@
+{
+  "branch": "test/performance-agent-baseline",
+  "base_sha": "659b2427178a07567f978541d94770407bed2b70",
+  "generated_at": "2026-07-22T22:10:00+08:00",
+  "environment": {
+    "docker": "28.1.1",
+    "docker_compose": "2.35.1",
+    "k6": "2.1.0",
+    "llm_provider": "deepseek",
+    "llm_model": "deepseek-v4-flash"
+  },
+  "docker_build": {
+    "standard_dockerfile": "pass",
+    "cold_seconds": 548.55,
+    "incremental_seconds": 42.51,
+    "unchanged_seconds": 4.72,
+    "container_health": "healthy"
+  },
+  "backend": {
+    "artifact": "artifacts/performance/backend-verified-20260722-215902",
+    "scenarios": {
+      "mixed_read_write": {"requests": 154, "failures": 0, "p50_ms": 11, "p95_ms": 22, "p99_ms": 52, "rps": 5.34},
+      "search_hot": {"requests": 230, "failures": 0, "p50_ms": 15, "p95_ms": 20, "p99_ms": 43, "rps": 7.94},
+      "mcp_tools": {"requests": 424, "failures": 0, "p50_ms": 5, "p95_ms": 9, "p99_ms": 13, "rps": 14.63},
+      "seckill_spike_locust": {"requests": 1273, "failures": 0, "p50_ms": 5, "p95_ms": 14, "p99_ms": 57, "rps": 67.03},
+      "seckill_spike_k6": {"vus": 50, "claimed": 50, "unexpected_errors": 0, "p50_ms": 144.79, "p95_ms": 190.32, "max_ms": 268.48, "oversell_observed": false}
+    },
+    "seckill_consistency": {"reservations": 50, "outbox_sent": 50, "user_coupons": 50, "status": "pass_with_5_minute_reconciliation_window"}
+  },
+  "agent": {
+    "artifact": "artifacts/performance/agent-retry-final-20260722-212514/deepseek-flash-real-baseline.json",
+    "case_count": 24,
+    "total_runs": 144,
+    "groups": {
+      "1": {"success_rate": 1.0, "task_completion_rate": 0.25, "tool_call_accuracy": 0.375, "keyword_coverage": 0.614583, "latency_p50_ms": 15332, "latency_p95_ms": 28486, "latency_p99_ms": 35623, "ttft_p50_ms": 190, "ttft_p95_ms": 262},
+      "3": {"success_rate": 1.0, "task_completion_rate": 0.270833, "tool_call_accuracy": 0.375, "keyword_coverage": 0.637153, "latency_p50_ms": 19711, "latency_p95_ms": 38204, "latency_p99_ms": 46020, "ttft_p50_ms": 323, "ttft_p95_ms": 449},
+      "5": {"success_rate": 1.0, "task_completion_rate": 0.270833, "tool_call_accuracy": 0.375, "keyword_coverage": 0.645833, "latency_p50_ms": 20140, "latency_p95_ms": 48282, "latency_p99_ms": 59385, "ttft_p50_ms": 490, "ttft_p95_ms": 830}
+    },
+    "quality_gate": "fail"
+  },
+  "rag": {
+    "artifact": "artifacts/performance/agent-retry-final-20260722-212514/real-rag-benchmark.json",
+    "case_count": 24,
+    "recall_at_5_before": 1.0,
+    "recall_at_5_after": 1.0,
+    "citation_accuracy": 0.916667,
+    "refusal_accuracy": 1.0,
+    "avg_rerank_delta": 0.094444
+  },
+  "overall_status": "partial",
+  "open_items": [
+    "Agent task completion rate is 25-27%",
+    "Agent tool call accuracy is 37.5%",
+    "SSE does not expose reliable token usage or cost",
+    "long-duration capacity and fault-injection tests remain"
+  ]
+}

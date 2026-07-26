@@ -2,6 +2,7 @@ package com.personalprojections.locallife.server.domain.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.personalprojections.locallife.server.domain.entity.OutboxMessage;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -13,6 +14,15 @@ import java.util.List;
 /** Database operations for leased Outbox delivery. */
 @Mapper
 public interface OutboxMessageMapper extends BaseMapper<OutboxMessage> {
+
+    @Insert("""
+            INSERT INTO outbox_message
+                (id, event_id, topic, tag, payload, status, retry_count, next_retry_at)
+            VALUES
+                (#{id}, #{eventId}, #{topic}, #{tag}, #{payload}, #{status}, #{retryCount}, #{nextRetryAt})
+            ON DUPLICATE KEY UPDATE event_id = event_id
+            """)
+    int insertIfAbsent(OutboxMessage message);
 
     /**
      * Selects claimable rows while skipping rows locked by another Relay instance.

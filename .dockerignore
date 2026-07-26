@@ -2,10 +2,16 @@
 .github/
 .idea/
 .vscode/
+.browser_profiles/
+.claude/
+.codex/
+.pytest_cache/
 
 docs/
 performance-tests/
 copilot-agent-service/
+artifacts/
+data/
 
 **/target/
 !local-life-server/target/

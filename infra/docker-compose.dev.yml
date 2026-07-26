@@ -452,7 +452,7 @@ services:
       - local-life-net
 
   attu:   # Milvus Web UI（类似 Adminer for Milvus）
-    image: zilliz/attu:v2.4.10
+    image: zilliz/attu:v2.4.12
     container_name: local-life-attu
     profiles: ["rag"]
     ports:

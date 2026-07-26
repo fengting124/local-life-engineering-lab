@@ -10,7 +10,7 @@ ENV MAVEN_OPTS="-Djava.net.preferIPv4Stack=true \
                 -Daether.connector.http.retryHandler.requestSentEnabled=true"
 ENV JAVA_TOOL_OPTIONS="${MAVEN_OPTS}"
 
-# 把 Maven Central 的下载改走阿里云镜像（见 infra/maven/settings.xml 注释）。
+# 显式使用当前 Docker 网络下延迟更低的 Maven Central（见 infra/maven/settings.xml）。
 # 放到默认用户 settings 路径 /root/.m2/settings.xml，Maven 自动读取，无需 -s 参数。
 COPY infra/maven/settings.xml /root/.m2/settings.xml
 

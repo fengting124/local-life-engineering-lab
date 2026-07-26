@@ -7,7 +7,6 @@ import com.personalprojections.locallife.server.module.mq.event.SeckillSuccessEv
 import com.personalprojections.locallife.server.module.mq.service.OutboxService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.ReadOffset;
 import org.springframework.data.redis.connection.stream.StreamOffset;
@@ -83,9 +82,7 @@ public class SeckillStreamRecoveryService {
                 .status("PENDING")
                 .reservedAt(reservedAt)
                 .build();
-        try {
-            reservationMapper.insert(reservation);
-        } catch (DuplicateKeyException duplicate) {
+        if (reservationMapper.insertIfAbsent(reservation) == 0) {
             log.debug("[SeckillStream] reservation already exists: eventId={}", eventId);
         }
 
@@ -98,15 +95,11 @@ public class SeckillStreamRecoveryService {
                 .succeededAt(reservedAt)
                 .eventAt(LocalDateTime.now())
                 .build();
-        try {
-            outboxService.saveToOutbox(
-                    event,
-                    eventId,
-                    MqTopics.SECKILL_SUCCESS_TOPIC,
-                    MqTopics.TAG_SECKILL_SUCCESS);
-        } catch (DuplicateKeyException duplicate) {
-            log.debug("[SeckillStream] outbox already exists: eventId={}", eventId);
-        }
+        outboxService.saveToOutboxIfAbsent(
+                event,
+                eventId,
+                MqTopics.SECKILL_SUCCESS_TOPIC,
+                MqTopics.TAG_SECKILL_SUCCESS);
     }
 
     private Map<String, String> stringify(Map<Object, Object> raw) {
