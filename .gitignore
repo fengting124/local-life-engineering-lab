@@ -26,6 +26,7 @@ __pycache__/
 
 # 测试覆盖率产物（报告是生成物，不入库；.coveragerc 配置要入库）
 htmlcov/
+coverage.xml
 .coverage
 .coverage.*
 .pytest_cache/

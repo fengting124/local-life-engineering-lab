@@ -120,6 +120,9 @@
 | `retry_count` | 重试次数 | count | Runner/log | stage, reason | Agent baseline runner | 部分 | 是 |
 | `model_call_count` | 模型调用次数 | count | Span/runtime | provider, model | Agent logs | 部分 | 是 |
 | `tool_call_count` | 工具调用次数 | count | SSE/eval | tool_name | Agent eval | 是 | 否 |
+| `agent_tool_policy_denied_total` | 执行阶段因角色无权或工具未登记而拒绝的调用批次数 | count | Prometheus Counter | tool, role | `agent.metrics` / `/metrics` | 是 | 是 |
+| `agent_tool_budget_exhausted_total` | 因单轮、总量、单工具或同签名预算而整批拒绝的次数 | count | Prometheus Counter | reason, tool | `agent.metrics` / `/metrics` | 是 | 是 |
+| `agent_tool_calls_per_run` | 每次 Agent 运行中通过策略预检的工具调用数分布；执行失败仍计数 | count histogram | Prometheus Histogram | 无 | `agent.metrics` / `/metrics` | 是 | 是 |
 | `input_tokens` | 输入 token 数 | tokens | LLM usage metadata | provider, model | `llm_response` | 部分 | 是 |
 | `output_tokens` | 输出 token 数 | tokens | LLM usage metadata | provider, model | `llm_response` | 部分 | 是 |
 | `total_tokens` | 输入+输出 token 数 | tokens | LLM usage metadata | provider, model | Eval report | 部分 | 是 |
