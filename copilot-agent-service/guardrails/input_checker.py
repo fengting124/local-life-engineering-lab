@@ -115,23 +115,22 @@ _POLICY_QUESTION_EXEMPT_RULES = frozenset({
     "bulk_sensitive_action_reversed",
 })
 
-_CLEAR_POLICY_QUESTION_PATTERNS: tuple[str, ...] = (
-    (
-        r"^(?:请|麻烦)?(?:帮我)?(?:查看|了解|查询)?"
-        r"[^。！？!?；;\n]{0,80}(?:规则|政策|流程|审批|权限)"
-        r"(?:是什么|有哪些|为什么[^。！？!?；;\n]{0,30}|为何[^。！？!?；;\n]{0,30}|"
-        r"如何[^。！？!?；;\n]{0,30}|怎么[^。！？!?；;\n]{0,30}|"
-        r"是否[^。！？!?；;\n]{0,30}|能否[^。！？!?；;\n]{0,30})[?？]$"
-    ),
-    (
-        r"^(?:请|麻烦)?(?:帮我)?(?:解释|说明|介绍)"
-        r"[^。！？!?；;\n]{0,80}(?:为什么|为何|规则|政策|流程|审批|权限)"
-        r"[^。！？!?；;\n]{0,40}[?？]$"
-    ),
-    (
-        r"^(?:请|麻烦)?(?:帮我)?(?:解释|说明)?(?:为什么|为何)"
-        r"(?:不能|不可以|需要|必须|不允许)[^。！？!?；;\n]{1,80}[?？]$"
-    ),
+_POLICY_NOUNS = ("规则", "政策", "流程", "审批", "权限")
+_QUESTION_PHRASES = ("是什么", "有哪些", "为什么", "为何", "如何", "怎么", "是否", "能否")
+_DANGEROUS_BYPASS_PATTERN = re.compile(
+    r"(?:如何|怎么).{0,10}(?:绕过|跳过|忽略)",
+    re.IGNORECASE,
+)
+_EXECUTION_CONTINUATION_PATTERN = re.compile(
+    r"(?:然后|同时|顺便|另外|接着|随后).{0,16}"
+    r"(?:立即|直接|现在|马上|请|帮我)?"
+    r"(?:查|查看|查询|导出|列出|退款|补发|补券|发放|执行)",
+    re.IGNORECASE,
+)
+_CAUSAL_RESTRICTION_QUESTION_PATTERN = re.compile(
+    r"^(?:请|麻烦)?(?:帮我)?(?:解释|说明)?(?:为什么|为何)"
+    r"(?:不能|不可以|需要|必须|不允许)",
+    re.IGNORECASE,
 )
 
 
@@ -139,13 +138,27 @@ _CLEAR_POLICY_QUESTION_PATTERNS: tuple[str, ...] = (
 # 检测函数
 # =========================================================
 
+def _is_complete_single_question(text: str) -> bool:
+    return bool(re.fullmatch(r"[^。！？!?；;\n]{1,120}[?？]", text))
+
+
 def _is_clear_policy_question(text: str) -> bool:
-    """只识别完整的单句政策或原因问句。"""
+    """识别无绕过或执行续句的完整政策/原因问句。"""
     stripped = text.strip()
-    return any(
-        re.fullmatch(pattern, stripped, re.IGNORECASE)
-        for pattern in _CLEAR_POLICY_QUESTION_PATTERNS
-    )
+    if not _is_complete_single_question(stripped):
+        return False
+
+    question_body = stripped[:-1]
+    if _DANGEROUS_BYPASS_PATTERN.search(question_body):
+        return False
+    if _EXECUTION_CONTINUATION_PATTERN.search(question_body):
+        return False
+
+    has_policy_noun = any(noun in question_body for noun in _POLICY_NOUNS)
+    has_question_phrase = any(phrase in question_body for phrase in _QUESTION_PHRASES)
+    return (
+        has_policy_noun and has_question_phrase
+    ) or bool(_CAUSAL_RESTRICTION_QUESTION_PATTERN.match(question_body))
 
 
 def check_input(user_message: str, user_role: str = "merchant") -> GuardResult:
