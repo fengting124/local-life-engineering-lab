@@ -68,7 +68,8 @@ The latest 48-run real baseline is the comparison point:
 2. Separation of `clarification` from `general_fallback`.
 3. Minimal role-filtered candidate tools per recognized task.
 4. A pure Evidence Gate with normalized, non-sensitive facts.
-5. A specific next-tool choice for controlled routes.
+5. A specific next-tool choice for controlled evidence routes; small talk is
+   the explicit direct-response, no-tool exception.
 6. Deterministic tool stopping after evidence is complete.
 7. Narrow Guardrail fixes for explicit cross-merchant access and bulk
    high-risk execution.
@@ -464,11 +465,14 @@ otherwise the request escalates instead of exposing the action tool.
 
 ## 11. Specific Tool Choice
 
-For a controlled route:
+For a controlled evidence route:
 
 1. Bind exactly one tool.
 2. Pass that tool name as the specific `tool_choice`.
 3. Validate the returned call through ToolPolicy as before.
+
+`small_talk` is classified deterministically but requires no external
+evidence. It binds no tool and proceeds directly to response generation.
 
 The fixed dependencies are retained:
 
@@ -567,7 +571,7 @@ No eval implementation file will change.
 | Clarification | Missing order ID, metric, time range, target, and empty business fragment expose no tools |
 | Fallback | Complete mixed requests use read-only role-filtered candidates and existing budgets |
 | Role filter | Merchant, CS, admin, unknown role; CS cannot see or execute `knowledge_search` |
-| Candidate plan | Every controlled task exposes exactly one `next_tool` |
+| Candidate plan | Every controlled evidence task exposes exactly one `next_tool`; small talk exposes none |
 | Evidence extraction | Success, HTTP-200 negative result, not-found exception, malformed output, and enum normalization |
 | Evidence progression | Ordered advancement, root not-found short-circuit, knowledge refusal, campaign conditional chain |
 | High risk | Structured eligibility unlocks HITL tool; `UNUSED` alone, ineligible state, missing evidence, or CS-only evidence does not |

@@ -23,7 +23,9 @@
 - Do not change `agent/tool_policy.py`, production permissions, HITL approval/resume/checkpoint behavior, prompts, model settings, dependencies, evaluation contracts, RAG, Java services, migrations, or Compose topology.
 - Keep one LangGraph ReAct graph; do not add nodes or introduce a multi-agent architecture.
 - Do not raise a budget or expose a substitute tool when a required tool is unauthorized.
-- Controlled routes bind exactly one `next_tool`; `general_fallback` exposes only the existing role-filtered read-only general set.
+- Controlled evidence routes bind exactly one `next_tool`; `small_talk` is the
+  direct-response, no-tool exception; `general_fallback` exposes only the
+  existing role-filtered read-only general set.
 - Store only normalized control facts in state; never store raw arguments, IDs, amounts, user data, or raw tool output in evidence.
 - `coupon_usage_status=UNUSED` never proves coupon-delivery failure and never unlocks compensation.
 - Use TDD for every behavior change and keep each commit independently reviewable.
