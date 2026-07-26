@@ -27,7 +27,7 @@ ERROR_STATUS_MAP = {
 }
 ORDER_STATUSES = {"WAIT_PAY", "PAID", "COMPLETED", "CANCELLED", "REFUNDED"}
 PAYMENT_STATUSES = {"PENDING", "SUCCESS", "FAILED", "CLOSED"}
-COUPON_USAGE_STATUSES = {"UNUSED", "USED", "EXPIRED"}
+COUPON_USAGE_STATUSES = {"UNUSED", "USED", "EXPIRED", "NONE"}
 COUPON_ISSUE_STATUSES = {"PENDING", "SENT", "FAILED", "NO_RECORD"}
 
 CONTROLLED_READ_TOOLS = {
@@ -115,6 +115,15 @@ def _non_empty_text(raw_result: object) -> bool:
     return isinstance(raw_result, Mapping) and bool(raw_result)
 
 
+def _coupon_usage_status(coupon: Mapping[str, object] | None) -> str:
+    if coupon is None or "coupon_status" not in coupon:
+        return "UNKNOWN"
+    status = coupon["coupon_status"]
+    if status is None or status == "NOT_USED":
+        return "NONE"
+    return _enum(status, COUPON_USAGE_STATUSES)
+
+
 def _normalize_order(data: Mapping[str, object]) -> dict[str, object] | None:
     payment = _mapping(data.get("payment"))
     coupon = _mapping(data.get("coupon"))
@@ -127,10 +136,7 @@ def _normalize_order(data: Mapping[str, object]) -> dict[str, object] | None:
             payment.get("pay_status") if payment is not None else None,
             PAYMENT_STATUSES,
         ),
-        "coupon_usage_status": _enum(
-            coupon.get("coupon_status") if coupon is not None else None,
-            COUPON_USAGE_STATUSES,
-        ),
+        "coupon_usage_status": _coupon_usage_status(coupon),
     }
 
 
@@ -181,10 +187,7 @@ def _normalize_coupon_log(data: Mapping[str, object]) -> dict[str, object] | Non
         confirmed = "UNKNOWN"
     return {
         "found": bool(statuses),
-        "coupon_usage_status": _enum(
-            coupon.get("coupon_status") if coupon is not None else None,
-            COUPON_USAGE_STATUSES,
-        ),
+        "coupon_usage_status": _coupon_usage_status(coupon),
         "coupon_issue_status": issue_status,
         "coupon_failure_confirmed": confirmed,
     }

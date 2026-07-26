@@ -124,6 +124,23 @@ def test_unused_coupon_does_not_confirm_delivery_failure():
     assert "coupon_failure_confirmed" not in outcome.facts
 
 
+@pytest.mark.parametrize("raw_status", [None, "NOT_USED"])
+def test_query_order_normalizes_explicit_no_coupon_status_to_none(raw_status):
+    outcome = normalize_tool_outcome(
+        "query_order",
+        json.dumps(
+            {
+                "order_status": "PAID",
+                "payment": {},
+                "coupon": {"coupon_status": raw_status},
+            }
+        ),
+    )
+
+    assert outcome.facts["coupon_usage_status"] == "NONE"
+    assert "coupon_failure_confirmed" not in outcome.facts
+
+
 @pytest.mark.parametrize(
     ("raw_status", "expected"),
     [("BAD", "UNKNOWN"), (None, "UNKNOWN")],
@@ -703,3 +720,36 @@ def test_preexisting_records_are_resanitized_before_transition():
     }
     assert "SECRET" not in repr(update["evidence_collected"])
     assert "9900" not in repr(update["evidence_collected"])
+
+
+@pytest.mark.parametrize("coupon_usage_status", ["NONE", "UNUSED"])
+def test_retained_coupon_usage_status_is_rebounded_without_delivery_failure(
+    coupon_usage_status,
+):
+    records = {
+        "query_order": {
+            "status": "success",
+            "attempts": 1,
+            "facts": {
+                "found": True,
+                "order_status": "PAID",
+                "coupon_usage_status": coupon_usage_status,
+                "coupon_failure_confirmed": True,
+            },
+        }
+    }
+
+    update = advance_evidence(
+        _state(
+            "payment_diagnosis",
+            ["query_order", "query_payment"],
+            ["query_order", "query_payment"],
+            "query_payment",
+            records,
+        ),
+        [ToolOutcome("query_payment", "success", {"found": True})],
+    )
+
+    retained_facts = update["evidence_collected"]["query_order"]["facts"]
+    assert retained_facts["coupon_usage_status"] == coupon_usage_status
+    assert "coupon_failure_confirmed" not in retained_facts
