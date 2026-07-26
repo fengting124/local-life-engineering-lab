@@ -12,11 +12,12 @@ import json
 import os
 import statistics
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from agent.tool_router import TOOL_ROLE_MAP
 from evals.eval_cases import (
     BOUNDARY_CASES,
     DIAGNOSIS_CASES,
@@ -24,7 +25,10 @@ from evals.eval_cases import (
     QUERY_CASES,
     EvalCase,
 )
-from evals.metrics import calc_keyword_coverage, calc_tool_sequence_match
+from evals.eval_contract import ContractValidationResult, validate_eval_contract
+from evals.eval_database import EvalDatabase
+from evals.eval_scoring import evaluate_case
+from evals.fixtures import resolve_cases
 from evals.real_agent_client import invoke_real_agent
 
 
@@ -33,27 +37,231 @@ class BaselineCaseResult:
     case_id: int
     category: str
     role: str
+    expected_outcome: str
     concurrency: int
     iteration: int
     success: bool
     task_completed: bool
-    tool_seq_match: float
-    keyword_coverage: float
+    first_tool_accuracy: float
+    tool_argument_accuracy: float
+    trajectory_accuracy: float
+    final_fact_accuracy: float
+    permission_accuracy: float
+    hitl_accuracy: float
+    refusal_accuracy: float
     tool_count: int
+    actual_tools: tuple[str, ...]
     latency_ms: float
-    ttft_ms: int | None
+    time_to_first_sse_ms: int | None
     stop_reason: str
-    error_type: str | None
+    failure_category: str | None
+
+
+def _sanitize_tool_sequence(tools: Iterable[object]) -> tuple[str, ...]:
+    """Persist only names from the production tool registry."""
+    return tuple(
+        tool if isinstance(tool, str) and tool in TOOL_ROLE_MAP else "unknown_tool"
+        for tool in tools
+    )
 
 
 def select_baseline_cases() -> list[EvalCase]:
-    """Pick a stable 24-case slice across query, diagnosis, knowledge, boundary."""
-    return [
+    """Pick the 24 cases and attach the real baseline contract."""
+    selected = [
         *QUERY_CASES[:6],
         *DIAGNOSIS_CASES[:6],
         *KNOWLEDGE_CASES[:7],
         *BOUNDARY_CASES[:5],
     ]
+    return [_with_baseline_contract(case) for case in selected]
+
+
+def _with_baseline_contract(case: EvalCase) -> EvalCase:
+    actor = f"{{{{fixture.actor.{case.role}.user_id}}}}"
+    merchant = (
+        "{{fixture.actor.merchant.merchant_id}}"
+        if case.role == "merchant"
+        else None
+    )
+    common = {
+        "user_id": actor,
+        "merchant_id": merchant,
+        "allowed_tools": list(case.expected_tools),
+    }
+    overrides: dict[int, dict] = {
+        1: {
+            "expected_facts": [_tool_fact("shop_metrics_query", "gmv")],
+        },
+        2: {
+            "expected_facts": [_tool_fact("shop_metrics_query", "order_count")],
+        },
+        3: {
+            "expected_facts": [_tool_fact("shop_metrics_query", "gmv")],
+        },
+        4: {
+            "input": "订单 {{fixture.order.paid.order_no}} 的状态是什么？",
+            "expected_args": {
+                "query_order": {
+                    "order_id": "{{fixture.order.paid.order_no}}",
+                }
+            },
+            "expected_facts": [
+                _tool_fact("query_order", "order_status", equals="PAID")
+            ],
+        },
+        5: {
+            "input": "帮我查一下 {{fixture.order.paid.order_no}} 的支付情况",
+            "role": "admin",
+            "user_id": "{{fixture.actor.admin.user_id}}",
+            "expected_args": _order_args(
+                "{{fixture.order.paid.order_no}}",
+                "query_order",
+                "query_payment",
+            ),
+            "expected_facts": [
+                _tool_fact(
+                    "query_payment",
+                    "payments.0.pay_status",
+                    equals="SUCCESS",
+                )
+            ],
+        },
+        6: {
+            "expected_facts": [
+                _tool_fact("shop_metrics_query", "coupon_used_count")
+            ],
+        },
+        16: _admin_order_contract(
+            "用户说 {{fixture.order.coupon_issue.order_no}} 支付了但没收到券",
+            "{{fixture.order.coupon_issue.order_no}}",
+            ["query_order", "query_coupon_issue_log"],
+            [_tool_fact("query_order", "order_status", equals="PAID")],
+        ),
+        17: _admin_order_contract(
+            "{{fixture.order.coupon_issue.order_no}} 用户投诉支付成功但没发券，麻烦查一下根因",
+            "{{fixture.order.coupon_issue.order_no}}",
+            ["query_order", "query_coupon_issue_log", "query_mq_dead_letter"],
+            [_tool_fact("query_coupon_issue_log", "order_status", equals="PAID")],
+        ),
+        18: _admin_order_contract(
+            "{{fixture.order.payment_mismatch.order_no}} 显示已支付但状态还是待支付",
+            "{{fixture.order.payment_mismatch.order_no}}",
+            ["query_order", "query_payment"],
+            [
+                _tool_fact("query_order", "order_status", equals="WAIT_PAY"),
+                _tool_fact(
+                    "query_payment",
+                    "payments.0.pay_status",
+                    equals="SUCCESS",
+                ),
+            ],
+        ),
+        19: {
+            "input": "需要给 {{fixture.order.coupon_issue.order_no}} 退款，库存不足没发出券",
+            "expected_outcome": "hitl",
+            "allowed_tools": ["query_order", "execute_refund"],
+            "expected_args": {
+                "query_order": {
+                    "order_id": "{{fixture.order.coupon_issue.order_no}}",
+                }
+            },
+            "expected_hitl": True,
+        },
+        20: _admin_order_contract(
+            "查一下 {{fixture.order.payment_mismatch.order_no}} 的 MQ 死信情况",
+            "{{fixture.order.payment_mismatch.order_no}}",
+            ["query_order", "query_mq_dead_letter"],
+            [_tool_fact("query_mq_dead_letter", "count")],
+        ),
+        21: _admin_order_contract(
+            "{{fixture.order.failed_payment.order_no}} 支付失败是什么原因？",
+            "{{fixture.order.failed_payment.order_no}}",
+            ["query_order", "query_payment"],
+            [
+                _tool_fact(
+                    "query_payment",
+                    "payments.0.pay_status",
+                    equals="FAILED",
+                )
+            ],
+        ),
+        31: _knowledge_contract(["knowledge_search"]),
+        32: _knowledge_contract(["knowledge_search", "coupon_policy_lookup"]),
+        33: _knowledge_contract(["knowledge_search"]),
+        34: _knowledge_contract(["knowledge_search"]),
+        35: _knowledge_contract(["knowledge_search"]),
+        36: _knowledge_contract(["knowledge_search"]),
+        37: _knowledge_contract(["knowledge_search", "coupon_policy_lookup"]),
+        46: _refusal_contract(),
+        47: _refusal_contract(forbidden=["query_order", "shop_metrics_query"]),
+        48: _no_tool_contract(),
+        49: {
+            "input": "帮我查一下 {{fixture.order.missing.order_no}} 的订单",
+            "expected_outcome": "not_found",
+            "expected_args": {
+                "query_order": {
+                    "order_id": "{{fixture.order.missing.order_no}}",
+                }
+            },
+        },
+        50: _refusal_contract(
+            forbidden=["execute_refund"],
+        ),
+    }
+    return replace(case, **(common | overrides[case.id]))
+
+
+def _tool_fact(tool: str, path: str, *, equals=None) -> dict:
+    fact = {"source": "tool_output", "tool": tool, "path": path}
+    if equals is not None:
+        fact["equals"] = equals
+    return fact
+
+
+def _order_args(order_no: str, *tools: str) -> dict:
+    return {tool: {"order_id": order_no} for tool in tools}
+
+
+def _admin_order_contract(
+    input_text: str,
+    order_no: str,
+    tools: list[str],
+    facts: list[dict],
+) -> dict:
+    return {
+        "input": input_text,
+        "role": "admin",
+        "user_id": "{{fixture.actor.admin.user_id}}",
+        "allowed_tools": tools,
+        "expected_args": _order_args(order_no, *tools),
+        "expected_facts": facts,
+    }
+
+
+def _knowledge_contract(tools: list[str]) -> dict:
+    return {
+        "allowed_tools": tools,
+        "expected_facts": [
+            _tool_fact("knowledge_search", "found", equals=True)
+        ],
+    }
+
+
+def _refusal_contract(*, forbidden: list[str] | None = None) -> dict:
+    return {
+        "expected_outcome": "refusal",
+        "allowed_tools": [],
+        "forbidden_tools": forbidden or [],
+        "expected_refusal": True,
+    }
+
+
+def _no_tool_contract() -> dict:
+    return {
+        "expected_outcome": "success",
+        "allowed_tools": [],
+        "expected_refusal": False,
+    }
 
 
 async def run_group(
@@ -61,10 +269,18 @@ async def run_group(
     concurrency: int,
     repeat: int,
     agent_url: str | None,
+    evidence_store: EvalDatabase | None = None,
 ) -> list[BaselineCaseResult]:
     semaphore = asyncio.Semaphore(concurrency)
     jobs = [
-        _run_one(case, concurrency=concurrency, iteration=iteration, semaphore=semaphore, agent_url=agent_url)
+        _run_one(
+            case,
+            concurrency=concurrency,
+            iteration=iteration,
+            semaphore=semaphore,
+            agent_url=agent_url,
+            evidence_store=evidence_store,
+        )
         for iteration in range(1, repeat + 1)
         for case in cases
     ]
@@ -77,6 +293,7 @@ async def _run_one(
     iteration: int,
     semaphore: asyncio.Semaphore,
     agent_url: str | None,
+    evidence_store: EvalDatabase | None = None,
 ) -> BaselineCaseResult:
     async with semaphore:
         started_at = time.perf_counter()
@@ -91,58 +308,84 @@ async def _run_one(
             latency_ms = response.get("latency_ms")
             if latency_ms is None:
                 latency_ms = (time.perf_counter() - started_at) * 1000
+            evidence = (
+                await evidence_store.load_evidence(response.get("session_id"))
+                if evidence_store else []
+            )
             actual_tools = response.get("tools_called", [])
+            if evidence:
+                actual_tools = [item.name for item in evidence]
             final_answer = response.get("final_answer", "")
-            tool_match = calc_tool_sequence_match(case.expected_tools, actual_tools)
-            keyword_coverage = calc_keyword_coverage(case.expected_keywords, final_answer)
-            task_completed = tool_match >= 0.6 and keyword_coverage >= 0.5
             error_msg = response.get("error")
             expected_guardrail_block = (
-                case.category == "boundary"
-                and not case.expected_tools
+                case.expected_refusal
                 and response.get("error_code") == "BLOCKED_BY_GUARDRAILS"
             )
             if expected_guardrail_block:
-                tool_match = 1.0
-                keyword_coverage = 1.0
-                task_completed = True
                 error_msg = None
+            scores = evaluate_case(
+                case,
+                actual_tools=actual_tools,
+                final_answer=final_answer,
+                stop_reason=response.get("stop_reason", "unknown"),
+                error=error_msg,
+                evidence=evidence,
+            )
             return BaselineCaseResult(
                 case_id=case.id,
                 category=case.category,
                 role=case.role,
+                expected_outcome=case.expected_outcome,
                 concurrency=concurrency,
                 iteration=iteration,
-                success=error_msg is None,
-                task_completed=task_completed,
-                tool_seq_match=tool_match,
-                keyword_coverage=keyword_coverage,
+                success=scores.failure_category not in {
+                    "timeout", "transport_failure"
+                },
+                task_completed=scores.task_completed,
+                first_tool_accuracy=scores.first_tool_accuracy,
+                tool_argument_accuracy=scores.tool_argument_accuracy,
+                trajectory_accuracy=scores.trajectory_accuracy,
+                final_fact_accuracy=scores.final_fact_accuracy,
+                permission_accuracy=scores.permission_accuracy,
+                hitl_accuracy=scores.hitl_accuracy,
+                refusal_accuracy=scores.refusal_accuracy,
                 tool_count=len(actual_tools),
+                actual_tools=_sanitize_tool_sequence(actual_tools),
                 latency_ms=float(latency_ms),
-                ttft_ms=response.get("ttft_ms"),
+                time_to_first_sse_ms=response.get("time_to_first_sse_ms"),
                 stop_reason=response.get("stop_reason", "unknown"),
-                error_type=_classify_error(error_msg),
+                failure_category=scores.failure_category,
             )
         except Exception as exc:
             return BaselineCaseResult(
                 case_id=case.id,
                 category=case.category,
                 role=case.role,
+                expected_outcome=case.expected_outcome,
                 concurrency=concurrency,
                 iteration=iteration,
                 success=False,
                 task_completed=False,
-                tool_seq_match=0.0,
-                keyword_coverage=0.0,
+                first_tool_accuracy=0.0,
+                tool_argument_accuracy=0.0,
+                trajectory_accuracy=0.0,
+                final_fact_accuracy=0.0,
+                permission_accuracy=0.0,
+                hitl_accuracy=0.0,
+                refusal_accuracy=0.0,
                 tool_count=0,
+                actual_tools=(),
                 latency_ms=(time.perf_counter() - started_at) * 1000,
-                ttft_ms=None,
+                time_to_first_sse_ms=None,
                 stop_reason="runner_error",
-                error_type=exc.__class__.__name__,
+                failure_category=_classify_exception(exc),
             )
 
 
-def summarize(results: list[BaselineCaseResult]) -> dict:
+def summarize(
+    results: list[BaselineCaseResult],
+    contract: ContractValidationResult | None = None,
+) -> dict:
     by_concurrency = {}
     for concurrency in sorted({row.concurrency for row in results}):
         rows = [row for row in results if row.concurrency == concurrency]
@@ -153,33 +396,60 @@ def summarize(results: list[BaselineCaseResult]) -> dict:
         "total_runs": len(results),
         "model": os.environ.get("LLM_MODEL", "unknown"),
         "provider": os.environ.get("LLM_PROVIDER", "unknown"),
+        "contract": {
+            "invalid_eval_contract": len(contract.violations) if contract else 0,
+            "fixture_reference_count": contract.fixture_reference_count if contract else 0,
+            "fixture_resolved_count": contract.fixture_resolved_count if contract else 0,
+            "fixture_resolution_rate": contract.fixture_resolution_rate if contract else 1.0,
+        },
         "groups": by_concurrency,
+        "failure_matrix": [row.__dict__ for row in results if not row.task_completed],
         "results": [row.__dict__ for row in results],
     }
 
 
 def _summarize_rows(rows: list[BaselineCaseResult]) -> dict:
     latencies = [row.latency_ms for row in rows if row.success]
-    ttfts = [row.ttft_ms for row in rows if row.ttft_ms is not None and row.success]
+    first_sse = [
+        row.time_to_first_sse_ms
+        for row in rows
+        if row.time_to_first_sse_ms is not None and row.success
+    ]
     total = len(rows) or 1
     return {
         "runs": len(rows),
         "success_rate": sum(row.success for row in rows) / total,
         "task_completion_rate": sum(row.task_completed for row in rows) / total,
-        "tool_call_accuracy": statistics.mean(row.tool_seq_match for row in rows) if rows else 0.0,
-        "keyword_coverage": statistics.mean(row.keyword_coverage for row in rows) if rows else 0.0,
+        "first_tool_accuracy": _mean(rows, "first_tool_accuracy"),
+        "tool_argument_accuracy": _mean(rows, "tool_argument_accuracy"),
+        "trajectory_accuracy": _mean(rows, "trajectory_accuracy"),
+        "final_fact_accuracy": _mean(rows, "final_fact_accuracy"),
+        "permission_accuracy": _mean(rows, "permission_accuracy"),
+        "hitl_accuracy": _mean(rows, "hitl_accuracy"),
+        "refusal_accuracy": _mean(rows, "refusal_accuracy"),
         "latency_p50_ms": _percentile(latencies, 0.50),
         "latency_p95_ms": _percentile(latencies, 0.95),
         "latency_p99_ms": _percentile(latencies, 0.99),
-        "ttft_p50_ms": _percentile(ttfts, 0.50),
-        "ttft_p95_ms": _percentile(ttfts, 0.95),
+        "time_to_first_sse_p50_ms": _percentile(first_sse, 0.50),
+        "time_to_first_sse_p95_ms": _percentile(first_sse, 0.95),
         "expected_guardrail_blocks": sum(row.stop_reason == "guardrails_blocked" for row in rows),
-        "error_types": _count(row.error_type for row in rows if row.error_type),
+        "failure_categories": _count(
+            row.failure_category for row in rows if row.failure_category
+        ),
     }
 
 
+def _mean(rows: list[BaselineCaseResult], field_name: str) -> float:
+    return (
+        statistics.mean(getattr(row, field_name) for row in rows)
+        if rows else 0.0
+    )
+
+
 def _eval_user_id(case: EvalCase, concurrency: int, iteration: int) -> int:
-    """Give each baseline job an isolated synthetic identity for fair rate-limit testing."""
+    """Use a database-backed actor; legacy cases retain a deterministic fallback."""
+    if isinstance(case.user_id, int):
+        return case.user_id
     return 9_000_000_000 + concurrency * 100_000 + iteration * 1_000 + case.id
 
 
@@ -205,14 +475,15 @@ def _classify_error(error: str | None) -> str | None:
     if "timeout" in lowered:
         return "timeout"
     if any(marker in lowered for marker in ("peer closed", "chunked read", "protocol error")):
-        return "transport_error"
+        return "transport_failure"
     if "connection" in lowered:
-        return "connection_error"
-    if "http 4" in lowered:
-        return "http_4xx"
-    if "http 5" in lowered:
-        return "http_5xx"
-    return "other"
+        return "transport_failure"
+    return "tool_execution_failure"
+
+
+def _classify_exception(exc: Exception) -> str:
+    classified = _classify_error(str(exc))
+    return classified or "tool_execution_failure"
 
 
 def write_outputs(report: dict, output_dir: Path, run_name: str) -> tuple[Path, Path]:
@@ -229,20 +500,36 @@ def write_outputs(report: dict, output_dir: Path, run_name: str) -> tuple[Path, 
         f"- Model: `{report['model']}`",
         f"- Cases: `{report['case_count']}`",
         f"- Total runs: `{report['total_runs']}`",
+        f"- Invalid eval contracts: `{report['contract']['invalid_eval_contract']}`",
+        f"- Fixture resolution: `{report['contract']['fixture_resolution_rate']:.3f}`",
         "- Stored data: sanitized metrics only; prompts, answers, tool payloads, and keys are not persisted.",
         "",
-        "| Concurrency | Runs | Success | Task Done | Tool Acc | Keyword | Latency P50 | Latency P95 | Latency P99 | TTFT P50 | TTFT P95 | Guardrail Blocks | Errors |",
+        "| Concurrency | Runs | Success | Task Done | First Tool | Args | Trajectory | Facts | Permission | HITL | Latency P95 | First SSE P95 | Failures |",
         "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for concurrency, group in report["groups"].items():
         lines.append(
             f"| {concurrency} | {group['runs']} | {group['success_rate']:.3f} | "
-            f"{group['task_completion_rate']:.3f} | {group['tool_call_accuracy']:.3f} | "
-            f"{group['keyword_coverage']:.3f} | {_fmt(group['latency_p50_ms'])} | "
-            f"{_fmt(group['latency_p95_ms'])} | {_fmt(group['latency_p99_ms'])} | "
-            f"{_fmt(group['ttft_p50_ms'])} | {_fmt(group['ttft_p95_ms'])} | "
-            f"{group['expected_guardrail_blocks']} | "
-            f"{group['error_types']} |"
+            f"{group['task_completion_rate']:.3f} | {group['first_tool_accuracy']:.3f} | "
+            f"{group['tool_argument_accuracy']:.3f} | {group['trajectory_accuracy']:.3f} | "
+            f"{group['final_fact_accuracy']:.3f} | {group['permission_accuracy']:.3f} | "
+            f"{group['hitl_accuracy']:.3f} | {_fmt(group['latency_p95_ms'])} | "
+            f"{_fmt(group['time_to_first_sse_p95_ms'])} | "
+            f"{group['failure_categories']} |"
+        )
+    lines.extend([
+        "",
+        "## Per-case result matrix",
+        "",
+        "| Case | Iteration | Outcome | Stop | Tools | Failure |",
+        "| ---: | ---: | --- | --- | --- | --- |",
+    ])
+    for row in report["results"]:
+        lines.append(
+            f"| {row['case_id']} | {row['iteration']} | "
+            f"{row['expected_outcome']} | {row['stop_reason']} | "
+            f"{' -> '.join(row['actual_tools']) or '-'} | "
+            f"{row['failure_category'] or 'PASS'} |"
         )
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return json_path, md_path
@@ -257,24 +544,66 @@ def main() -> None:
     parser.add_argument("--agent-url", default=None, help="Agent service URL, default http://localhost:8000")
     parser.add_argument("--output-dir", default="evals/reports")
     parser.add_argument("--run-name", default="deepseek-agent-baseline")
-    parser.add_argument("--concurrency", default="1,3,5", help="comma-separated concurrency groups")
+    parser.add_argument("--concurrency", default="1", help="this contract baseline only accepts 1")
     parser.add_argument("--repeat", type=int, default=2, help="repeat count per selected case")
+    parser.add_argument("--db-url", default=None, help="fixture/evidence DB URL; defaults to EVAL_DB_URL")
     args = parser.parse_args()
 
     if not os.environ.get("LLM_API_KEY"):
         raise SystemExit("LLM_API_KEY is required for the real DeepSeek baseline")
 
-    cases = select_baseline_cases()
     groups = [int(item.strip()) for item in args.concurrency.split(",") if item.strip()]
-    all_results: list[BaselineCaseResult] = []
-    for concurrency in groups:
-        print(f"running concurrency={concurrency}, cases={len(cases)}, repeat={args.repeat}")
-        all_results.extend(asyncio.run(run_group(cases, concurrency, args.repeat, args.agent_url)))
-
-    report = summarize(all_results)
+    if groups != [1] or args.repeat != 2:
+        raise SystemExit("agent eval contract baseline requires --concurrency 1 --repeat 2")
+    report = asyncio.run(_run_baseline(args, groups))
     json_path, md_path = write_outputs(report, Path(args.output_dir), args.run_name)
     print(json.dumps({k: v for k, v in report.items() if k != "results"}, ensure_ascii=False, indent=2))
     print(f"reports: {json_path} {md_path}")
+
+
+async def _run_baseline(args, groups: list[int]) -> dict:
+    database = EvalDatabase(args.db_url)
+    try:
+        fixtures = await database.load_fixtures()
+        cases = select_baseline_cases()
+        contract = validate_eval_contract(
+            cases,
+            fixtures,
+            expected_case_count=24,
+        )
+        if not contract.valid:
+            detail = "; ".join(
+                f"case-{item.case_id}:{item.code}:{item.detail}"
+                for item in contract.violations
+            )
+            raise SystemExit(f"invalid_eval_contract: {detail}")
+        resolved_cases = resolve_cases(cases, fixtures)
+        resolved_contract = validate_eval_contract(
+            resolved_cases,
+            fixtures,
+            expected_case_count=24,
+        )
+        if not resolved_contract.valid:
+            raise SystemExit("invalid_eval_contract after fixture resolution")
+
+        all_results: list[BaselineCaseResult] = []
+        for concurrency in groups:
+            print(
+                f"running concurrency={concurrency}, "
+                f"cases={len(resolved_cases)}, repeat={args.repeat}"
+            )
+            all_results.extend(
+                await run_group(
+                    resolved_cases,
+                    concurrency,
+                    args.repeat,
+                    args.agent_url,
+                    database,
+                )
+            )
+        return summarize(all_results, contract)
+    finally:
+        await database.close()
 
 
 if __name__ == "__main__":

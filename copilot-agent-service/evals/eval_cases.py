@@ -23,6 +23,7 @@ Evals 评测集（50 条用例）。
   4. 将 Agent 最终回答与 expected_answer 对比，检查关键词覆盖率
 """
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -37,6 +38,15 @@ class EvalCase:
     category:         str                   # query / diagnosis / knowledge / boundary
     difficulty:       str = "medium"        # easy / medium / hard
     description:      str = ""              # 用例说明
+    expected_outcome: str = "success"
+    allowed_tools:    list[str] | None = None
+    forbidden_tools:  list[str] = field(default_factory=list)
+    expected_args:    dict[str, dict[str, Any]] = field(default_factory=dict)
+    expected_facts:   list[dict[str, Any]] = field(default_factory=list)
+    any_of_facts:     list[list[dict[str, Any]]] = field(default_factory=list)
+    expected_hitl:    bool = False
+    expected_refusal: bool = False
+    user_id:          int | str | None = None
 
 
 # =========================================================

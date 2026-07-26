@@ -68,8 +68,8 @@ log "real DeepSeek agent baseline"
   --agent-url "$AGENT_URL" \
   --output-dir "$OUT_DIR" \
   --run-name "deepseek-flash-real-baseline" \
-  --concurrency "${AGENT_CONCURRENCY_GROUPS:-1,3,5}" \
-  --repeat "${AGENT_REPEAT:-2}" \
+  --concurrency "1" \
+  --repeat "2" \
   > "$OUT_DIR/deepseek-flash-real-baseline.log" 2>&1
 
 log "real rag benchmark"

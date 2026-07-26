@@ -1,0 +1,272 @@
+from dataclasses import replace
+
+import pytest
+
+from evals.deepseek_baseline import select_baseline_cases
+from evals.eval_cases import EvalCase
+from evals.eval_contract import validate_eval_contract
+from evals.fixtures import FixtureCatalog, resolve_cases
+
+
+FIXTURES = {
+    "actor.merchant.user_id": 880000000001,
+    "actor.merchant.merchant_id": 880000100001,
+    "actor.cs.user_id": 9000000001,
+    "actor.admin.user_id": 9000000002,
+    "order.paid.order_no": "202606100001",
+    "order.payment_mismatch.order_no": "202606100002",
+    "order.coupon_issue.order_no": "202606100003",
+    "order.failed_payment.order_no": "BULK2026061000009999",
+    "order.missing.order_no": "EVAL_ORDER_DOES_NOT_EXIST",
+}
+
+
+def test_selected_baseline_contract_is_valid_after_fixture_resolution():
+    resolved = resolve_cases(select_baseline_cases(), FixtureCatalog(FIXTURES))
+
+    result = validate_eval_contract(resolved, FixtureCatalog(FIXTURES))
+
+    assert result.valid is True
+    assert result.violations == []
+    assert result.fixture_resolution_rate == 1.0
+
+
+def test_small_talk_case_is_no_tool_success_not_refusal():
+    case = next(case for case in select_baseline_cases() if case.id == 48)
+
+    assert case.expected_outcome == "success"
+    assert case.expected_tools == []
+    assert case.expected_refusal is False
+
+
+@pytest.mark.parametrize("case_id", [5, 16, 17, 18, 20, 21])
+def test_admin_only_diagnosis_cases_use_admin_role(case_id):
+    case = next(case for case in select_baseline_cases() if case.id == case_id)
+
+    assert case.role == "admin"
+
+
+def test_contract_rejects_tool_that_role_cannot_use():
+    case = EvalCase(
+        id=9001,
+        input="查支付",
+        role="cs",
+        merchant_id=None,
+        expected_tools=["query_payment"],
+        expected_keywords=[],
+        category="diagnosis",
+        expected_outcome="success",
+        allowed_tools=["query_payment"],
+    )
+
+    result = validate_eval_contract([case], FixtureCatalog({}))
+
+    assert result.valid is False
+    assert result.violations[0].code == "role_forbidden_tool"
+
+
+def test_contract_checks_role_for_allowed_and_argument_tools():
+    case = EvalCase(
+        id=9005,
+        input="查支付",
+        role="cs",
+        merchant_id=None,
+        expected_tools=["query_order"],
+        expected_keywords=[],
+        category="diagnosis",
+        expected_outcome="success",
+        allowed_tools=["query_order", "query_payment"],
+        expected_args={"query_payment": {"order_id": "seed-order"}},
+    )
+
+    result = validate_eval_contract([case], FixtureCatalog({}))
+
+    forbidden = [
+        violation
+        for violation in result.violations
+        if violation.code == "role_forbidden_tool"
+    ]
+    assert len(forbidden) == 1
+    assert forbidden[0].detail == "cs cannot call query_payment"
+
+
+def test_contract_rejects_unknown_tool_and_invalid_outcome():
+    case = EvalCase(
+        id=9002,
+        input="未知操作",
+        role="admin",
+        merchant_id=None,
+        expected_tools=["missing_tool"],
+        expected_keywords=[],
+        category="diagnosis",
+        expected_outcome="magic",
+    )
+
+    result = validate_eval_contract([case], FixtureCatalog({}))
+
+    assert {violation.code for violation in result.violations} == {
+        "unknown_tool",
+        "invalid_outcome",
+    }
+
+
+def test_contract_validates_tools_referenced_by_expected_facts():
+    case = EvalCase(
+        id=9006,
+        input="检查事实合同",
+        role="cs",
+        merchant_id=None,
+        expected_tools=[],
+        expected_keywords=[],
+        category="diagnosis",
+        expected_facts=[
+            {
+                "source": "tool_output",
+                "tool": "query_payment",
+                "path": "payments.0.pay_status",
+                "equals": "SUCCESS",
+            },
+            {
+                "source": "tool_output",
+                "tool": "missing_tool",
+                "path": "value",
+            },
+        ],
+    )
+
+    result = validate_eval_contract([case], FixtureCatalog({}))
+
+    assert {violation.code for violation in result.violations} == {
+        "unknown_tool",
+        "role_forbidden_tool",
+    }
+
+
+def test_contract_requires_hitl_for_high_risk_tool():
+    case = EvalCase(
+        id=9003,
+        input="退款",
+        role="admin",
+        merchant_id=None,
+        expected_tools=["execute_refund"],
+        expected_keywords=[],
+        category="diagnosis",
+        expected_outcome="success",
+        allowed_tools=["execute_refund"],
+        expected_hitl=False,
+    )
+
+    result = validate_eval_contract([case], FixtureCatalog({}))
+
+    assert any(v.code == "high_risk_without_hitl" for v in result.violations)
+
+
+@pytest.mark.parametrize(
+    ("changes", "code"),
+    [
+        (
+            {
+                "expected_outcome": "refusal",
+                "expected_refusal": False,
+                "allowed_tools": [],
+            },
+            "outcome_flag_mismatch",
+        ),
+        (
+            {
+                "expected_outcome": "success",
+                "expected_hitl": True,
+                "allowed_tools": [],
+            },
+            "outcome_flag_mismatch",
+        ),
+        (
+            {
+                "expected_tools": ["query_order"],
+                "allowed_tools": [],
+            },
+            "expected_tool_not_allowed",
+        ),
+        (
+            {
+                "expected_tools": [],
+                "allowed_tools": ["query_order"],
+                "forbidden_tools": ["query_order"],
+            },
+            "conflicting_tool_policy",
+        ),
+    ],
+)
+def test_contract_rejects_internally_inconsistent_cases(changes, code):
+    values = {
+        "id": 9007,
+        "input": "合同一致性",
+        "role": "admin",
+        "merchant_id": None,
+        "expected_tools": [],
+        "expected_keywords": [],
+        "category": "diagnosis",
+    }
+    values.update(changes)
+    case = EvalCase(**values)
+
+    result = validate_eval_contract([case], FixtureCatalog({}))
+
+    assert any(violation.code == code for violation in result.violations)
+
+
+def test_fixture_resolver_replaces_nested_contract_values():
+    case = EvalCase(
+        id=9004,
+        input="查 {{fixture.order.paid.order_no}}",
+        role="admin",
+        merchant_id=None,
+        expected_tools=["query_order"],
+        expected_keywords=[],
+        category="query",
+        expected_outcome="success",
+        allowed_tools=["query_order"],
+        expected_args={
+            "query_order": {"order_id": "{{fixture.order.paid.order_no}}"}
+        },
+        expected_facts=[
+            {
+                "source": "tool_output",
+                "tool": "query_order",
+                "path": "order_status",
+                "equals": "PAID",
+            }
+        ],
+    )
+
+    resolved = resolve_cases([case], FixtureCatalog(FIXTURES))[0]
+
+    assert resolved.input == "查 202606100001"
+    assert resolved.expected_args["query_order"]["order_id"] == "202606100001"
+
+
+def test_contract_reports_missing_fixture_reference():
+    case = replace(
+        select_baseline_cases()[0],
+        input="查 {{fixture.order.not_seeded.order_no}}",
+    )
+
+    result = validate_eval_contract([case], FixtureCatalog(FIXTURES))
+
+    assert result.fixture_resolution_rate < 1.0
+    assert result.violations[0].code == "missing_fixture"
+
+
+def test_contract_rejects_duplicate_ids_and_wrong_expected_count():
+    case = select_baseline_cases()[0]
+
+    result = validate_eval_contract(
+        [case, case],
+        FixtureCatalog(FIXTURES),
+        expected_case_count=24,
+    )
+
+    assert {violation.code for violation in result.violations} >= {
+        "duplicate_case_id",
+        "unexpected_case_count",
+    }

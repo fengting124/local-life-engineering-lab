@@ -3,7 +3,13 @@ import asyncio
 import pytest
 
 from evals import deepseek_baseline
-from evals.deepseek_baseline import _classify_error, _run_one, run_group
+from evals.deepseek_baseline import (
+    _classify_error,
+    _run_one,
+    run_group,
+    summarize,
+    write_outputs,
+)
 from evals.eval_cases import BOUNDARY_CASES, QUERY_CASES
 from evals.real_agent_client import _parse_http_error
 
@@ -13,10 +19,12 @@ def _success_response() -> dict:
         "tools_called": [],
         "final_answer": "",
         "latency_ms": 12,
-        "ttft_ms": 3,
+        "time_to_first_sse_ms": 3,
         "stop_reason": "completed",
         "error": None,
         "error_code": None,
+        "session_id": "100",
+        "thread_id": "thread-100",
     }
 
 
@@ -37,11 +45,11 @@ def test_parse_http_error_extracts_guardrail_code_without_returning_body():
     ],
 )
 def test_classify_stream_disconnect_as_transport_error(message):
-    assert _classify_error(message) == "transport_error"
+    assert _classify_error(message) == "transport_failure"
 
 
 @pytest.mark.asyncio
-async def test_expected_guardrail_block_counts_as_success(monkeypatch):
+async def test_expected_guardrail_block_counts_as_success(monkeypatch, tmp_path):
     async def fake_invoke(**_kwargs):
         return {
             **_success_response(),
@@ -53,7 +61,7 @@ async def test_expected_guardrail_block_counts_as_success(monkeypatch):
     monkeypatch.setattr(deepseek_baseline, "invoke_real_agent", fake_invoke)
 
     result = await _run_one(
-        BOUNDARY_CASES[0],
+        deepseek_baseline._with_baseline_contract(BOUNDARY_CASES[0]),
         concurrency=1,
         iteration=1,
         semaphore=asyncio.Semaphore(1),
@@ -62,9 +70,54 @@ async def test_expected_guardrail_block_counts_as_success(monkeypatch):
 
     assert result.success is True
     assert result.task_completed is True
-    assert result.tool_seq_match == 1.0
-    assert result.keyword_coverage == 1.0
-    assert result.error_type is None
+    assert result.permission_accuracy == 1.0
+    assert result.actual_tools == ()
+    assert result.failure_category is None
+
+    report = summarize([result])
+    assert report["groups"]["1"]["refusal_accuracy"] == 1.0
+
+    _, markdown_path = write_outputs(report, tmp_path, "contract")
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert "## Per-case result matrix" in markdown
+    assert "| 46 | 1 | refusal | guardrails_blocked | - | PASS |" in markdown
+
+
+@pytest.mark.asyncio
+async def test_result_keeps_sanitized_tool_name_sequence(monkeypatch, tmp_path):
+    injected_name = "query_order | leaked\n## injected"
+
+    async def fake_invoke(**_kwargs):
+        return {
+            **_success_response(),
+            "tools_called": ["query_order", "knowledge_search", injected_name],
+        }
+
+    monkeypatch.setattr(deepseek_baseline, "invoke_real_agent", fake_invoke)
+
+    result = await _run_one(
+        deepseek_baseline._with_baseline_contract(QUERY_CASES[3]),
+        concurrency=1,
+        iteration=1,
+        semaphore=asyncio.Semaphore(1),
+        agent_url="http://agent.test",
+    )
+
+    assert result.actual_tools == (
+        "query_order",
+        "knowledge_search",
+        "unknown_tool",
+    )
+    assert not hasattr(result, "tool_arguments")
+    assert not hasattr(result, "tool_outputs")
+
+    report = summarize([result])
+    json_path, markdown_path = write_outputs(report, tmp_path, "tools")
+    serialized = json_path.read_text(encoding="utf-8")
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert injected_name not in serialized
+    assert injected_name not in markdown
+    assert "query_order -> knowledge_search -> unknown_tool" in markdown
 
 
 @pytest.mark.asyncio
