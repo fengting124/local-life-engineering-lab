@@ -165,6 +165,33 @@ def test_high_risk_actions_require_explicit_execution_intent(
     assert decision.next_tool == next_tool
 
 
+@pytest.mark.parametrize(
+    ("role", "message", "task_type", "next_tool"),
+    [
+        (
+            "merchant",
+            "给我查订单 202606100001 的退款规则",
+            "knowledge",
+            "knowledge_search",
+        ),
+        (
+            "merchant",
+            "退款规则是什么？最长多少天可以申请退款？",
+            "knowledge",
+            "knowledge_search",
+        ),
+        ("cs", "给订单 202606100001 退款", "refund_action", "query_order"),
+    ],
+)
+def test_policy_semantics_override_generic_high_risk_wording(
+    role, message, task_type, next_tool
+):
+    decision = classify_request(role, message)
+
+    assert decision.task_type == task_type
+    assert decision.next_tool == next_tool
+
+
 def test_campaign_labels_without_values_keep_policy_lookup():
     decision = classify_request(
         "merchant",
@@ -203,6 +230,18 @@ def test_coupon_delivery_diagnosis_ignores_payment_success_context(message, task
     ("role", "message", "task_type", "next_tool"),
     [
         ("admin", "帮我查一下 202606100001 的支付情况", "payment_diagnosis", "query_order"),
+        (
+            "admin",
+            "202606100001 显示已支付但状态还是待支付",
+            "payment_diagnosis",
+            "query_order",
+        ),
+        (
+            "admin",
+            "排查订单 202606100001 的 MQ 死信失败原因",
+            "mq_diagnosis",
+            "query_order",
+        ),
         ("merchant", "昨天的优惠券核销了多少张？", "analytics", "shop_metrics_query"),
         ("merchant", "发布活动需要提前几天申请？", "knowledge", "knowledge_search"),
     ],
@@ -242,6 +281,20 @@ def test_route_state_round_trip_is_checkpoint_safe():
     restored = RouteDecision.from_state(original.to_state())
 
     assert restored == original
+
+
+def test_invalid_checkpoint_route_mode_exposes_zero_tools():
+    router = ToolRouter.from_state(
+        {
+            "user_role": "admin",
+            "route_task_type": "unknown",
+            "route_mode": "malicious_mode",
+            "route_confidence": 100,
+        }
+    )
+
+    assert router.decision.route_mode == "clarification"
+    assert router.route(_tools(*ALL_TOOLS)) == []
 
 
 def test_controlled_router_exposes_exactly_one_tool():

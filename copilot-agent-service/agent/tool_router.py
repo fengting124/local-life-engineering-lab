@@ -98,9 +98,12 @@ class RouteDecision:
 
     @classmethod
     def from_state(cls, state: Mapping[str, object]) -> "RouteDecision":
+        route_mode = str(state.get("route_mode", "clarification"))
+        if route_mode not in ROUTE_MODES:
+            route_mode = "clarification"
         return cls(
             task_type=str(state.get("route_task_type", "unknown")),
-            route_mode=str(state.get("route_mode", "clarification")),
+            route_mode=route_mode,
             confidence=int(state.get("route_confidence", 0)),
             required_tools=tuple(state.get("route_required_tools", ())),
             authorized_tools=tuple(state.get("route_authorized_tools", ())),
@@ -224,13 +227,13 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
             r"(?:执行|发起|进行|办理|操作|申请|给|为|对|帮(?:我|忙)?).{0,24}(?:退款|退钱|退回)",
             text,
         )
-    )
+    ) and not has_knowledge
     compensation_intent = bool(
         re.search(
             r"(?:执行|发起|进行|办理|操作|申请|给|为|对|帮(?:我|忙)?).{0,24}(?:补券|补发券|补发优惠券|赔付券|补偿券)",
             text,
         )
-    )
+    ) and not has_knowledge
 
     has_mq = _contains_any(text, ("mq", "消息队列", "死信", "dead letter", "消费失败", "消费者失败"))
     has_coupon_issue = _contains_any(
@@ -241,7 +244,10 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
     has_explicit_payment_issue = _contains_any(
         text,
         ("支付失败", "支付异常", "支付状态", "支付情况", "支付回调", "支付不一致"),
-    ) or bool(re.search(r"支付(?:和|与).{0,12}异常", text))
+    ) or bool(re.search(r"支付(?:和|与).{0,12}异常", text)) or (
+        _contains_any(text, ("已支付", "支付成功", "paid"))
+        and _contains_any(text, ("待支付", "未支付", "unpaid", "pending payment"))
+    )
     has_payment_issue = has_explicit_payment_issue
     has_campaign_verb = _contains_any(text, ("创建", "新建", "生成", "草拟", "起草", "draft"))
     campaign_intent = has_campaign_object and has_campaign_verb
