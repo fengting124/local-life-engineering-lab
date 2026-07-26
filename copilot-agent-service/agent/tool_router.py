@@ -1,44 +1,26 @@
-"""
-Tool Router：动态工具过滤器。
-
-面试高频问题：为什么不直接把所有工具传给 LLM？
-
-原因：
-  1. 工具太多占用大量 Token（每个工具 Schema 约 200-500 token）
-  2. 无关工具增加 LLM 的决策噪音，降低工具调用准确率
-  3. 权限边界：merchant 不应该看到 execute_refund 的工具描述
-  4. 任务相关性：门店查询任务无需展示退款工具
-
-Tool Router 根据当前上下文动态决定传给 LLM 的工具子集：
-  - 按用户角色过滤（merchant 无法看到 cs/admin 专属工具）
-  - 按任务类型路由（查询类任务只展示查询工具，执行类任务才展示执行工具）
-  - 按对话历史推断（已发现「支付成功」才展示退款工具）
-
-设计模式：职责单一的过滤链（Filter Chain），每个过滤器独立可测。
-"""
+"""Deterministic, role-filtered tool route decisions for the current request."""
+from dataclasses import dataclass
 import re
+from typing import Mapping, Sequence
+
 import structlog
+
 
 log = structlog.get_logger(__name__)
 
-# =========================================================
-# 工具分组定义
-# =========================================================
 
-# 所有工具的角色权限配置（与 Java MCP Server 的 x-allowed-roles 保持一致）
+# All tool-role permissions remain centralized here and shared with execution.
 TOOL_ROLE_MAP: dict[str, list[str]] = {
-    # === Java MCP 工具 ===
-    "query_order":               ["merchant", "cs", "admin"],
-    "query_payment":             ["admin"],
-    "query_coupon_issue_log":    ["admin"],
-    "query_mq_dead_letter":      ["admin"],
-    "shop_metrics_query":        ["merchant", "admin"],
-    "coupon_policy_lookup":      ["merchant", "admin"],
-    "campaign_draft_generate":   ["merchant", "admin"],
-    "execute_refund":            ["cs", "admin"],
+    "query_order": ["merchant", "cs", "admin"],
+    "query_payment": ["admin"],
+    "query_coupon_issue_log": ["admin"],
+    "query_mq_dead_letter": ["admin"],
+    "shop_metrics_query": ["merchant", "admin"],
+    "coupon_policy_lookup": ["merchant", "admin"],
+    "campaign_draft_generate": ["merchant", "admin"],
+    "execute_refund": ["cs", "admin"],
     "issue_compensation_coupon": ["cs", "admin"],
-    # === Python 原生工具（RAG） ===
-    "knowledge_search":          ["merchant", "admin"],
+    "knowledge_search": ["merchant", "admin"],
 }
 
 
@@ -47,20 +29,8 @@ def is_tool_allowed_for_role(tool_name: str, user_role: str) -> bool:
     return user_role in TOOL_ROLE_MAP.get(tool_name, ())
 
 
-# =========================================================
-# 工具并发安全分级
-# =========================================================
-#
-# 参考 Claude Code 的 Tool 接口设计：每个工具显式声明 isConcurrencySafe /
-# isDestructive，框架按声明对一轮工具调用分批（见 partitionToolCalls）——
-# 连续的「并发安全」工具合并为并发批，不安全/高风险工具单独隔离为串行批，
-# 避免诸如 query_order 与 execute_refund 在同一轮里抢跑的竞态场景。
-#
-# fail-closed 原则：只有显式登记在此集合中的工具才会被并发执行；
-# 未登记的工具（含未来新增工具）一律视为「不安全」，自动退化为单独串行执行——
-# 宁可错杀（多一次串行等待），不可放过（让高风险动作在并发中失控）。
+# Tools not explicitly declared safe remain serialized by default.
 TOOL_CONCURRENCY_SAFE: set[str] = {
-    # 只读查询类：不修改任何业务状态，互不干扰，可放心并发
     "query_order",
     "query_payment",
     "query_coupon_issue_log",
@@ -69,158 +39,361 @@ TOOL_CONCURRENCY_SAFE: set[str] = {
     "coupon_policy_lookup",
     "knowledge_search",
 }
-# 不在上面集合中的工具（如 execute_refund / issue_compensation_coupon —— 资金类
-# 高风险写操作；campaign_draft_generate —— 有副作用的生成型操作）一律按不安全处理。
 
 
 def is_tool_concurrency_safe(tool_name: str) -> bool:
-    """判断工具是否可与其他工具并发执行（fail-closed：未登记 = 不安全）。"""
+    """Return whether a tool may be run concurrently (fail closed)."""
     return tool_name in TOOL_CONCURRENCY_SAFE
 
 
-# 工具任务分组（按使用场景分类）
-TOOL_TASK_MAP: dict[str, list[str]] = {
-    "diagnosis": [    # 订单异常排查场景
-        "query_order", "query_payment", "query_coupon_issue_log",
-        "query_mq_dead_letter", "execute_refund", "issue_compensation_coupon",
-    ],
-    "analytics": [    # 经营数据分析场景
-        "shop_metrics_query", "coupon_policy_lookup", "knowledge_search",
-    ],
-    "campaign": [     # 活动配置场景
-        "campaign_draft_generate", "coupon_policy_lookup", "shop_metrics_query",
-    ],
-    "knowledge": [    # 知识问答场景
-        "knowledge_search", "coupon_policy_lookup",
-    ],
-    "general": [      # 通用（首次请求，任务类型未知）
-        "query_order", "shop_metrics_query", "knowledge_search",
-        "coupon_policy_lookup",
-    ],
-}
-
-# 触发任务类型检测的关键词（从用户消息中推断任务类型）
-TASK_KEYWORDS: dict[str, list[str]] = {
-    "diagnosis": [
-        "订单", "支付", "没收到", "已付款", "未发券", "异常", "投诉", "退款",
-        "order", "payment", "refund", "issue",
-    ],
-    "analytics": [
-        "卖了多少", "营业额", "gmv", "订单量", "数据", "统计",
-        "昨天", "今天", "这周", "这个月",
-    ],
-    "campaign": [
-        "活动", "优惠券", "配置", "创建", "发券", "节日", "大促",
-        "campaign", "coupon",
-    ],
-    "knowledge": [
-        "规则", "政策", "限制", "怎么", "为什么", "什么是",
-        "rule", "policy",
-    ],
+ROUTE_MODES = {"controlled", "clarification", "general_fallback"}
+GENERAL_READ_ONLY_TOOLS = (
+    "query_order",
+    "shop_metrics_query",
+    "knowledge_search",
+    "coupon_policy_lookup",
+)
+TASK_TOOL_PLANS: dict[str, tuple[str, ...]] = {
+    "analytics": ("shop_metrics_query",),
+    "order_query": ("query_order",),
+    "payment_diagnosis": ("query_order", "query_payment"),
+    "coupon_issue": ("query_order", "query_coupon_issue_log"),
+    "coupon_root_cause": (
+        "query_order",
+        "query_coupon_issue_log",
+        "query_mq_dead_letter",
+    ),
+    "mq_diagnosis": ("query_order", "query_mq_dead_letter"),
+    "knowledge": ("knowledge_search",),
+    "policy_configuration": ("knowledge_search", "coupon_policy_lookup"),
+    "refund_action": ("query_order", "execute_refund"),
+    "compensation_action": (
+        "query_order",
+        "query_coupon_issue_log",
+        "issue_compensation_coupon",
+    ),
 }
 
 
-# =========================================================
-# Tool Router 核心逻辑
-# =========================================================
+@dataclass(frozen=True)
+class RouteDecision:
+    task_type: str
+    route_mode: str
+    confidence: int
+    required_tools: tuple[str, ...] = ()
+    authorized_tools: tuple[str, ...] = ()
+    next_tool: str | None = None
+    missing_fields: tuple[str, ...] = ()
+
+    def to_state(self) -> dict[str, object]:
+        return {
+            "route_task_type": self.task_type,
+            "route_mode": self.route_mode,
+            "route_confidence": self.confidence,
+            "route_required_tools": list(self.required_tools),
+            "route_authorized_tools": list(self.authorized_tools),
+            "route_next_tool": self.next_tool,
+            "route_missing_fields": list(self.missing_fields),
+        }
+
+    @classmethod
+    def from_state(cls, state: Mapping[str, object]) -> "RouteDecision":
+        return cls(
+            task_type=str(state.get("route_task_type", "unknown")),
+            route_mode=str(state.get("route_mode", "clarification")),
+            confidence=int(state.get("route_confidence", 0)),
+            required_tools=tuple(state.get("route_required_tools", ())),
+            authorized_tools=tuple(state.get("route_authorized_tools", ())),
+            next_tool=state.get("route_next_tool"),
+            missing_fields=tuple(state.get("route_missing_fields", ())),
+        )
+
+
+def _decision(
+    user_role: str,
+    task_type: str,
+    score: int,
+    *,
+    route_mode: str = "controlled",
+    required_tools: Sequence[str] = (),
+    missing_fields: Sequence[str] = (),
+) -> RouteDecision:
+    required = tuple(required_tools)
+    authorized = tuple(
+        name for name in required if is_tool_allowed_for_role(name, user_role)
+    )
+    first = required[0] if required and required[0] in authorized else None
+    return RouteDecision(
+        task_type=task_type,
+        route_mode=route_mode,
+        confidence=min(score, 100),
+        required_tools=required,
+        authorized_tools=authorized,
+        next_tool=first,
+        missing_fields=tuple(missing_fields),
+    )
+
+
+def _contains_any(text: str, terms: Sequence[str]) -> bool:
+    return any(term in text for term in terms)
+
+
+def _order_ids(text: str) -> tuple[str, ...]:
+    matches = re.findall(r"(?<!\d)\d{12,}(?!\d)", text)
+    return tuple(dict.fromkeys(matches))
+
+
+def _clarification(user_role: str, task_type: str, score: int, field: str) -> RouteDecision:
+    return _decision(
+        user_role,
+        task_type,
+        score,
+        route_mode="clarification",
+        missing_fields=(field,),
+    )
+
+
+def _campaign_plan(text: str) -> tuple[str, ...]:
+    has_threshold = _contains_any(text, ("满", "门槛", "阈值", "threshold"))
+    has_validity = _contains_any(text, ("有效期", "天", "日期", "validity"))
+    has_purchase_limit = _contains_any(text, ("限购", "每人限", "purchase limit"))
+    if has_threshold and has_validity and has_purchase_limit:
+        return ("campaign_draft_generate",)
+    return ("coupon_policy_lookup", "campaign_draft_generate")
+
+
+def classify_request(user_role: str, message: str) -> RouteDecision:
+    """Classify one user request without consulting conversation or tool output."""
+    text = re.sub(r"\s+", " ", message.lower()).strip()
+    order_ids = _order_ids(text)
+    has_one_order = len(order_ids) == 1
+    has_order_reference = has_one_order or _contains_any(text, ("订单", "order"))
+
+    knowledge_terms = (
+        "规则",
+        "政策",
+        "限制",
+        "区别",
+        "比例",
+        "sla",
+        "时限",
+        "什么是",
+        "怎么",
+        "为何",
+    )
+    has_knowledge = _contains_any(text, knowledge_terms)
+    has_question = _contains_any(text, ("？", "?", "什么", "为什么", "如何", "怎么", "吗"))
+    has_metric = _contains_any(
+        text,
+        ("订单量", "多少笔订单", "多少单", "gmv", "营业额", "销售额", "交易额", "卖了多少", "多少钱"),
+    )
+    has_aggregate = has_metric or _contains_any(text, ("数据", "统计", "总共", "汇总"))
+    has_supported_date = _contains_any(text, ("今天", "昨日", "昨天", "today", "yesterday")) or bool(
+        re.search(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{4}年\d{1,2}月\d{1,2}日", text)
+    )
+    has_unsupported_date = _contains_any(
+        text,
+        ("这个月", "本月", "这月", "这周", "本周", "最近", "范围", "区间"),
+    )
+    analytics_score = (
+        (60 if has_aggregate else 0)
+        + (30 if has_metric else 0)
+        + (20 if has_supported_date else 0)
+    )
+    analytics_intent = has_aggregate or has_metric or has_unsupported_date
+
+    refund_words = ("退款", "退钱", "退回")
+    compensation_words = ("补券", "补发券", "补发优惠券", "赔付券", "补偿券")
+    is_policy_question = has_knowledge and not has_one_order
+    refund_intent = _contains_any(text, refund_words) and not is_policy_question
+    compensation_intent = _contains_any(text, compensation_words) and not is_policy_question
+
+    has_mq = _contains_any(text, ("mq", "消息队列", "死信", "dead letter", "消费失败", "消费者失败"))
+    has_coupon_issue = _contains_any(
+        text,
+        ("没收到券", "没发券", "未发券", "发券失败", "优惠券异常", "券异常", "库存不足"),
+    )
+    has_root_cause = _contains_any(text, ("根因", "根本原因", "查原因", "为什么"))
+    has_explicit_payment_issue = _contains_any(
+        text,
+        ("支付失败", "支付异常", "支付状态", "支付回调", "支付不一致"),
+    )
+    has_payment_issue = has_explicit_payment_issue or ("支付" in text and has_coupon_issue)
+    has_campaign_object = _contains_any(text, ("活动", "优惠券", "campaign", "coupon"))
+    has_campaign_verb = _contains_any(text, ("创建", "新建", "生成", "草拟", "起草", "draft"))
+    campaign_intent = has_campaign_object and has_campaign_verb
+    configuration_intent = (
+        has_knowledge
+        and _contains_any(text, ("配置", "门槛", "限购", "阈值", "有效期"))
+        and not campaign_intent
+    )
+    order_query_intent = has_order_reference and _contains_any(
+        text, ("查", "查询", "状态", "详情", "订单")
+    )
+
+    if refund_intent:
+        if not has_one_order:
+            return _clarification(user_role, "refund_action", 100, "order_id")
+        return _decision(
+            user_role,
+            "refund_action",
+            100,
+            required_tools=TASK_TOOL_PLANS["refund_action"],
+        )
+    if compensation_intent:
+        if not has_one_order:
+            return _clarification(user_role, "compensation_action", 100, "order_id")
+        return _decision(
+            user_role,
+            "compensation_action",
+            100,
+            required_tools=TASK_TOOL_PLANS["compensation_action"],
+        )
+
+    diagnostic_scores: dict[str, int] = {}
+    if has_mq:
+        diagnostic_scores["mq_diagnosis"] = 90
+    if has_coupon_issue:
+        diagnostic_scores["coupon_root_cause" if has_root_cause else "coupon_issue"] = (
+            100 if has_root_cause else 80
+        )
+    if has_payment_issue:
+        diagnostic_scores["payment_diagnosis"] = 80
+
+    if diagnostic_scores and not has_one_order:
+        task_type, score = max(diagnostic_scores.items(), key=lambda item: item[1])
+        return _clarification(user_role, task_type, score, "order_id")
+
+    scored_families: dict[str, int] = dict(diagnostic_scores)
+    if analytics_intent:
+        scored_families["analytics"] = analytics_score
+    if has_knowledge and not campaign_intent:
+        scored_families["policy_configuration" if configuration_intent else "knowledge"] = (
+            60 + (20 if has_question else 0) + (20 if not has_one_order else 0) + (30 if configuration_intent else 0)
+        )
+    if campaign_intent:
+        scored_families["campaign_draft"] = 100
+    if order_query_intent and not diagnostic_scores and not analytics_intent:
+        scored_families["order_query"] = 50 + (30 if has_order_reference else 0)
+
+    unrelated_scores = sorted(scored_families.values(), reverse=True)
+    if (
+        len(unrelated_scores) >= 2
+        and unrelated_scores[0] >= 60
+        and unrelated_scores[1] >= 60
+        and unrelated_scores[0] - unrelated_scores[1] < 20
+    ):
+        return _decision(user_role, "unknown", unrelated_scores[0], route_mode="general_fallback")
+
+    for task_type in (
+        "mq_diagnosis",
+        "coupon_root_cause",
+        "coupon_issue",
+        "payment_diagnosis",
+    ):
+        if task_type in diagnostic_scores:
+            return _decision(
+                user_role,
+                task_type,
+                diagnostic_scores[task_type],
+                required_tools=TASK_TOOL_PLANS[task_type],
+            )
+
+    if analytics_intent:
+        if not has_metric:
+            return _clarification(user_role, "analytics", analytics_score, "metric")
+        if has_unsupported_date:
+            return _clarification(user_role, "analytics", analytics_score, "supported_date")
+        if not has_supported_date:
+            return _clarification(user_role, "analytics", analytics_score, "date")
+        return _decision(
+            user_role,
+            "analytics",
+            analytics_score,
+            required_tools=TASK_TOOL_PLANS["analytics"],
+        )
+
+    if configuration_intent:
+        return _decision(
+            user_role,
+            "policy_configuration",
+            scored_families["policy_configuration"],
+            required_tools=TASK_TOOL_PLANS["policy_configuration"],
+        )
+    if has_knowledge and not campaign_intent:
+        return _decision(
+            user_role,
+            "knowledge",
+            scored_families["knowledge"],
+            required_tools=TASK_TOOL_PLANS["knowledge"],
+        )
+    if campaign_intent:
+        return _decision(
+            user_role,
+            "campaign_draft",
+            100,
+            required_tools=_campaign_plan(text),
+        )
+    if order_query_intent:
+        if not has_one_order:
+            return _clarification(user_role, "order_query", 80, "order_id")
+        return _decision(
+            user_role,
+            "order_query",
+            80,
+            required_tools=TASK_TOOL_PLANS["order_query"],
+        )
+
+    has_business_entity = _contains_any(
+        text, ("订单", "支付", "退款", "优惠券", "规则", "政策", "campaign", "coupon")
+    )
+    has_action = _contains_any(text, ("创建", "查", "查询", "退款", "补券", "生成"))
+    if text and not has_business_entity and not has_metric and not has_action:
+        return _decision(user_role, "small_talk", 100)
+    return _clarification(user_role, "unknown", 0, "subject")
+
 
 class ToolRouter:
-    """
-    动态工具路由器。
+    """Expose only the next authorized tool for a retained route decision."""
 
-    使用方式：
-      router = ToolRouter(user_role="merchant", user_message="我昨天卖了多少钱")
-      filtered_tools = router.route(all_tools)
-      # filtered_tools 只包含 merchant 角色可见的经营数据工具
-    """
-
-    def __init__(self, user_role: str, user_message: str = "", conversation_context: str = ""):
+    def __init__(
+        self,
+        user_role: str,
+        user_message: str = "",
+        conversation_context: str = "",
+    ):
         self.user_role = user_role
         self.user_message = user_message
         self.conversation_context = conversation_context
-
-        # 从用户消息推断任务类型
-        self.task_type = self._detect_task_type(user_message + " " + conversation_context)
+        self.decision = classify_request(user_role, user_message)
+        self.task_type = self.decision.task_type
         log.debug("tool_router_init", role=user_role, task_type=self.task_type)
 
+    @classmethod
+    def from_state(cls, state: Mapping[str, object]) -> "ToolRouter":
+        router = cls.__new__(cls)
+        router.user_role = str(state.get("user_role", ""))
+        router.user_message = ""
+        router.conversation_context = ""
+        router.decision = RouteDecision.from_state(state)
+        router.task_type = router.decision.task_type
+        return router
+
     def route(self, all_tools: list[dict]) -> list[dict]:
-        """
-        对完整工具列表进行过滤，返回当前上下文适合的工具子集。
-
-        过滤顺序：
-          1. 角色过滤（RBAC）：去掉当前角色无权使用的工具
-          2. 任务过滤：只保留与当前任务相关的工具
-          3. 上下文过滤：根据对话历史进一步精简（如：尚未确认支付成功，不展示退款工具）
-
-        :param all_tools: tools/list 返回的完整工具定义列表
-        :return: 过滤后的工具子集
-        """
-        # Step 1：RBAC 过滤
-        role_filtered = [
-            t for t in all_tools
-            if self._check_role(t["name"])
+        by_name = {tool["name"]: tool for tool in all_tools}
+        if self.decision.route_mode == "clarification":
+            return []
+        if self.decision.route_mode == "controlled":
+            name = self.decision.next_tool
+            if (
+                name is None
+                or name not in self.decision.authorized_tools
+                or not is_tool_allowed_for_role(name, self.user_role)
+            ):
+                return []
+            return [by_name[name]] if name in by_name else []
+        return [
+            by_name[name]
+            for name in GENERAL_READ_ONLY_TOOLS
+            if name in by_name and is_tool_allowed_for_role(name, self.user_role)
         ]
-
-        # Step 2：任务类型过滤
-        task_filtered = self._filter_by_task(role_filtered)
-
-        # Step 3：上下文过滤（防止 Agent 在没有充分证据时就展示高风险工具）
-        context_filtered = self._filter_by_context(task_filtered)
-
-        original_count = len(all_tools)
-        final_count    = len(context_filtered)
-        log.info(
-            "tools_routed",
-            role=self.user_role,
-            task=self.task_type,
-            original=original_count,
-            final=final_count,
-            tools=[t["name"] for t in context_filtered],
-        )
-        return context_filtered
-
-    def _check_role(self, tool_name: str) -> bool:
-        """检查当前角色是否有权使用此工具。"""
-        return is_tool_allowed_for_role(tool_name, self.user_role)
-
-    def _filter_by_task(self, tools: list[dict]) -> list[dict]:
-        """只保留与当前任务类型相关的工具。"""
-        task_tools = TOOL_TASK_MAP.get(self.task_type, TOOL_TASK_MAP["general"])
-        return [t for t in tools if t["name"] in task_tools]
-
-    def _filter_by_context(self, tools: list[dict]) -> list[dict]:
-        """
-        根据对话历史精简工具。
-
-        核心逻辑：高风险工具（退款/补券）只有在对话中已经出现
-        「支付成功」「订单状态 PAID」等关键词时才展示。
-        避免 Agent 在不了解完整情况时就提议退款。
-        """
-        context_lower = self.conversation_context.lower()
-
-        filtered = []
-        for t in tools:
-            name = t["name"]
-            # 退款工具：只有在已确认支付成功后才展示
-            if name == "execute_refund":
-                if not self._context_contains_any(context_lower, ["paid", "success", "已付", "支付成功"]):
-                    continue  # 不展示，减少误触发风险
-            # 补券工具：只有在已确认券发放失败后才展示
-            if name == "issue_compensation_coupon":
-                if not self._context_contains_any(context_lower, ["not_issued", "failed", "未发券", "发券失败"]):
-                    continue
-            filtered.append(t)
-
-        return filtered
-
-    def _detect_task_type(self, text: str) -> str:
-        """从文本中推断任务类型（简单关键词匹配）。"""
-        text_lower = text.lower()
-        for task, keywords in TASK_KEYWORDS.items():
-            if any(kw in text_lower for kw in keywords):
-                return task
-        return "general"
-
-    @staticmethod
-    def _context_contains_any(context: str, keywords: list[str]) -> bool:
-        return any(kw in context for kw in keywords)
