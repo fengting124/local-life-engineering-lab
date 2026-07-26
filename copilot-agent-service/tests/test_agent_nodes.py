@@ -121,6 +121,51 @@ class TestHitlNode:
 
 class TestToolNode:
     @pytest.mark.asyncio
+    async def test_controlled_multi_call_batch_is_rejected_without_execution(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.call_tool = AsyncMock(return_value="不该被调用")
+        advance = MagicMock()
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "advance_evidence", advance)
+        calls = [
+            {
+                "name": "query_order",
+                "args": {"order_id": "202606100001"},
+                "id": "c1",
+            },
+            {
+                "name": "query_payment",
+                "args": {"order_id": "202606100001"},
+                "id": "c2",
+            },
+        ]
+        state = controlled_state(
+            [ai_with_tool_calls(calls)],
+            "payment_diagnosis",
+            ["query_order", "query_payment"],
+            ["query_order", "query_payment"],
+            "query_order",
+            user_role="admin",
+        )
+
+        result = await nodes.tool_node(state)
+
+        assert [message.tool_call_id for message in result["messages"]] == [
+            "c1",
+            "c2",
+        ]
+        assert all(
+            json.loads(message.content)["error"] == "internal_error"
+            for message in result["messages"]
+        )
+        assert result["route_next_tool"] is None
+        assert result["evidence_stop_reason"] == "internal_error"
+        mock_mcp.call_tool.assert_not_awaited()
+        advance.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_tool_success_advances_payment_route(self, monkeypatch):
         mock_mcp = MagicMock()
         mock_mcp.call_tool = AsyncMock(return_value=json.dumps({
@@ -733,6 +778,51 @@ class TestLlmNode:
         assert result["final_answer"] == "订单已支付。"
         mcp_factory.assert_not_called()
         native_factory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_synthesis_only_tool_call_is_normalized_before_persistence(
+        self, monkeypatch
+    ):
+        import session.manager as manager_module
+
+        response = AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "query_order",
+                "args": {"order_id": "202606100001"},
+                "id": "escape",
+                "type": "tool_call",
+            }],
+            usage_metadata={
+                "input_tokens": 4,
+                "output_tokens": 3,
+                "total_tokens": 7,
+            },
+        )
+        fake_llm = FakeLLM(response)
+        mock_manager = MagicMock()
+        mock_manager.save_message = AsyncMock()
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(manager_module, "session_manager", mock_manager)
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="总结已收集的证据")],
+            session_id=99,
+            synthesis_only=True,
+            evidence_complete=True,
+            route_next_tool=None,
+        ))
+
+        assert result["messages"][0].tool_calls == []
+        assert result["final_answer"] == (
+            "依赖工具返回异常，本次任务未生成未经证实的结论。"
+        )
+        assert result["evidence_stop_reason"] == "internal_error"
+        assert result["route_next_tool"] is None
+        assert result["token_count"] == 107
+        persisted = mock_manager.save_message.await_args.kwargs
+        assert persisted["tool_calls"] is None
+        assert persisted["tokens"] == 7
 
     @pytest.mark.asyncio
     async def test_clarification_skips_mcp_rag_and_llm(self, monkeypatch):

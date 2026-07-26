@@ -75,6 +75,9 @@ def route_after_llm(state: AgentState) -> str:
     if state.get("final_answer"):
         return "final_node"
 
+    if state.get("synthesis_only"):
+        return "final_node"
+
     # A tool-calling assistant message must be followed immediately by all of
     # its ToolMessages. Inserting compact/reflection messages first violates
     # the OpenAI-compatible chat protocol used by DeepSeek.

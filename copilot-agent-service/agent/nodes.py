@@ -313,15 +313,31 @@ async def llm_node(state: AgentState) -> dict:
             ):
                 response = await llm_with_tools.ainvoke(messages)
 
+    usage = getattr(response, "usage_metadata", {}) or {}
+    synthesis_tool_call_rejected = bool(
+        state.get("synthesis_only")
+        and getattr(response, "tool_calls", None)
+    )
+    if synthesis_tool_call_rejected:
+        log.warning(
+            "synthesis_tool_call_rejected",
+            proposed_tools=[
+                tool_call.get("name", "unknown")
+                for tool_call in response.tool_calls
+            ],
+        )
+        response = AIMessage(
+            content="依赖工具返回异常，本次任务未生成未经证实的结论。"
+        )
+
     log.info(
         "llm_response",
         step=state["step_count"],
         has_tool_calls=bool(getattr(response, "tool_calls", None)),
-        token_usage=getattr(response, "usage_metadata", {}),
+        token_usage=usage,
     )
 
     # 更新 token 计数
-    usage = getattr(response, "usage_metadata", {}) or {}
     new_tokens = usage.get("total_tokens", 0)
 
     # 检查是否是 Final Answer（无 tool_calls）
@@ -353,7 +369,7 @@ async def llm_node(state: AgentState) -> dict:
     except Exception as e:
         log.warning("save_assistant_message_failed", error=str(e))
 
-    return {
+    update = {
         "messages": [response],
         "step_count": state["step_count"] + 1,
         "token_count": state["token_count"] + new_tokens,
@@ -361,6 +377,12 @@ async def llm_node(state: AgentState) -> dict:
         "last_tool_failed": False,  # 重置
         "needs_reflection": False,  # 重置
     }
+    if synthesis_tool_call_rejected:
+        update.update({
+            "route_next_tool": None,
+            "evidence_stop_reason": "internal_error",
+        })
+    return update
 
 
 def _detect_loop(messages: list, tool_name: str, args: dict) -> bool:
@@ -545,6 +567,40 @@ async def tool_node(state: AgentState) -> dict:
             "stop_reason": "tool_budget_exhausted",
             "route_next_tool": None,
             "evidence_stop_reason": "tool_budget_exhausted",
+        }
+
+    if state.get("route_mode") == "controlled" and (
+        len(tool_calls) != 1
+        or tool_calls[0]["name"] != state.get("route_next_tool")
+    ):
+        log.warning(
+            "controlled_tool_batch_rejected",
+            expected_tool=state.get("route_next_tool"),
+            proposed_tools=[tool_call["name"] for tool_call in tool_calls],
+        )
+        rejected_messages = [
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "error": "internal_error",
+                        "reason": "invalid_controlled_tool_batch",
+                        "tool": tool_call["name"],
+                    },
+                    ensure_ascii=False,
+                ),
+                tool_call_id=tool_call.get("id", ""),
+                name=tool_call["name"],
+            )
+            for tool_call in tool_calls
+        ]
+        return {
+            **budget_state,
+            "messages": rejected_messages,
+            "last_tool_failed": True,
+            "last_tool_error": "invalid_controlled_tool_batch",
+            "stop_reason": "internal_error",
+            "route_next_tool": None,
+            "evidence_stop_reason": "internal_error",
         }
 
     pending_action = state.get("pending_action") or {}

@@ -61,6 +61,12 @@ class TestRouteAfterLlm:
     def test_final_answer_present_goes_final(self):
         assert route_after_llm(base_state(final_answer="答案已就绪")) == "final_node"
 
+    def test_synthesis_only_tool_calls_go_final(self):
+        assert route_after_llm(base_state(
+            synthesis_only=True,
+            messages=[msg_with_tool_calls()],
+        )) == "final_node"
+
     def test_compact_triggered_near_budget(self):
         # token 接近预算阈值 + 熔断未触发 + 消息够多 → 压缩
         threshold = settings.session_token_budget - settings.compact_buffer_tokens
