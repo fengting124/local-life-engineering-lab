@@ -232,11 +232,17 @@ async def llm_node(state: AgentState) -> dict:
                 mcp_available = False
 
             next_tool = state.get("route_next_tool")
+            discovered_tool_names = {
+                tool["name"] for tool in all_tools
+            }
             if (
-                not mcp_available
-                and state.get("route_mode") == "controlled"
+                state.get("route_mode") == "controlled"
                 and next_tool
                 and next_tool != "knowledge_search"
+                and (
+                    not mcp_available
+                    or next_tool not in discovered_tool_names
+                )
             ):
                 response = AIMessage(
                     content="抱歉，发生内部错误，完成该请求所需的工具暂时不可用，请稍后重试。"

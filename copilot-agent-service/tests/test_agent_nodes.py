@@ -663,6 +663,35 @@ class TestLlmNode:
         fake_llm.ainvoke.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_controlled_missing_mcp_tool_returns_internal_error(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[
+            {"name": "query_order", "description": "查订单"},
+        ])
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock(return_value=AIMessage(content="不应调用模型"))
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="查询订单 202606100001 的支付状态")],
+            user_role="admin",
+            route_task_type="payment_diagnosis",
+            route_mode="controlled",
+            route_required_tools=["query_order", "query_payment"],
+            route_authorized_tools=["query_order", "query_payment"],
+            route_next_tool="query_payment",
+        ))
+
+        assert result["final_answer"] == (
+            "抱歉，发生内部错误，完成该请求所需的工具暂时不可用，请稍后重试。"
+        )
+        fake_llm.bind_tools.assert_not_called()
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_controlled_native_knowledge_route_survives_mcp_failure(
         self, monkeypatch
     ):
