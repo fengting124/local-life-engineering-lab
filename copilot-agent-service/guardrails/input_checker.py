@@ -117,12 +117,9 @@ _POLICY_QUESTION_EXEMPT_RULES = frozenset({
 
 _POLICY_NOUNS = ("规则", "政策", "流程", "审批", "权限")
 _QUESTION_PHRASES = ("是什么", "有哪些", "为什么", "为何", "如何", "怎么", "是否", "能否")
-_DANGEROUS_BYPASS_PATTERN = re.compile(
-    r"(?:如何|怎么).{0,10}(?:绕过|跳过|忽略)",
-    re.IGNORECASE,
-)
+_BYPASS_TOKENS = ("绕过", "跳过", "忽略", "规避", "绕开", "bypass")
 _EXECUTION_CONTINUATION_PATTERN = re.compile(
-    r"(?:然后|同时|顺便|另外|接着|随后).{0,16}"
+    r"(?:然后|同时|顺便|另外|接着|随后|并且|并|以及|再|还要|之后).{0,16}"
     r"(?:立即|直接|现在|马上|请|帮我)?"
     r"(?:查|查看|查询|导出|列出|退款|补发|补券|发放|执行)",
     re.IGNORECASE,
@@ -149,7 +146,8 @@ def _is_clear_policy_question(text: str) -> bool:
         return False
 
     question_body = stripped[:-1]
-    if _DANGEROUS_BYPASS_PATTERN.search(question_body):
+    normalized_body = question_body.lower()
+    if any(token in normalized_body for token in _BYPASS_TOKENS):
         return False
     if _EXECUTION_CONTINUATION_PATTERN.search(question_body):
         return False
