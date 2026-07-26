@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from agent.tool_router import TOOL_ROLE_MAP
 from evals.eval_cases import (
     BOUNDARY_CASES,
     DIAGNOSIS_CASES,
@@ -49,10 +50,19 @@ class BaselineCaseResult:
     hitl_accuracy: float
     refusal_accuracy: float
     tool_count: int
+    actual_tools: tuple[str, ...]
     latency_ms: float
     time_to_first_sse_ms: int | None
     stop_reason: str
     failure_category: str | None
+
+
+def _sanitize_tool_sequence(tools: Iterable[object]) -> tuple[str, ...]:
+    """Persist only names from the production tool registry."""
+    return tuple(
+        tool if isinstance(tool, str) and tool in TOOL_ROLE_MAP else "unknown_tool"
+        for tool in tools
+    )
 
 
 def select_baseline_cases() -> list[EvalCase]:
@@ -340,6 +350,7 @@ async def _run_one(
                 hitl_accuracy=scores.hitl_accuracy,
                 refusal_accuracy=scores.refusal_accuracy,
                 tool_count=len(actual_tools),
+                actual_tools=_sanitize_tool_sequence(actual_tools),
                 latency_ms=float(latency_ms),
                 time_to_first_sse_ms=response.get("time_to_first_sse_ms"),
                 stop_reason=response.get("stop_reason", "unknown"),
@@ -363,6 +374,7 @@ async def _run_one(
                 hitl_accuracy=0.0,
                 refusal_accuracy=0.0,
                 tool_count=0,
+                actual_tools=(),
                 latency_ms=(time.perf_counter() - started_at) * 1000,
                 time_to_first_sse_ms=None,
                 stop_reason="runner_error",
@@ -509,13 +521,14 @@ def write_outputs(report: dict, output_dir: Path, run_name: str) -> tuple[Path, 
         "",
         "## Per-case result matrix",
         "",
-        "| Case | Iteration | Outcome | Stop | Failure |",
-        "| ---: | ---: | --- | --- | --- |",
+        "| Case | Iteration | Outcome | Stop | Tools | Failure |",
+        "| ---: | ---: | --- | --- | --- | --- |",
     ])
     for row in report["results"]:
         lines.append(
             f"| {row['case_id']} | {row['iteration']} | "
             f"{row['expected_outcome']} | {row['stop_reason']} | "
+            f"{' -> '.join(row['actual_tools']) or '-'} | "
             f"{row['failure_category'] or 'PASS'} |"
         )
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -71,6 +71,7 @@ async def test_expected_guardrail_block_counts_as_success(monkeypatch, tmp_path)
     assert result.success is True
     assert result.task_completed is True
     assert result.permission_accuracy == 1.0
+    assert result.actual_tools == ()
     assert result.failure_category is None
 
     report = summarize([result])
@@ -79,7 +80,44 @@ async def test_expected_guardrail_block_counts_as_success(monkeypatch, tmp_path)
     _, markdown_path = write_outputs(report, tmp_path, "contract")
     markdown = markdown_path.read_text(encoding="utf-8")
     assert "## Per-case result matrix" in markdown
-    assert "| 46 | 1 | refusal | guardrails_blocked | PASS |" in markdown
+    assert "| 46 | 1 | refusal | guardrails_blocked | - | PASS |" in markdown
+
+
+@pytest.mark.asyncio
+async def test_result_keeps_sanitized_tool_name_sequence(monkeypatch, tmp_path):
+    injected_name = "query_order | leaked\n## injected"
+
+    async def fake_invoke(**_kwargs):
+        return {
+            **_success_response(),
+            "tools_called": ["query_order", "knowledge_search", injected_name],
+        }
+
+    monkeypatch.setattr(deepseek_baseline, "invoke_real_agent", fake_invoke)
+
+    result = await _run_one(
+        deepseek_baseline._with_baseline_contract(QUERY_CASES[3]),
+        concurrency=1,
+        iteration=1,
+        semaphore=asyncio.Semaphore(1),
+        agent_url="http://agent.test",
+    )
+
+    assert result.actual_tools == (
+        "query_order",
+        "knowledge_search",
+        "unknown_tool",
+    )
+    assert not hasattr(result, "tool_arguments")
+    assert not hasattr(result, "tool_outputs")
+
+    report = summarize([result])
+    json_path, markdown_path = write_outputs(report, tmp_path, "tools")
+    serialized = json_path.read_text(encoding="utf-8")
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert injected_name not in serialized
+    assert injected_name not in markdown
+    assert "query_order -> knowledge_search -> unknown_tool" in markdown
 
 
 @pytest.mark.asyncio
