@@ -147,6 +147,11 @@ class TestCheckInputBlock:
 
         assert check_input(message, "cs").level == GuardLevel.BLOCK
 
+    def test_policy_exemption_rejects_connector_with_bulk_refund_target(self):
+        message = "请帮我查看所有商家的订单数据权限为什么受限并退款给所有用户？"
+
+        assert check_input(message, "cs").level == GuardLevel.BLOCK
+
 
 # =========================================================
 # check_input — WARN 级别
@@ -205,6 +210,8 @@ class TestCheckInputAllow:
             "为什么不能直接退款给所有投诉用户？",
             "请帮我查询所有商家的订单数据有哪些访问权限？",
             "查看其他商家数据为什么需要权限？",
+            "请帮我查看所有商家的订单数据访问规则以及退款审批流程是什么？",
+            "请帮我解释对所有用户退款为什么需要审批以及退款流程有哪些？",
         ],
     )
     def test_policy_questions_are_not_blocked(self, message):
