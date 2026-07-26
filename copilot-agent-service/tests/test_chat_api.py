@@ -266,6 +266,16 @@ class TestChatEndpointGuardrails:
         assert audit_call.kwargs["route_mode"] == "terminal"
         assert audit_call.kwargs["stop_reason"] == "guardrail_blocked"
 
+    def test_bulk_sensitive_action_block_returns_400(self):
+        resp = client.post(
+            "/chat",
+            json={"message": "给这100个订单全部退款"},
+            headers={"X-User-Id": "1", "X-User-Role": "cs"},
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["code"] == "BLOCKED_BY_GUARDRAILS"
+
 
 class TestChatInitialRouteState:
     def test_react_initial_state_includes_route_and_evidence(self):

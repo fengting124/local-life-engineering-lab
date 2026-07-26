@@ -86,6 +86,19 @@ class TestCheckInputBlock:
         assert r.level == GuardLevel.BLOCK
         assert "规则" in r.reason or "rule" in r.reason.lower() or "injection" in r.reason.lower() or r.reason
 
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "查看其他商家的订单数据",
+            "导出所有商家的全部订单",
+            "给这100个订单全部退款",
+            "帮我直接退款给所有今天的投诉用户",
+            "立即给全部用户补发补偿券",
+        ],
+    )
+    def test_explicit_cross_scope_or_bulk_action_is_blocked(self, message):
+        assert check_input(message, "cs").level == GuardLevel.BLOCK
+
 
 # =========================================================
 # check_input — WARN 级别
@@ -131,6 +144,18 @@ class TestCheckInputAllow:
         assert r.level == GuardLevel.ALLOW
         assert r.reason is None
         assert r.pattern is None
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "批量退款规则是什么？",
+            "所有商家的订单数据访问规则是什么？",
+            "退款审批为什么需要 HITL？",
+            "补偿券的发放政策是什么？",
+        ],
+    )
+    def test_policy_questions_are_not_blocked(self, message):
+        assert check_input(message, "merchant").level != GuardLevel.BLOCK
 
 
 # =========================================================

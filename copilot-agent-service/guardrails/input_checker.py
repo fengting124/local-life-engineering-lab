@@ -67,10 +67,26 @@ _BLOCK_PATTERNS: list[tuple[str, str]] = [
     # 尝试越权访问其他商家数据
     (r"查[^\n]{0,20}商家.{0,10}(所有|全部|其他|任意).{0,10}(订单|数据|信息)",
      "cross_merchant_access"),
+    (
+        r"(查|查看|导出|列出|给我).{0,20}(所有|全部|其他|任意).{0,10}商家"
+        r".{0,20}(订单|数据|信息)",
+        "cross_merchant_access_prefix",
+    ),
     (r"merchant_id\s*=\s*[\"']?\d+[\"']?\s*(,|\s).*(?:all|all_merchants|all_orders)",
      "explicit_cross_merchant"),
 
     # 高风险动作越权 / 跳过审批
+    (
+        r"(给|将|对|帮我).{0,20}(所有|全部|批量|\d+\s*(个|笔|条))"
+        r".{0,20}(订单|用户).{0,20}(退款|补发|补券|补偿券)",
+        "bulk_sensitive_action",
+    ),
+    (
+        r"(直接|立即|现在).{0,10}(退款|补发|补券|补偿券)"
+        r".{0,20}(给|处理).{0,10}(所有|全部|批量)"
+        r".{0,20}(用户|订单|投诉)",
+        "bulk_sensitive_action_reversed",
+    ),
     (r"(忽略|绕过|跳过).{0,20}(权限|rbac|审批|hitl).{0,30}(退款|补偿券|补券|execute_refund|issue_compensation_coupon)",
      "bypass_rbac_or_hitl_for_sensitive_action"),
     (r"(退款|补偿券|补券|execute_refund|issue_compensation_coupon).{0,30}(不用|无需|跳过|绕过).{0,20}(审批|hitl|客服|人工)",
