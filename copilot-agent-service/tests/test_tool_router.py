@@ -213,6 +213,58 @@ def test_strong_high_risk_execution_overrides_policy_semantics(message, task_typ
     assert decision.next_tool == "query_order"
 
 
+@pytest.mark.parametrize("action", ["退款", "补券"])
+def test_strong_execution_phrase_can_be_the_subject_of_knowledge_query(action):
+    decision = classify_request(
+        "admin",
+        f"查询订单 202606100001 执行{action}的规则",
+    )
+
+    assert decision.task_type == "knowledge"
+    assert decision.next_tool == "knowledge_search"
+
+
+@pytest.mark.parametrize("action", ["退款", "补券"])
+@pytest.mark.parametrize(
+    "message_template",
+    [
+        "订单 202606100001 如何执行{action}？",
+        "订单 202606100001 怎么执行{action}？",
+        "订单 202606100001 是否执行{action}？",
+        "订单 202606100001 能否执行{action}？",
+        "订单 202606100001 可以执行{action}吗？",
+    ],
+)
+def test_execution_interrogatives_do_not_unlock_high_risk_tools(
+    action, message_template
+):
+    decision = classify_request(
+        "admin",
+        message_template.format(action=action),
+    )
+
+    assert decision.task_type not in {"refund_action", "compensation_action"}
+    assert "execute_refund" not in decision.authorized_tools
+    assert "issue_compensation_coupon" not in decision.authorized_tools
+
+
+@pytest.mark.parametrize(
+    ("action", "task_type"),
+    [
+        ("退款", "refund_action"),
+        ("补券", "compensation_action"),
+    ],
+)
+def test_sequential_query_then_high_risk_execution_remains_action(action, task_type):
+    decision = classify_request(
+        "admin",
+        f"查询完订单 202606100001 后执行{action}",
+    )
+
+    assert decision.task_type == task_type
+    assert decision.next_tool == "query_order"
+
+
 @pytest.mark.parametrize(
     "message",
     [

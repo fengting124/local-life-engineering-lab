@@ -76,6 +76,10 @@ TASK_TOOL_PLANS: dict[str, tuple[str, ...]] = {
 STRONG_EXECUTION_TERMS = ("执行", "发起", "进行", "办理", "操作")
 WEAK_EXECUTION_TERMS = ("申请", "给我", "帮我", "帮忙", "帮", "给", "为", "对")
 HIGH_RISK_QUERY_TERMS = ("查", "查询", "规则", "政策", "状态", "情况", "进度", "进展")
+HIGH_RISK_INTERROGATIVE_TERMS = ("如何", "怎么", "是否", "能否", "可以")
+HIGH_RISK_QUESTION_MARKERS = ("吗", "？", "?")
+ACTION_CLAUSE_SEPARATORS = (",", "，", "。", ";", "；", "!", "！")
+ACTION_SEQUENCE_TERMS = ("后", "之后", "然后")
 REFUND_ACTION_TERMS = ("退款", "退钱", "退回")
 COMPENSATION_ACTION_TERMS = (
     "补券",
@@ -158,13 +162,58 @@ def _order_ids(text: str) -> tuple[str, ...]:
 
 
 def _has_high_risk_query(text: str) -> bool:
-    return _contains_any(text, HIGH_RISK_QUERY_TERMS)
+    return _contains_any(
+        text,
+        (
+            *HIGH_RISK_QUERY_TERMS,
+            *HIGH_RISK_INTERROGATIVE_TERMS,
+            *HIGH_RISK_QUESTION_MARKERS,
+        ),
+    )
+
+
+def _strong_action_clause_is_query(text: str, start: int, end: int) -> bool:
+    prefix = text[:start]
+    clause_prefix = re.split(
+        "|".join(re.escape(term) for term in ACTION_CLAUSE_SEPARATORS),
+        prefix,
+    )[-1]
+    if _contains_any(clause_prefix, HIGH_RISK_INTERROGATIVE_TERMS):
+        return True
+
+    query_position = max(
+        (clause_prefix.rfind(term) for term in ("查", "查询")),
+        default=-1,
+    )
+    sequence_position = max(
+        (clause_prefix.rfind(term) for term in ACTION_SEQUENCE_TERMS),
+        default=-1,
+    )
+    if query_position >= 0 and sequence_position < query_position:
+        return True
+
+    suffix = text[end:]
+    return _contains_any(
+        suffix,
+        (
+            *HIGH_RISK_QUERY_TERMS,
+            *HIGH_RISK_INTERROGATIVE_TERMS,
+            *HIGH_RISK_QUESTION_MARKERS,
+        ),
+    )
 
 
 def _has_high_risk_execution(text: str, action_terms: Sequence[str]) -> bool:
     action_pattern = "|".join(re.escape(term) for term in action_terms)
     strong_pattern = "|".join(re.escape(term) for term in STRONG_EXECUTION_TERMS)
-    if re.search(rf"(?:{strong_pattern}).{{0,24}}(?:{action_pattern})", text):
+    strong_actions = re.finditer(
+        rf"(?:{strong_pattern}).{{0,24}}(?:{action_pattern})",
+        text,
+    )
+    if any(
+        not _strong_action_clause_is_query(text, match.start(), match.end())
+        for match in strong_actions
+    ):
         return True
     if _has_high_risk_query(text):
         return False
