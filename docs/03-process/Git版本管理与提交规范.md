@@ -75,13 +75,14 @@ Risk / Follow-up:
 | server 核心测试质量 | `mvn -pl local-life-server test-compile org.pitest:pitest-maven:mutationCoverage` |
 | `copilot-agent-service` | `cd copilot-agent-service && DEBUG=false python -m pytest -q` |
 | agent 覆盖率门禁 | `DEBUG=false python -m pytest -q --cov --cov-report=term-missing --cov-fail-under=45` |
-| agent 变异测试 | `DEBUG=false mutmut run && python scripts/check_mutmut_score.py --min-kill-rate 50 --max-other 0` |
+| agent 变异测试 | `DEBUG=false mutmut run --max-children 4 && python scripts/check_mutmut_score.py --min-kill-rate 50 --max-other 0` |
 | 全链路上线 smoke | `bash scripts/e2e-smoke.sh`（需三服务和依赖已启动） |
 
 在 WSL 与 Docker 同时占用资源时，`mutmut` 默认按逻辑 CPU 数并发可能产生
 SIGXCPU timeout。不得放宽 `--max-other 0` 或把 timeout 计为 killed；应使用
-`DEBUG=false mutmut run --max-children 4` 完整重跑。不要只重跑 timeout
-子集，`mutmut 3.3.1` 会在重新生成元数据时把未选中的结果标回 unchecked。
+`DEBUG=false mutmut run --max-children 4` 完整重跑。CI 使用固定版本 mutmut，
+并在 `setup.cfg` 中校准单 mutant 超时；升级 mutmut 后必须删除本地生成的
+`mutants/` 冷启动一次，避免沿用旧版本统计缓存。`mutants/` 不得提交。
 
 提交前同时运行：
 

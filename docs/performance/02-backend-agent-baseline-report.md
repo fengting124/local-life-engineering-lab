@@ -203,7 +203,7 @@ Locust 场景：
 | 验证 | 结果 |
 | --- | --- |
 | Agent 主测试套件 | 529 passed，覆盖率 73.67%；`agent/nodes.py` 81.0% |
-| Agent mutation gate | 692 / 1032 killed，67.1%，other=0 |
+| Agent mutation gate | 702 / 1032 killed，68.0%，other=0（mutmut 3.6.0 冷缓存全量运行） |
 | Embedding 镜像测试 | 1 passed |
 | Eval 合同、fixture、评分回归 | 既有合同未修改；invalid=0，fixture=47/47 |
 | Compose Lite | 7 个必要服务 healthy，Agent 镜像源码 hash 一致 |

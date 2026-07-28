@@ -61,13 +61,14 @@ python -m pytest --cov --cov-report=term-missing --cov-report=html --cov-fail-un
 - `guardrails/input_checker.py`：Prompt Injection 和敏感输出防护
 
 ```bash
-DEBUG=false mutmut run
+DEBUG=false mutmut run --max-children 4
 python scripts/check_mutmut_score.py --min-kill-rate 50 --max-other 0
 mutmut results
 ```
 
-当前基线：216 个变异，110 killed，106 survived，杀死率约 50.9%。CI 使用 50% 作为防回退门禁；
-后续每补强一批断言，再逐步抬高阈值。
+当前基线：1032 个变异，702 killed，330 survived，杀死率 68.0%，other=0。
+CI 使用 50% 和 `other=0` 作为防回退门禁；`setup.cfg` 的超时系数用于适配
+GitHub Runner 的执行速度，不会把 timeout 计作 killed。
 
 ---
 
