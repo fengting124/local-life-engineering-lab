@@ -64,7 +64,7 @@ jobs:
         env:
           DEBUG: 'false'
         run: |
-          mutmut run
+          mutmut run --max-children 4
           python scripts/check_mutmut_score.py --min-kill-rate 50 --max-other 0
 
       - name: Upload coverage and mutation artifacts
