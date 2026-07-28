@@ -13,6 +13,7 @@ LangGraph 负责 merge 到完整 state，节点之间通过 state 传递信息�
 """
 import json
 import structlog
+from collections.abc import Mapping
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage, RemoveMessage
 from langchain_core.language_models import BaseChatModel
 
@@ -205,6 +206,110 @@ def _direct_route_answer(state: AgentState) -> str | None:
     return None
 
 
+def _latest_tool_payload(
+    messages: list,
+    tool_name: str,
+) -> dict[str, object] | None:
+    for message in reversed(messages):
+        if not isinstance(message, ToolMessage) or message.name != tool_name:
+            continue
+        try:
+            payload = json.loads(message.content)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+    return None
+
+
+def _successful_evidence(
+    state: AgentState,
+    tool_name: str,
+) -> Mapping[str, object] | None:
+    record = state.get("evidence_collected", {}).get(tool_name)
+    if not isinstance(record, Mapping) or record.get("status") != "success":
+        return None
+    facts = record.get("facts")
+    return facts if isinstance(facts, Mapping) else None
+
+
+def _build_structured_high_risk_proposal(
+    state: AgentState,
+) -> tuple[AIMessage | None, bool]:
+    next_tool = state.get("route_next_tool")
+    if next_tool not in HITL_TOOLS:
+        return None, False
+
+    order_facts = _successful_evidence(state, "query_order")
+    order = _latest_tool_payload(state["messages"], "query_order")
+    order_status = (
+        order_facts.get("order_status")
+        if order_facts is not None
+        else None
+    )
+    if (
+        order_facts is None
+        or order_facts.get("found") is not True
+        or order_status not in {"PAID", "COMPLETED"}
+        or order is None
+        or order.get("order_status") != order_status
+    ):
+        return AIMessage(content="订单证据不完整，无法发起人工审批。"), True
+
+    order_id = order.get("order_no")
+    payment = order.get("payment")
+    amount = payment.get("paid_amount") if isinstance(payment, Mapping) else None
+    if (
+        not isinstance(order_id, str)
+        or not order_id.strip()
+        or isinstance(amount, bool)
+        or not isinstance(amount, int)
+        or amount <= 0
+    ):
+        return AIMessage(content="订单证据不完整，无法发起人工审批。"), True
+
+    if next_tool == "execute_refund":
+        args = {
+            "order_id": order_id.strip(),
+            "amount": amount,
+            "reason": "订单状态满足退款前置条件，等待人工审批",
+        }
+    else:
+        coupon_facts = _successful_evidence(state, "query_coupon_issue_log")
+        coupon_result = _latest_tool_payload(
+            state["messages"],
+            "query_coupon_issue_log",
+        )
+        user_id = order.get("user_id")
+        if (
+            coupon_facts is None
+            or coupon_facts.get("coupon_issue_status") != "FAILED"
+            or coupon_facts.get("coupon_failure_confirmed") is not True
+            or coupon_result is None
+            or coupon_result.get("order_id") != order_id.strip()
+            or coupon_result.get("order_status") != order_status
+            or isinstance(user_id, bool)
+            or not isinstance(user_id, (str, int))
+            or not str(user_id).strip()
+        ):
+            return AIMessage(content="补偿证据不完整，无法发起人工审批。"), True
+        args = {
+            "user_id": str(user_id).strip(),
+            "order_id": order_id.strip(),
+            "compensation_amount": amount,
+            "reason": "优惠券发放失败已确认，等待人工审批",
+        }
+
+    return AIMessage(
+        content="",
+        tool_calls=[{
+            "name": next_tool,
+            "args": args,
+            "id": f"controlled-{next_tool}-{state['step_count']}",
+            "type": "tool_call",
+        }],
+    ), False
+
+
 async def llm_node(state: AgentState) -> dict:
     """
     LLM 节点：调用 Claude 决定下一步动作。
@@ -214,6 +319,7 @@ async def llm_node(state: AgentState) -> dict:
     """
     direct_answer = _direct_route_answer(state)
     response = AIMessage(content=direct_answer) if direct_answer is not None else None
+    high_risk_proposal_failed = False
     if response is None:
         tools = []
         llm_with_tools = _llm
@@ -267,37 +373,47 @@ async def llm_node(state: AgentState) -> dict:
                 ]
                 tools = router.route(complete_tool_specs)
 
-                native_selected = any(
-                    tool["name"] == "knowledge_search" for tool in tools
-                )
-                mcp_tools = [
-                    tool for tool in tools if tool["name"] != "knowledge_search"
-                ]
-                lc_tools = _convert_to_lc_tools(mcp_tools)
-                if native_selected:
-                    lc_tools.append(
-                        knowledge_tool.make_knowledge_search_tool(
-                            merchant_id=state.get("merchant_id")
-                        )
+                if (
+                    settings.llm_provider.lower() == "deepseek"
+                    and next_tool in HITL_TOOLS
+                    and tools
+                ):
+                    response, high_risk_proposal_failed = (
+                        _build_structured_high_risk_proposal(state)
                     )
 
-                tool_choice = (
-                    next_tool
-                    if state.get("route_mode") == "controlled" and tools
-                    else None
-                )
-                if lc_tools:
-                    binding_kwargs = {}
-                    if tool_choice:
-                        binding_kwargs["tool_choice"] = tool_choice
-                        if settings.llm_provider.lower() == "deepseek":
-                            binding_kwargs["extra_body"] = {
-                                "thinking": {"type": "disabled"}
-                            }
-                    llm_with_tools = _llm.bind_tools(
-                        lc_tools,
-                        **binding_kwargs,
+                if response is None:
+                    native_selected = any(
+                        tool["name"] == "knowledge_search" for tool in tools
                     )
+                    mcp_tools = [
+                        tool for tool in tools if tool["name"] != "knowledge_search"
+                    ]
+                    lc_tools = _convert_to_lc_tools(mcp_tools)
+                    if native_selected:
+                        lc_tools.append(
+                            knowledge_tool.make_knowledge_search_tool(
+                                merchant_id=state.get("merchant_id")
+                            )
+                        )
+
+                    tool_choice = (
+                        next_tool
+                        if state.get("route_mode") == "controlled" and tools
+                        else None
+                    )
+                    if lc_tools:
+                        binding_kwargs = {}
+                        if tool_choice:
+                            binding_kwargs["tool_choice"] = tool_choice
+                            if settings.llm_provider.lower() == "deepseek":
+                                binding_kwargs["extra_body"] = {
+                                    "thinking": {"type": "disabled"}
+                                }
+                        llm_with_tools = _llm.bind_tools(
+                            lc_tools,
+                            **binding_kwargs,
+                        )
 
         if response is None:
             # 构建消息列表（System + 历史消息）
@@ -392,6 +508,11 @@ async def llm_node(state: AgentState) -> dict:
         "needs_reflection": False,  # 重置
     }
     if synthesis_tool_call_rejected:
+        update.update({
+            "route_next_tool": None,
+            "evidence_stop_reason": "internal_error",
+        })
+    if high_risk_proposal_failed:
         update.update({
             "route_next_tool": None,
             "evidence_stop_reason": "internal_error",

@@ -795,6 +795,342 @@ class TestLlmNode:
         assert result["messages"][0].tool_calls[0]["name"] == "query_payment"
 
     @pytest.mark.asyncio
+    async def test_deepseek_refund_handoff_uses_structured_order_payload(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[{
+            "name": "execute_refund",
+            "description": "提交退款审批",
+        }])
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "deepseek")
+
+        result = await nodes.llm_node(make_state(
+            [
+                HumanMessage(content="给订单退款"),
+                ai_with_tool_call(
+                    "query_order",
+                    {"order_id": "202606100003"},
+                ),
+                ToolMessage(
+                    content=json.dumps({
+                        "order_no": "202606100003",
+                        "order_status": "PAID",
+                        "user_id": "9000000001",
+                        "payment": {"paid_amount": 2990},
+                    }),
+                    tool_call_id="c1",
+                    name="query_order",
+                ),
+            ],
+            user_role="cs",
+            route_task_type="refund_action",
+            route_mode="controlled",
+            route_required_tools=["query_order", "execute_refund"],
+            route_authorized_tools=["query_order", "execute_refund"],
+            route_next_tool="execute_refund",
+            evidence_collected={
+                "query_order": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {"found": True, "order_status": "PAID"},
+                },
+            },
+        ))
+
+        tool_call = result["messages"][0].tool_calls[0]
+        assert tool_call["name"] == "execute_refund"
+        assert tool_call["args"] == {
+            "order_id": "202606100003",
+            "amount": 2990,
+            "reason": "订单状态满足退款前置条件，等待人工审批",
+        }
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deepseek_high_risk_handoff_fails_closed_without_amount(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[{
+            "name": "execute_refund",
+            "description": "提交退款审批",
+        }])
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "deepseek")
+
+        result = await nodes.llm_node(make_state(
+            [
+                HumanMessage(content="给订单退款"),
+                ai_with_tool_call(
+                    "query_order",
+                    {"order_id": "202606100003"},
+                ),
+                ToolMessage(
+                    content=json.dumps({
+                        "order_no": "202606100003",
+                        "order_status": "PAID",
+                        "payment": {},
+                    }),
+                    tool_call_id="c1",
+                    name="query_order",
+                ),
+            ],
+            user_role="cs",
+            route_task_type="refund_action",
+            route_mode="controlled",
+            route_required_tools=["query_order", "execute_refund"],
+            route_authorized_tools=["query_order", "execute_refund"],
+            route_next_tool="execute_refund",
+            evidence_collected={
+                "query_order": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {"found": True, "order_status": "PAID"},
+                },
+            },
+        ))
+
+        assert result["messages"][0].tool_calls == []
+        assert result["evidence_stop_reason"] == "internal_error"
+        assert result["route_next_tool"] is None
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deepseek_compensation_handoff_uses_confirmed_order_payload(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[{
+            "name": "issue_compensation_coupon",
+            "description": "提交补偿券审批",
+        }])
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "deepseek")
+
+        result = await nodes.llm_node(make_state(
+            [
+                HumanMessage(content="给订单补偿券"),
+                ToolMessage(
+                    content=json.dumps({
+                        "order_no": "202606100003",
+                        "order_status": "PAID",
+                        "user_id": "9000000001",
+                        "payment": {"paid_amount": 2990},
+                    }),
+                    tool_call_id="c1",
+                    name="query_order",
+                ),
+                ToolMessage(
+                    content=json.dumps({
+                        "order_id": "202606100003",
+                        "order_status": "PAID",
+                        "outbox_messages": [{"status": "FAILED"}],
+                    }),
+                    tool_call_id="c2",
+                    name="query_coupon_issue_log",
+                ),
+            ],
+            user_role="admin",
+            route_task_type="compensation_action",
+            route_mode="controlled",
+            route_required_tools=[
+                "query_order",
+                "query_coupon_issue_log",
+                "issue_compensation_coupon",
+            ],
+            route_authorized_tools=[
+                "query_order",
+                "query_coupon_issue_log",
+                "issue_compensation_coupon",
+            ],
+            route_next_tool="issue_compensation_coupon",
+            evidence_collected={
+                "query_order": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {"found": True, "order_status": "PAID"},
+                },
+                "query_coupon_issue_log": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {
+                        "coupon_issue_status": "FAILED",
+                        "coupon_failure_confirmed": True,
+                    },
+                },
+            },
+        ))
+
+        tool_call = result["messages"][0].tool_calls[0]
+        assert tool_call["name"] == "issue_compensation_coupon"
+        assert tool_call["args"] == {
+            "user_id": "9000000001",
+            "order_id": "202606100003",
+            "compensation_amount": 2990,
+            "reason": "优惠券发放失败已确认，等待人工审批",
+        }
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deepseek_compensation_handoff_rejects_cross_order_evidence(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[{
+            "name": "issue_compensation_coupon",
+            "description": "提交补偿券审批",
+        }])
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "deepseek")
+
+        result = await nodes.llm_node(make_state(
+            [
+                HumanMessage(content="给订单补偿券"),
+                ToolMessage(
+                    content=json.dumps({
+                        "order_no": "202606100003",
+                        "order_status": "PAID",
+                        "user_id": "9000000001",
+                        "payment": {"paid_amount": 2990},
+                    }),
+                    tool_call_id="c1",
+                    name="query_order",
+                ),
+                ToolMessage(
+                    content=json.dumps({
+                        "order_id": "202606100099",
+                        "order_status": "PAID",
+                        "outbox_messages": [{"status": "FAILED"}],
+                    }),
+                    tool_call_id="c2",
+                    name="query_coupon_issue_log",
+                ),
+            ],
+            user_role="admin",
+            route_task_type="compensation_action",
+            route_mode="controlled",
+            route_required_tools=[
+                "query_order",
+                "query_coupon_issue_log",
+                "issue_compensation_coupon",
+            ],
+            route_authorized_tools=[
+                "query_order",
+                "query_coupon_issue_log",
+                "issue_compensation_coupon",
+            ],
+            route_next_tool="issue_compensation_coupon",
+            evidence_collected={
+                "query_order": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {"found": True, "order_status": "PAID"},
+                },
+                "query_coupon_issue_log": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {
+                        "coupon_issue_status": "FAILED",
+                        "coupon_failure_confirmed": True,
+                    },
+                },
+            },
+        ))
+
+        assert result["messages"][0].tool_calls == []
+        assert result["evidence_stop_reason"] == "internal_error"
+        assert result["route_next_tool"] is None
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deepseek_compensation_handoff_rejects_stale_order_status(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[{
+            "name": "issue_compensation_coupon",
+            "description": "提交补偿券审批",
+        }])
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "deepseek")
+
+        result = await nodes.llm_node(make_state(
+            [
+                HumanMessage(content="给订单补偿券"),
+                ToolMessage(
+                    content=json.dumps({
+                        "order_no": "202606100003",
+                        "order_status": "PAID",
+                        "user_id": "9000000001",
+                        "payment": {"paid_amount": 2990},
+                    }),
+                    tool_call_id="c1",
+                    name="query_order",
+                ),
+                ToolMessage(
+                    content=json.dumps({
+                        "order_id": "202606100003",
+                        "order_status": "CANCELLED",
+                        "outbox_messages": [{"status": "FAILED"}],
+                    }),
+                    tool_call_id="c2",
+                    name="query_coupon_issue_log",
+                ),
+            ],
+            user_role="admin",
+            route_task_type="compensation_action",
+            route_mode="controlled",
+            route_required_tools=[
+                "query_order",
+                "query_coupon_issue_log",
+                "issue_compensation_coupon",
+            ],
+            route_authorized_tools=[
+                "query_order",
+                "query_coupon_issue_log",
+                "issue_compensation_coupon",
+            ],
+            route_next_tool="issue_compensation_coupon",
+            evidence_collected={
+                "query_order": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {"found": True, "order_status": "PAID"},
+                },
+                "query_coupon_issue_log": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {
+                        "coupon_issue_status": "FAILED",
+                        "coupon_failure_confirmed": True,
+                    },
+                },
+            },
+        ))
+
+        assert result["messages"][0].tool_calls == []
+        assert result["evidence_stop_reason"] == "internal_error"
+        assert result["route_next_tool"] is None
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_synthesis_only_binds_no_tools(self, monkeypatch):
         from rag import knowledge_tool
 
