@@ -217,6 +217,13 @@ async def llm_node(state: AgentState) -> dict:
     if response is None:
         tools = []
         llm_with_tools = _llm
+        if (
+            state.get("synthesis_only")
+            and settings.llm_provider.lower() == "deepseek"
+        ):
+            llm_with_tools = _llm.bind(
+                extra_body={"thinking": {"type": "disabled"}}
+            )
 
         if not state.get("synthesis_only"):
             # 原生工具和 MCP 工具共用一条路由，确保 Prompt 与 bind_tools 权限一致。
@@ -280,9 +287,16 @@ async def llm_node(state: AgentState) -> dict:
                     else None
                 )
                 if lc_tools:
+                    binding_kwargs = {}
+                    if tool_choice:
+                        binding_kwargs["tool_choice"] = tool_choice
+                        if settings.llm_provider.lower() == "deepseek":
+                            binding_kwargs["extra_body"] = {
+                                "thinking": {"type": "disabled"}
+                            }
                     llm_with_tools = _llm.bind_tools(
                         lc_tools,
-                        **({"tool_choice": tool_choice} if tool_choice else {}),
+                        **binding_kwargs,
                     )
 
         if response is None:

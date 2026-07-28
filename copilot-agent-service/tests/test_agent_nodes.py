@@ -694,6 +694,7 @@ class TestLlmNode:
         ))
         monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
         monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
 
         result = await nodes.llm_node(make_state(
             [HumanMessage(content="查订单 202606100001")],
@@ -714,6 +715,46 @@ class TestLlmNode:
         assert result["final_answer"] is None
 
     @pytest.mark.asyncio
+    async def test_deepseek_controlled_route_forces_tool_with_thinking_disabled(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[
+            {"name": "query_order", "description": "查订单"},
+            {"name": "query_payment", "description": "查支付"},
+        ])
+        fake_llm = MagicMock()
+        fake_llm.bind_tools.return_value = fake_llm
+        fake_llm.ainvoke = AsyncMock(return_value=ai_with_tool_call(
+            "query_order", {"order_id": "202606100001"}
+        ))
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "deepseek")
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="查订单 202606100001")],
+            route_task_type="order_query",
+            route_mode="controlled",
+            route_required_tools=["query_order"],
+            route_authorized_tools=["query_order"],
+            route_next_tool="query_order",
+            route_missing_fields=[],
+        ))
+
+        bound_tools = fake_llm.bind_tools.call_args.args[0]
+        names = {
+            tool["name"] if isinstance(tool, dict) else tool.name
+            for tool in bound_tools
+        }
+        assert names == {"query_order"}
+        assert fake_llm.bind_tools.call_args.kwargs == {
+            "tool_choice": "query_order",
+            "extra_body": {"thinking": {"type": "disabled"}},
+        }
+        assert result["final_answer"] is None
+
+    @pytest.mark.asyncio
     async def test_later_controlled_turn_keeps_retained_payment_tool(self, monkeypatch):
         mock_mcp = MagicMock()
         mock_mcp.list_tools = AsyncMock(return_value=[
@@ -725,6 +766,7 @@ class TestLlmNode:
         ))
         monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
         monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
 
         result = await nodes.llm_node(make_state(
             [
@@ -762,6 +804,7 @@ class TestLlmNode:
         monkeypatch.setattr(nodes, "McpClient", mcp_factory)
         monkeypatch.setattr(nodes, "_llm", fake_llm)
         monkeypatch.setattr(knowledge_tool, "make_knowledge_search_tool", native_factory)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
 
         result = await nodes.llm_node(make_state(
             [HumanMessage(content="查订单"), ToolMessage(
@@ -778,6 +821,38 @@ class TestLlmNode:
         assert result["final_answer"] == "订单已支付。"
         mcp_factory.assert_not_called()
         native_factory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_deepseek_synthesis_keeps_nonthinking_mode_without_tools(
+        self, monkeypatch
+    ):
+        fake_llm = MagicMock()
+        fake_llm.bind.return_value = fake_llm
+        fake_llm.ainvoke = AsyncMock(
+            return_value=AIMessage(content="订单已支付。")
+        )
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "deepseek")
+
+        result = await nodes.llm_node(make_state(
+            [
+                HumanMessage(content="查订单"),
+                ToolMessage(
+                    content='{"order_status":"PAID"}',
+                    tool_call_id="c1",
+                    name="query_order",
+                ),
+            ],
+            synthesis_only=True,
+            evidence_complete=True,
+            route_next_tool=None,
+        ))
+
+        fake_llm.bind.assert_called_once_with(
+            extra_body={"thinking": {"type": "disabled"}}
+        )
+        fake_llm.bind_tools.assert_not_called()
+        assert result["final_answer"] == "订单已支付。"
 
     @pytest.mark.asyncio
     async def test_synthesis_only_tool_call_is_normalized_before_persistence(
@@ -803,6 +878,7 @@ class TestLlmNode:
         mock_manager = MagicMock()
         mock_manager.save_message = AsyncMock()
         monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
         monkeypatch.setattr(manager_module, "session_manager", mock_manager)
 
         result = await nodes.llm_node(make_state(
@@ -935,6 +1011,7 @@ class TestLlmNode:
         monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
         monkeypatch.setattr(nodes, "_llm", fake_llm)
         monkeypatch.setattr(knowledge_tool, "make_knowledge_search_tool", native_factory)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
 
         result = await nodes.llm_node(make_state(
             [HumanMessage(content="平台规则是什么")],

@@ -63,6 +63,7 @@ def _force_memory_saver(monkeypatch):
 @pytest.mark.asyncio
 async def test_full_react_loop_llm_tool_llm_final(monkeypatch):
     _force_memory_saver(monkeypatch)
+    monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
 
     # ---- mock MCP：提供一个工具，并让工具调用返回观测 ----
     mock_mcp = MagicMock()
@@ -138,6 +139,7 @@ async def test_full_react_loop_llm_tool_llm_final(monkeypatch):
 @pytest.mark.asyncio
 async def test_synthesis_tool_call_is_stopped_without_execution(monkeypatch):
     _force_memory_saver(monkeypatch)
+    monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
 
     mock_mcp = MagicMock()
     mock_mcp.list_tools = AsyncMock(return_value=[{
