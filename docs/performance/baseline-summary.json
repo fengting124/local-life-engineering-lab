@@ -1,8 +1,8 @@
 {
   "branch": "fix/agent-routing-quality",
   "base_sha": "60f5e86",
-  "verification_sha": "6e2aa7a",
-  "generated_at": "2026-07-29T22:31:00+0800",
+  "verification_sha": "eb3cd08",
+  "generated_at": "2026-07-29T22:44:00+0800",
   "environment": {
     "docker": "28.1.1",
     "docker_compose": "2.35.1",
@@ -16,9 +16,10 @@
     "incremental_seconds": 42.51,
     "unchanged_seconds": 4.72,
     "container_health": "healthy",
-    "agent_image": "sha256:3002cadc6c2de9af6a35d7726c0dd6f74fd6fbd88777ac03968f19f369cb839d",
+    "agent_image": "sha256:e18563a3e0ccdafcb733e8ef88a271b9734b8be7bcd5648351459f1a1444acb5",
     "agent_source_sha256": "40a8b0693385055100e8e60f74a6309b4618ef6f6271ec9e9d05f7f2a1fd9010",
     "tool_router_source_sha256": "8bb26a346b05ca1c7d304fc1c1ab9d96c135039591a24cc3ca840dbc0acdbc7a",
+    "input_checker_source_sha256": "87fb5ba8ce891f4c20c66b8821013c75574cbf46fd3090e336bb654fb754610d",
     "agent_source_matches_container": true
   },
   "backend": {
@@ -35,7 +36,8 @@
   "agent": {
     "artifact": "artifacts/performance/agent-routing-remediation-20260729-215948/deepseek-flash-routing-quality.json",
     "baseline_runtime_sha": "8cfdf38",
-    "post_baseline_review_sha": "6e2aa7a",
+    "post_baseline_review_sha": "eb3cd08",
+    "post_baseline_review_commits": ["6e2aa7a", "eb3cd08"],
     "post_baseline_deepseek_rerun": false,
     "prior_artifact": "artifacts/performance/agent-routing-20260728-153114/deepseek-flash-routing-quality.json",
     "before_artifact": "artifacts/performance/agent-routing-20260728-1432/deepseek-flash-routing-quality.json",
@@ -141,6 +143,7 @@
       "action_amount_disambiguation": true,
       "mixed_invalid_amounts_fail_closed": true,
       "repeated_action_amounts_fail_closed": true,
+      "symbolic_punctuation_wrapped_commands_blocked": true,
       "overpaid_refund_stop_reason": "business_rejected",
       "cross_order_fault_injection_blocked_before_mcp": true
     },
@@ -188,6 +191,7 @@
       "the CS compensation route performs only the allowed order read and then stops permission_denied because query_coupon_issue_log is admin-only",
       "contextual, negative, zero, over-precision, and multiple action amounts fail closed unless exactly one explicit action amount remains",
       "a post-baseline deterministic review fixed repeated action terms hiding an earlier conflicting amount; no second model baseline was run",
+      "the same review closed hyphen, slash, and full-width vertical-bar policy-wrapper bypasses at the input guardrail",
       "cases 32 and 37 fail because CopilotCouponMapper queries missing coupon_template.remaining_stock",
       "final fact and tool argument minimum thresholds are not met"
     ],
@@ -205,7 +209,7 @@
     "real_deepseek_artifact": "artifacts/performance/agent-routing-remediation-20260729-215948/deepseek-flash-routing-quality.json",
     "real_deepseek_total_runs": 48,
     "known_product_semantics_conflict": "case 19 expects HITL in the unchanged contract, while the approved product rule requires clarification without an explicit amount",
-    "python_tests_passed": 570,
+    "python_tests_passed": 573,
     "coverage_percent": 74.34,
     "mutation": {
       "tool": "mutmut 3.6.0",
@@ -220,13 +224,17 @@
     "explicit_action_amount_bound_before_hitl": true,
     "amount_binding_limitation": null,
     "repeated_action_amounts_fail_closed": true,
+    "symbolic_punctuation_wrapped_commands_blocked": true,
     "punctuation_wrapped_guardrail_commands_blocked": true,
     "dependency_discovery_failure_stop_reason": "internal_error",
     "docker_lite": {
-      "agent_image": "sha256:3002cadc6c2de9af6a35d7726c0dd6f74fd6fbd88777ac03968f19f369cb839d",
+      "agent_image": "sha256:e18563a3e0ccdafcb733e8ef88a271b9734b8be7bcd5648351459f1a1444acb5",
       "current_source_matches_container": true,
       "required_services_healthy": true,
       "guardrail_security_audit_recorded": true,
+      "symbolic_wrapper_http_status": 400,
+      "symbolic_wrapper_sessions_created": 0,
+      "symbolic_wrapper_tool_audits": 0,
       "missing_amount_tool_execution_count": 0,
       "negative_amount_tool_execution_count": 0,
       "negative_amount_approval_count": 0,
@@ -244,7 +252,7 @@
         "resume_stop_reason": "hitl_rejected"
       }
     },
-    "post_baseline_review": "commit 6e2aa7a was verified by deterministic tests, full mutation, a no-cache image build, host/container source hashes, health checks, and in-container classification; the approved 24x2 DeepSeek baseline was not rerun",
+    "post_baseline_review": "commits 6e2aa7a and eb3cd08 were verified by deterministic tests, full mutation, no-cache image builds, host/container source hashes, health checks, in-container classification, and real guardrail API calls; the approved 24x2 DeepSeek baseline was not rerun",
     "known_observation": "SSE repeats final_answer or hitl_request events, while approval persistence and high-risk execution remain single; fix is deferred to an API-scoped PR",
     "merge_recommendation": "ready_after_fresh_ci_and_final_review"
   },

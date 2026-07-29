@@ -2049,8 +2049,42 @@ and verify that image IDs and host/container source hashes match. Execute the
 repeated-action and contextual-amount controls inside the image. Do not run a
 second 24×2 DeepSeek baseline; its metrics remain attributed to `8cfdf38`.
 
-- [ ] **Step 5: Complete remote verification**
+- [x] **Step 5: Publish the amount-parser evidence for review**
 
 Commit the evidence-only documentation update, push the review fix, update PR
-#26, wait for fresh GitHub Actions, and complete the final independent diff
-review. Keep the PR Draft and unmerged.
+#26, and start fresh GitHub Actions. Keep the PR Draft and unmerged while the
+independent diff review continues.
+
+### Task 13: Close the Symbolic Policy-Wrapper Review
+
+**Review fix commit:** `eb3cd08`
+
+- [x] **Step 1: Reproduce the remaining Guardrail bypass**
+
+Verify that direct cross-merchant and bulk-refund commands wrapped with a
+hyphen, slash, or full-width vertical bar are incorrectly exempted as policy
+questions. Preserve causal and policy-only positive controls.
+
+- [x] **Step 2: Generalize clause boundaries**
+
+Split policy-question clauses on any Unicode punctuation or symbol boundary,
+not a fixed delimiter list. Preserve ordinary whitespace within a clause.
+
+- [x] **Step 3: Re-run deterministic quality gates**
+
+The final review source produced 573 passing tests, 74.34% coverage, and
+826/1180 killed mutations (70.0%, other=0). The Guardrail module has 100%
+statement and branch coverage.
+
+- [x] **Step 4: Verify the final Docker API**
+
+Rebuild without cache and recreate the Agent. Confirm all three wrapper requests
+return `400 BLOCKED_BY_GUARDRAILS`, each emits a traced `security_audit`, and
+the isolated users create no session or tool-audit rows. Confirm final image and
+host/container source hashes match.
+
+- [ ] **Step 5: Complete remote verification**
+
+Commit the final evidence update, push, refresh PR #26, wait for all checks on
+the new head, and finish the independent review. Keep the PR Draft and do not
+merge; recommend Ready only when no blocking finding remains.
