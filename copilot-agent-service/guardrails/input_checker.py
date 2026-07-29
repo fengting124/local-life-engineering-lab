@@ -134,7 +134,8 @@ _CAUSAL_RESTRICTION_QUESTION_PATTERN = re.compile(
     r"(?:不能|不可以|需要|必须|不允许)",
     re.IGNORECASE,
 )
-_POLICY_CLAUSE_SEPARATOR_PATTERN = re.compile(r"[，,:：()（）]")
+# Treat every punctuation or symbol boundary as a clause separator.
+_POLICY_CLAUSE_SEPARATOR_PATTERN = re.compile(r"(?:[^\w\s]|_)+")
 
 
 # =========================================================
