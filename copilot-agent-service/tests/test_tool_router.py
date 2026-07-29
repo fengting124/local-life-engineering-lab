@@ -420,13 +420,68 @@ def test_compensation_phrase_binds_requested_amount_not_order_paid_amount():
     assert decision.next_tool == "query_order"
 
 
+def test_compensation_does_not_infer_paid_amount_from_an_earlier_clause():
+    decision = classify_request(
+        "admin",
+        "订单 202606100001 已支付 99 元，帮我补发优惠券",
+    )
+
+    assert decision.task_type == "compensation_action"
+    assert decision.route_mode == "clarification"
+    assert decision.missing_fields == ("amount",)
+    assert decision.requested_amount_minor is None
+    assert decision.next_tool is None
+
+
+def test_refund_binds_action_amount_instead_of_earlier_paid_amount():
+    decision = classify_request(
+        "cs",
+        "订单 202606100001 已支付 99 元，帮我退款 20 元",
+    )
+
+    assert decision.task_type == "refund_action"
+    assert decision.route_mode == "controlled"
+    assert decision.requested_amount_minor == 2000
+    assert decision.next_tool == "query_order"
+
+
+def test_refund_application_followed_by_processing_request_is_an_action():
+    decision = classify_request(
+        "cs",
+        "用户订单 202606100001 的退款申请，已支付 99 元请帮助处理",
+    )
+
+    assert decision.task_type == "refund_action"
+    assert decision.route_mode == "controlled"
+    assert decision.requested_amount_minor == 9900
+    assert decision.next_tool == "query_order"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "退款申请怎么处理？",
+        "退款申请的处理流程是什么？",
+        "请介绍退款申请处理流程",
+    ],
+)
+def test_refund_application_process_questions_are_not_actions(message):
+    decision = classify_request("cs", message)
+
+    assert decision.task_type != "refund_action"
+    assert "execute_refund" not in decision.authorized_tools
+
+
 @pytest.mark.parametrize(
     "message",
     [
         "给订单 202606100001 退款",
         "给订单 202606100001 退款 20 元还是 30 元",
         "给订单 202606100001 退款 -20 元",
+        "给订单 202606100001 退款 -20 元还是 30 元",
+        "给订单 202606100001 退款 0 元还是 30 元",
         "给订单 202606100001 退款 20.123 元",
+        "给订单 202606100001 退款 20.123 元还是 30 元",
         "给订单 202606100001 退款 ￥20.123",
         "给订单 202606100001 补券",
     ],

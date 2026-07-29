@@ -1007,6 +1007,61 @@ class TestLlmNode:
         fake_llm.ainvoke.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_deepseek_refund_handoff_rejects_amount_above_paid_as_business_rule(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[{
+            "name": "execute_refund",
+            "description": "提交退款审批",
+        }])
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "deepseek")
+
+        result = await nodes.llm_node(make_state(
+            [
+                HumanMessage(content="给订单 202606100003 退款 99 元"),
+                ai_with_tool_call(
+                    "query_order",
+                    {"order_id": "202606100003"},
+                ),
+                ToolMessage(
+                    content=json.dumps({
+                        "order_no": "202606100003",
+                        "order_status": "PAID",
+                        "user_id": "9000000001",
+                        "payment": {"paid_amount": 2990},
+                    }),
+                    tool_call_id="c1",
+                    name="query_order",
+                ),
+            ],
+            user_role="cs",
+            route_task_type="refund_action",
+            route_mode="controlled",
+            route_required_tools=["query_order", "execute_refund"],
+            route_authorized_tools=["query_order", "execute_refund"],
+            route_next_tool="execute_refund",
+            route_target_order_hash=order_target_hash("202606100003"),
+            route_requested_amount_minor=9900,
+            evidence_collected={
+                "query_order": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {"found": True, "order_status": "PAID"},
+                },
+            },
+        ))
+
+        assert result["messages"][0].tool_calls == []
+        assert result["evidence_stop_reason"] == "business_rejected"
+        assert result["route_next_tool"] is None
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_deepseek_high_risk_handoff_fails_closed_without_amount(
         self, monkeypatch
     ):

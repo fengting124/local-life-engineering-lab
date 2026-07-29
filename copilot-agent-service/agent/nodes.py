@@ -306,10 +306,10 @@ def _query_order_response_matches_request(
 
 def _build_structured_high_risk_proposal(
     state: AgentState,
-) -> tuple[AIMessage | None, bool]:
+) -> tuple[AIMessage | None, str | None]:
     next_tool = state.get("route_next_tool")
     if next_tool not in HITL_TOOLS:
-        return None, False
+        return None, None
 
     order_facts = _successful_evidence(state, "query_order")
     order = _latest_tool_payload(state["messages"], "query_order")
@@ -325,7 +325,7 @@ def _build_structured_high_risk_proposal(
         or order is None
         or order.get("order_status") != order_status
     ):
-        return AIMessage(content="订单证据不完整，无法发起人工审批。"), True
+        return AIMessage(content="订单证据不完整，无法发起人工审批。"), "internal_error"
 
     order_id = order.get("order_no")
     payment = order.get("payment")
@@ -347,11 +347,14 @@ def _build_structured_high_risk_proposal(
         or not isinstance(requested_amount, int)
         or requested_amount <= 0
     ):
-        return AIMessage(content="订单证据不完整，无法发起人工审批。"), True
+        return AIMessage(content="订单证据不完整，无法发起人工审批。"), "internal_error"
 
     if next_tool == "execute_refund":
         if requested_amount > paid_amount:
-            return AIMessage(content="退款金额超过订单实付金额，无法发起人工审批。"), True
+            return (
+                AIMessage(content="退款金额超过订单实付金额，无法发起人工审批。"),
+                "business_rejected",
+            )
         args = {
             "order_id": order_id.strip(),
             "amount": requested_amount,
@@ -375,7 +378,7 @@ def _build_structured_high_risk_proposal(
             or not isinstance(user_id, (str, int))
             or not str(user_id).strip()
         ):
-            return AIMessage(content="补偿证据不完整，无法发起人工审批。"), True
+            return AIMessage(content="补偿证据不完整，无法发起人工审批。"), "internal_error"
         args = {
             "user_id": str(user_id).strip(),
             "order_id": order_id.strip(),
@@ -391,7 +394,7 @@ def _build_structured_high_risk_proposal(
             "id": f"controlled-{next_tool}-{state['step_count']}",
             "type": "tool_call",
         }],
-    ), False
+    ), None
 
 
 async def llm_node(state: AgentState) -> dict:
@@ -403,7 +406,7 @@ async def llm_node(state: AgentState) -> dict:
     """
     direct_answer = _direct_route_answer(state)
     response = AIMessage(content=direct_answer) if direct_answer is not None else None
-    high_risk_proposal_failed = False
+    high_risk_proposal_stop_reason = None
     controlled_tool_unavailable = False
     if response is None:
         tools = []
@@ -464,7 +467,7 @@ async def llm_node(state: AgentState) -> dict:
                     and next_tool in HITL_TOOLS
                     and tools
                 ):
-                    response, high_risk_proposal_failed = (
+                    response, high_risk_proposal_stop_reason = (
                         _build_structured_high_risk_proposal(state)
                     )
 
@@ -598,10 +601,10 @@ async def llm_node(state: AgentState) -> dict:
             "route_next_tool": None,
             "evidence_stop_reason": "internal_error",
         })
-    if high_risk_proposal_failed:
+    if high_risk_proposal_stop_reason:
         update.update({
             "route_next_tool": None,
-            "evidence_stop_reason": "internal_error",
+            "evidence_stop_reason": high_risk_proposal_stop_reason,
         })
     if controlled_tool_unavailable:
         update.update({

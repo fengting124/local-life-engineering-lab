@@ -190,17 +190,24 @@ def order_target_hash(value: object) -> str | None:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def _requested_amounts_minor(text: str) -> tuple[int, ...]:
+def _requested_amounts_minor(
+    text: str,
+    action_terms: Sequence[str],
+) -> tuple[int, ...]:
+    action_start = max((text.rfind(term) for term in action_terms), default=-1)
+    if action_start < 0:
+        return ()
+
     amounts: list[int] = []
-    for match in _CURRENCY_AMOUNT_PATTERN.finditer(text):
+    for match in _CURRENCY_AMOUNT_PATTERN.finditer(text, action_start):
         raw_amount = re.sub(r"\s+", "", match.group(1) or match.group(2))
         try:
             amount = Decimal(raw_amount)
         except (InvalidOperation, TypeError):
-            continue
+            return ()
         minor = amount * 100
         if amount <= 0 or minor != minor.to_integral_value():
-            continue
+            return ()
         amounts.append(int(minor))
     return tuple(dict.fromkeys(amounts))
 
@@ -261,6 +268,12 @@ def _has_high_risk_execution(text: str, action_terms: Sequence[str]) -> bool:
         return True
     if _has_high_risk_query(text):
         return False
+    if re.search(
+        rf"(?:{action_pattern}).{{0,32}}"
+        rf"(?:(?<!申)请(?:帮助|帮忙)?|帮我|帮忙|帮助).{{0,4}}(?:处理|办理)",
+        text,
+    ):
+        return True
     weak_pattern = "|".join(re.escape(term) for term in WEAK_EXECUTION_TERMS)
     return bool(re.search(rf"(?:{weak_pattern}).{{0,24}}(?:{action_pattern})", text))
 
@@ -380,7 +393,7 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
     if refund_intent:
         if not has_one_order:
             return _clarification(user_role, "refund_action", 100, "order_id")
-        requested_amounts = _requested_amounts_minor(text)
+        requested_amounts = _requested_amounts_minor(text, REFUND_ACTION_TERMS)
         if len(requested_amounts) != 1:
             return _clarification(user_role, "refund_action", 100, "amount")
         return _decision(
@@ -394,7 +407,10 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
     if compensation_intent:
         if not has_one_order:
             return _clarification(user_role, "compensation_action", 100, "order_id")
-        requested_amounts = _requested_amounts_minor(text)
+        requested_amounts = _requested_amounts_minor(
+            text,
+            (*COMPENSATION_ACTION_TERMS, "补发"),
+        )
         if len(requested_amounts) != 1:
             return _clarification(
                 user_role,
