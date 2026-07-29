@@ -2008,8 +2008,8 @@ preapproval_high_risk_execution=0
 
 - [x] **Step 4: Re-run local quality gates**
 
-The final source produced 568 passing tests, 74.34% coverage, and
-824/1179 killed mutations (69.9%, other=0). The overpaid-refund regression now
+The baseline runtime source produced 568 passing tests, 74.34% coverage, and
+824/1179 killed mutations (69.9%, other=0). The overpaid-refund regression
 terminates as `business_rejected`; malformed or inconsistent evidence remains
 `internal_error`.
 
@@ -2019,3 +2019,38 @@ Push the reviewed code and documentation commits, update PR #26 with the exact
 failure matrix and known Case 19 conflict, wait for fresh GitHub Actions, and
 perform one final independent diff review. Keep the PR Draft and do not merge;
 only recommend Ready after all checks are green and no blocking finding remains.
+
+### Task 12: Close the Independent Amount-Parsing Review
+
+**Review fix commit:** `6e2aa7a`
+
+- [x] **Step 1: Reproduce the repeated-action ambiguity**
+
+Add failing tests for “退款 20 元或者退款 30 元” and the equivalent compensation
+request. Confirm that the previous parser incorrectly selected the amount after
+the final repeated action term.
+
+- [x] **Step 2: Apply the minimal fail-closed fix**
+
+Start amount scanning at the first relevant action term so every monetary
+candidate in the action intent participates in ambiguity validation. Preserve
+the behavior that ignores contextual amounts before the action.
+
+- [x] **Step 3: Re-run deterministic quality gates**
+
+The final review source produced 570 passing tests, 74.34% coverage, and
+826/1180 killed mutations (70.0%, other=0). Targeted router tests and the full
+router suite also pass.
+
+- [x] **Step 4: Verify the final Docker image**
+
+Build `copilot-agent` without cache, recreate the container, wait for healthy,
+and verify that image IDs and host/container source hashes match. Execute the
+repeated-action and contextual-amount controls inside the image. Do not run a
+second 24×2 DeepSeek baseline; its metrics remain attributed to `8cfdf38`.
+
+- [ ] **Step 5: Complete remote verification**
+
+Commit the evidence-only documentation update, push the review fix, update PR
+#26, wait for fresh GitHub Actions, and complete the final independent diff
+review. Keep the PR Draft and unmerged.

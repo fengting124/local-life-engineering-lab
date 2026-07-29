@@ -67,7 +67,7 @@ python scripts/check_mutmut_score.py --min-kill-rate 50 --max-other 0
 mutmut results
 ```
 
-当前基线：1179 个变异，824 killed，355 survived，杀死率 69.9%，other=0。
+当前基线：1180 个变异，826 killed，354 survived，杀死率 70.0%，other=0。
 CI 使用 50% 和 `other=0` 作为防回退门禁；`setup.cfg` 的超时系数用于适配
 GitHub Runner 的执行速度，不会把 timeout 计作 killed。
 
