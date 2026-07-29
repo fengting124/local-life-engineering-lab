@@ -40,14 +40,15 @@ python -m pytest --cov --cov-report=term-missing --cov-report=html --cov-fail-un
 
 | 模块 | 覆盖率 |
 |------|--------|
-| `agent/tool_router.py` | 100% |
+| `agent/tool_router.py` | 95.8% |
 | `guardrails/input_checker.py` | 100% |
-| `mcp/mcp_client.py` | 94.6% |
-| `agent/graph.py` | 98.6% |
+| `mcp/mcp_client.py` | 93.6% |
+| `agent/graph.py` | 100% |
 | `rag/bm25_store.py` | 88.5% |
-| `rag/pipeline.py` | 83.5% |
+| `rag/pipeline.py` | 82.6% |
 
-> 整体约 48.4%：未覆盖/低覆盖主要是 `vector_store.py`（需真 Milvus）、`session/*`（需真 DB）、
+> 2026-07-29 全量分支覆盖率为 74.34%。未覆盖/低覆盖主要是
+> `vector_store.py`（需真 Milvus）、`session/*`（需真 DB）、
 > `embedding/reranker`（需加载本地模型）等重 I/O 模块。ReAct 控制流和整图接线已用
 > scripted LLM + mock MCP 覆盖。
 
@@ -66,9 +67,32 @@ python scripts/check_mutmut_score.py --min-kill-rate 50 --max-other 0
 mutmut results
 ```
 
-当前基线：1032 个变异，702 killed，330 survived，杀死率 68.0%，other=0。
+当前基线：1179 个变异，824 killed，355 survived，杀死率 69.9%，other=0。
 CI 使用 50% 和 `other=0` 作为防回退门禁；`setup.cfg` 的超时系数用于适配
 GitHub Runner 的执行速度，不会把 timeout 计作 killed。
+
+`mutmut run` 使用并发 worker 写回 `mutants/*.meta`。只有命令完全退出且确认
+没有残留 `mutmut/pytest` worker 后，才能执行分数脚本；运行中读取 `.meta`
+会得到短暂的 `other > 0` 中间态，不能当成最终门禁结果。
+
+---
+
+## 真实 DeepSeek 基线收口
+
+真实模型基线用于合并前证据，不是失败后反复重跑的调参工具。统一流程：
+
+1. 从当前源码重建 Agent 镜像，确认容器 healthy，且宿主机/容器关键文件
+   SHA-256 一致。
+2. 只检查 `LLM_API_KEY` 是否存在，不打印值；同时核对容器和 runner 都是
+   `deepseek/deepseek-v4-flash`。
+3. 先执行 contract validator，固定 case 数、fixture 解析率、并发和重复次数；
+   如有合同错误，在发出模型请求前停止。
+4. 记录 `tool_audit_log` 与 `hitl_approval` 的起始最大 ID，随后只运行一次
+   `--concurrency 1 --repeat 2`。
+5. 运行后核对逐 case 矩阵、失败分类、容器日志，以及 ID 边界后的高风险工具
+   审计和审批数量。SSE 展示不是工具执行事实来源，数据库审计优先。
+6. `artifacts/performance/` 保持 Git 忽略；只提交脱敏汇总、命令口径和已知失败，
+   不提交 Prompt、回答、工具 payload、日志或 API Key。
 
 ---
 

@@ -1,8 +1,8 @@
 {
   "branch": "fix/agent-routing-quality",
   "base_sha": "60f5e86",
-  "verification_sha": "783713a",
-  "generated_at": "2026-07-29T21:00:50+0800",
+  "verification_sha": "8cfdf38",
+  "generated_at": "2026-07-29T22:05:00+0800",
   "environment": {
     "docker": "28.1.1",
     "docker_compose": "2.35.1",
@@ -16,8 +16,8 @@
     "incremental_seconds": 42.51,
     "unchanged_seconds": 4.72,
     "container_health": "healthy",
-    "agent_image": "sha256:9aedd6772a6e36d152e2c9ac735939afbf5d08f7b43515a70f579efbfad42fae",
-    "agent_source_sha256": "d0bf9ac5fead40fbc4593b68d8aab7e51ddaad8e197c160b8e6d7ff6e306d3dd",
+    "agent_image": "sha256:775359ba67ad66728607f4753a3b1c4cf893509b3a9a1b0200f6ee39d1417416",
+    "agent_source_sha256": "40a8b0693385055100e8e60f74a6309b4618ef6f6271ec9e9d05f7f2a1fd9010",
     "agent_source_matches_container": true
   },
   "backend": {
@@ -32,7 +32,7 @@
     "seckill_consistency": {"reservations": 50, "outbox_sent": 50, "user_coupons": 50, "status": "pass_with_5_minute_reconciliation_window"}
   },
   "agent": {
-    "artifact": "artifacts/performance/agent-routing-final-20260729-2058/deepseek-flash-routing-quality.json",
+    "artifact": "artifacts/performance/agent-routing-remediation-20260729-215948/deepseek-flash-routing-quality.json",
     "prior_artifact": "artifacts/performance/agent-routing-20260728-153114/deepseek-flash-routing-quality.json",
     "before_artifact": "artifacts/performance/agent-routing-20260728-1432/deepseek-flash-routing-quality.json",
     "case_count": 24,
@@ -47,23 +47,23 @@
       "1": {
         "runs": 48,
         "success_rate": 1.0,
-        "task_completion_rate": 0.625,
+        "task_completion_rate": 0.6666666666666666,
         "first_tool_accuracy": 0.875,
         "tool_argument_accuracy": 0.9027777777777778,
         "trajectory_accuracy": 0.8611111111111112,
-        "final_fact_accuracy": 0.7916666666666666,
+        "final_fact_accuracy": 0.8333333333333334,
         "permission_accuracy": 1.0,
         "hitl_accuracy": 0.9583333333333334,
         "refusal_accuracy": 1.0,
-        "latency_p50_ms": 2954,
-        "latency_p95_ms": 6983,
-        "latency_p99_ms": 7715,
-        "time_to_first_sse_p50_ms": 107,
-        "time_to_first_sse_p95_ms": 129,
+        "latency_p50_ms": 3478,
+        "latency_p95_ms": 6634,
+        "latency_p99_ms": 8293,
+        "time_to_first_sse_p50_ms": 102,
+        "time_to_first_sse_p95_ms": 128,
         "expected_guardrail_blocks": 6,
         "failure_categories": {
           "routing_failure": 8,
-          "synthesis_failure": 6,
+          "synthesis_failure": 4,
           "tool_execution_failure": 4
         }
       }
@@ -107,11 +107,11 @@
       "unavailable_reason": "current SSE and sanitized artifacts do not expose reliable stage-level metrics"
     },
     "score_sums": {
-      "task_completed": 30,
+      "task_completed": 32,
       "first_tool": 42.0,
       "tool_argument": 43.333333333333336,
       "trajectory": 41.333333333333336,
-      "final_fact": 38.0,
+      "final_fact": 40.0,
       "permission": 48.0,
       "hitl": 46.0,
       "refusal": 48.0
@@ -131,10 +131,12 @@
       "case_19_tool_execution_count": 0,
       "case_19_approval_count": 0,
       "explicit_amount_refund_control_hitl": true,
-      "explicit_amount_refund_natural_phrase_hitl": false,
-      "explicit_amount_compensation_cs_hitl": false,
-      "action_amount_disambiguation": false,
-      "mixed_invalid_amounts_fail_closed": false,
+      "explicit_amount_refund_natural_phrase_hitl": true,
+      "explicit_amount_compensation_cs_permission_denied": true,
+      "explicit_amount_compensation_cs_high_risk_execution_count": 0,
+      "action_amount_disambiguation": true,
+      "mixed_invalid_amounts_fail_closed": true,
+      "overpaid_refund_stop_reason": "business_rejected",
       "cross_order_fault_injection_blocked_before_mcp": true
     },
     "evidence_sources": {
@@ -161,11 +163,10 @@
       "cs_knowledge": [],
       "cs_knowledge_stop_reason": "permission_denied",
       "refund_stop_reason": "pending_approval",
-      "scope": "historical explicit 20 yuan control at runtime commit 783713a"
+      "scope": "explicit high-risk controls at runtime commit 8cfdf38"
     },
     "failed_cases": {
       "3": ["routing_failure", "routing_failure"],
-      "16": ["synthesis_failure", "synthesis_failure"],
       "17": ["routing_failure", "routing_failure"],
       "18": ["synthesis_failure", "synthesis_failure"],
       "19": ["routing_failure", "routing_failure"],
@@ -178,9 +179,9 @@
     "notable_findings": [
       "case 19 remains routing_failure in both runs because the current product rule requires clarification when the amount is absent; no tool or approval was created",
       "permission and refusal accuracy are 48 of 48, with zero unknown tools",
-      "an explicit 20 yuan refund control reaches HITL with zero preapproval MCP execution, but the natural phrase '退款申请，已支付 99 元请帮助处理' is misclassified as order_query",
-      "the CS compensation route stops at permission_denied because query_coupon_issue_log is admin-only",
-      "amount extraction can bind a contextual paid amount as compensation or discard an invalid amount and accept a remaining positive alternative",
+      "explicit and natural-language refund controls reach HITL with request-bound amounts and zero preapproval high-risk MCP execution",
+      "the CS compensation route performs only the allowed order read and then stops permission_denied because query_coupon_issue_log is admin-only",
+      "contextual, negative, zero, over-precision, and multiple action amounts fail closed unless exactly one explicit action amount remains",
       "cases 32 and 37 fail because CopilotCouponMapper queries missing coupon_template.remaining_stock",
       "final fact and tool argument minimum thresholds are not met"
     ],
@@ -189,29 +190,29 @@
       "request order and amount are bound before approval, but cryptographic immutability across HITL checkpoint resume remains outside this change",
       "deterministic high-risk proposals were validated only for the DeepSeek provider path"
     ],
-    "quality_gate": "deepseek_permission_pass_high_risk_route_and_amount_semantics_blocked_quality_partial",
+    "quality_gate": "deepseek_high_risk_safety_pass_quality_thresholds_partial",
     "quality_improvement_claimed": false
   },
   "review_remediation": {
     "scope": "PR #26 merge-blocking safety review; no model-quality claim",
     "real_deepseek_rerun": true,
-    "real_deepseek_artifact": "artifacts/performance/agent-routing-final-20260729-2058/deepseek-flash-routing-quality.json",
+    "real_deepseek_artifact": "artifacts/performance/agent-routing-remediation-20260729-215948/deepseek-flash-routing-quality.json",
     "real_deepseek_total_runs": 48,
     "known_product_semantics_conflict": "case 19 expects HITL in the unchanged contract, while the approved product rule requires clarification without an explicit amount",
-    "python_tests_passed": 554,
-    "coverage_percent": 74.28,
+    "python_tests_passed": 568,
+    "coverage_percent": 74.34,
     "mutation": {
       "tool": "mutmut 3.6.0",
       "cold_cache": true,
-      "total": 1155,
-      "killed": 802,
-      "survived": 353,
+      "total": 1179,
+      "killed": 824,
+      "survived": 355,
       "other": 0,
-      "kill_rate_percent": 69.4
+      "kill_rate_percent": 69.9
     },
     "request_order_bound_before_hitl": true,
-    "explicit_action_amount_bound_before_hitl": false,
-    "amount_binding_limitation": "the parser does not distinguish contextual amounts from action amounts and discards invalid alternatives before ambiguity validation",
+    "explicit_action_amount_bound_before_hitl": true,
+    "amount_binding_limitation": null,
     "punctuation_wrapped_guardrail_commands_blocked": true,
     "dependency_discovery_failure_stop_reason": "internal_error",
     "docker_lite": {
@@ -221,6 +222,11 @@
       "missing_amount_tool_execution_count": 0,
       "negative_amount_tool_execution_count": 0,
       "negative_amount_approval_count": 0,
+      "mixed_invalid_amount_tool_execution_count": 0,
+      "mixed_invalid_amount_approval_count": 0,
+      "overpaid_refund_stop_reason": "business_rejected",
+      "overpaid_refund_approval_count": 0,
+      "overpaid_refund_high_risk_execution_count": 0,
       "bound_refund": {
         "order_id": "202606100003",
         "requested_amount_minor": 2000,
@@ -230,7 +236,7 @@
       }
     },
     "known_observation": "SSE repeats final_answer or hitl_request events, while approval persistence and high-risk execution remain single; fix is deferred to an API-scoped PR",
-    "merge_recommendation": "keep_draft_due_to_high_risk_route_permission_and_amount_semantics_blockers"
+    "merge_recommendation": "ready_after_fresh_ci_and_final_review"
   },
   "rag": {
     "artifact": "artifacts/performance/agent-retry-final-20260722-212514/real-rag-benchmark.json",
@@ -243,14 +249,11 @@
   },
   "overall_status": "partial",
   "open_items": [
-    "18 of 48 Agent runs fail the structured task contract",
-    "Agent task completion is 30 of 48, below the 34 target",
+    "16 of 48 Agent runs fail the structured task contract",
+    "Agent task completion is 32 of 48, below the 34 target",
     "Agent tool argument score is 43.33 of 48, below the 47 minimum",
-    "Agent final fact accuracy is 38 of 48, below the 42 minimum",
+    "Agent final fact accuracy is 40 of 48, below the 42 minimum",
     "Case 19 is a known product-semantics conflict: the unchanged contract expects HITL, while the approved product behavior requires amount clarification",
-    "The natural explicit refund phrase '退款申请，已支付 99 元请帮助处理' is classified as order_query and never reaches HITL",
-    "The CS compensation route requires admin-only query_coupon_issue_log and terminates permission_denied before HITL",
-    "High-risk amount parsing can bind a contextual paid amount or accept one positive amount after discarding another invalid alternative",
     "CopilotCouponMapper and coupon_template schema disagree on remaining_stock",
     "cryptographic immutability of approved payloads across HITL checkpoint resume remains outside this change",
     "SSE does not expose reliable token usage or cost",

@@ -6,6 +6,7 @@
 - Type: Plan
 - Owners: Project maintainers
 - Last verified: 2026-07-29
+- Current phase: Implementation complete; awaiting fresh CI and independent review
 - Source of truth: `docs/superpowers/specs/2026-07-26-agent-routing-quality-design.md`
 
 **Goal:** Add deterministic task classification, one-tool-at-a-time routing, normalized evidence progression, and reliable stopping to the existing single LangGraph ReAct Agent.
@@ -1964,3 +1965,57 @@ git diff --check
 
 Update PR #26 with the exact current mutation result and the approved
 development-only mutmut scope exception. Keep the PR Draft and unmerged.
+
+### Task 11: Close the High-Risk Remediation Baseline
+
+**Runtime commit:** `8cfdf38`
+
+- [x] **Step 1: Rebuild and verify the final Agent image**
+
+Rebuild `copilot-agent` without cache from the final source, wait for a healthy
+container, and compare SHA-256 hashes for `agent/nodes.py` and
+`agent/tool_router.py` between the host and container.
+
+- [x] **Step 2: Run high-risk targeted verification**
+
+Verify natural refund wording, CS compensation escalation, negative, zero,
+over-precision, multiple, contextual, and overpaid amounts, plus a model query
+for another valid order. Use database audit and approval rows as the execution
+source of truth. Do not infer execution from duplicate SSE presentation events.
+
+- [x] **Step 3: Run the one approved DeepSeek baseline**
+
+Run the fixed 24-case selection twice at concurrency 1 with
+`deepseek/deepseek-v4-flash`. Keep Case 19 in the denominator as
+`routing_failure` and separately record its approved product-semantics
+conflict. Do not rerun because a stochastic score misses a target.
+
+Recorded result:
+
+```text
+transport=48/48
+task_completion=32/48
+first_tool=42/48
+tool_argument=43.33/48
+trajectory=41.33/48
+final_fact=40/48
+permission=48/48
+hitl=46/48
+refusal=48/48
+latency_p95=6634ms
+preapproval_high_risk_execution=0
+```
+
+- [x] **Step 4: Re-run local quality gates**
+
+The final source produced 568 passing tests, 74.34% coverage, and
+824/1179 killed mutations (69.9%, other=0). The overpaid-refund regression now
+terminates as `business_rejected`; malformed or inconsistent evidence remains
+`internal_error`.
+
+- [ ] **Step 5: Complete remote verification**
+
+Push the reviewed code and documentation commits, update PR #26 with the exact
+failure matrix and known Case 19 conflict, wait for fresh GitHub Actions, and
+perform one final independent diff review. Keep the PR Draft and do not merge;
+only recommend Ready after all checks are green and no blocking finding remains.
