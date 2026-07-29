@@ -5,12 +5,12 @@
 - Status: Active
 - Type: Plan
 - Owners: Project maintainers
-- Last verified: 2026-07-26
+- Last verified: 2026-07-29
 - Source of truth: `docs/superpowers/specs/2026-07-26-agent-routing-quality-design.md`
 
 **Goal:** Add deterministic task classification, one-tool-at-a-time routing, normalized evidence progression, and reliable stopping to the existing single LangGraph ReAct Agent.
 
-**Architecture:** `ToolRouter` classifies the original request once and exposes only the current authorized tool. The new pure `EvidenceGate` converts tool results into bounded facts, chooses the next required tool, or records a terminal outcome. Existing `ToolPolicy`, HITL, Reflection, Auto-Compact, RAG, evaluation contracts, Java services, and dependency versions remain unchanged.
+**Architecture:** `ToolRouter` classifies the original request once and exposes only the current authorized tool. The pure `EvidenceGate` converts tool results into bounded facts, chooses the next required tool, or records a terminal outcome. High-risk routes additionally retain a hashed order target and requested minor-unit amount so tool calls, tool results, and approval proposals remain bound to the original request. Existing `ToolPolicy`, HITL resume protocol, Reflection, Auto-Compact, RAG, evaluation contracts, Java services, and production dependency versions remain unchanged.
 
 **Tech Stack:** Python 3.11, FastAPI, LangChain 0.3.7, langchain-openai 0.2.6, LangGraph 0.2.45, pytest 9.0.3, Docker Compose, DeepSeek `deepseek-v4-flash`
 
@@ -20,7 +20,7 @@
 - Push `fix/agent-routing-quality` after each verified commit; do not open the Draft PR until the final branch review.
 - Preserve `TOOL_ROLE_MAP` as the only Python role-permission source.
 - Preserve all four PR #25 tool-budget layers and SHA-256 call signatures.
-- Do not change `agent/tool_policy.py`, production permissions, HITL approval/resume/checkpoint behavior, prompts, model settings, dependencies, evaluation contracts, RAG, Java services, migrations, or Compose topology.
+- Do not change `agent/tool_policy.py`, production permissions, HITL approval/resume/checkpoint behavior, prompts, model settings, production dependencies, evaluation contracts, RAG, Java services, migrations, or Compose topology.
 - Keep one LangGraph ReAct graph; do not add nodes or introduce a multi-agent architecture.
 - Do not raise a budget or expose a substitute tool when a required tool is unauthorized.
 - Controlled evidence routes bind exactly one `next_tool`; `small_talk` is the
@@ -1847,3 +1847,120 @@ Improve route and stop quality without weakening PR #25 safety controls.
 ```
 
 Do not mark the PR Ready and do not merge it.
+
+### Task 10: Resolve Draft PR Security Review
+
+**Files:**
+- Modify: `copilot-agent-service/agent/tool_router.py`
+- Modify: `copilot-agent-service/agent/state.py`
+- Modify: `copilot-agent-service/agent/nodes.py`
+- Modify: `copilot-agent-service/guardrails/input_checker.py`
+- Test: `copilot-agent-service/tests/test_tool_router.py`
+- Test: `copilot-agent-service/tests/test_agent_nodes.py`
+- Test: `copilot-agent-service/tests/test_guardrails.py`
+- Test: `copilot-agent-service/tests/test_e2e_agent.py`
+- Modify: this plan, its source design, and PR #26 body
+
+**Interfaces:**
+- `RouteDecision.target_order_hash: str | None`
+- `RouteDecision.requested_amount_minor: int | None`
+- `order_target_hash(value: object) -> str | None`
+- Route state keys `route_target_order_hash` and
+  `route_requested_amount_minor`
+- `llm_node` and `tool_node` return `internal_error` for terminal dependency
+  discovery failures
+
+- [ ] **Step 1: Add failing route-binding tests**
+
+Cover raw-order omission from state, stable SHA-256 normalization, `20 元` to
+`2000` minor units, missing/ambiguous amount clarification, and the existing
+spaced phrase `补发一张 20 元优惠券`.
+
+Run:
+
+```bash
+cd copilot-agent-service
+DEBUG=false .venv/bin/python -m pytest tests/test_tool_router.py -q
+```
+
+Expected before implementation: failures for missing route fields and amount
+clarification.
+
+- [ ] **Step 2: Implement minimal route binding**
+
+Add the two immutable decision fields, serialize/restore them, parse only
+explicit currency-marked positive amounts with `Decimal`, and hash the
+normalized order number with SHA-256. High-risk actions missing either binding
+return clarification without exposing a tool.
+
+- [ ] **Step 3: Add failing tool-boundary and proposal tests**
+
+Cover model-proposed order B for user target A, MCP response order B after a
+validated A query, an otherwise valid order with paid amount `9900` and
+requested compensation `2000`, and mismatched high-risk tool amount/order
+before HITL.
+
+Run:
+
+```bash
+DEBUG=false .venv/bin/python -m pytest tests/test_agent_nodes.py -q
+```
+
+Expected before implementation: the mismatched query reaches MCP or the
+proposal uses the tool-derived order/amount.
+
+- [ ] **Step 4: Enforce the binding at each boundary**
+
+Before MCP/HITL, compare every high-risk route's order-scoped `order_id` and
+write amount with retained route state. After `query_order`, compare
+`order_no` before retaining raw output. Build DeepSeek proposals with the
+retained requested amount, retaining paid amount only as a positive
+eligibility and maximum-refund check.
+
+- [ ] **Step 5: Add failing punctuation-wrapped Guardrail tests**
+
+Parameterize comma, colon, parentheses, and Chinese/English mixed variants.
+Keep policy-only questions as positive controls.
+
+Run:
+
+```bash
+DEBUG=false .venv/bin/python -m pytest tests/test_guardrails.py -q
+```
+
+Expected before implementation: at least the comma and colon command wrappers
+are incorrectly allowed.
+
+- [ ] **Step 6: Implement clause-aware policy exemption**
+
+Split policy questions on sentence punctuation, comma, colon, and parentheses.
+Do not apply the exemption when a separate non-question clause matches a
+command-shaped exempt rule. Do not add a semantic model or broaden BLOCK
+patterns beyond the reviewed forms.
+
+- [ ] **Step 7: Add failing dependency-outcome tests**
+
+Extend unit tests and add full-graph tests for MCP discovery exception and a
+missing required MCP tool. Assert both `evidence_stop_reason` and
+`stop_reason` are `internal_error`.
+
+- [ ] **Step 8: Preserve terminal internal errors**
+
+Set `evidence_stop_reason` and `stop_reason` in `llm_node` when required tool
+discovery fails. Keep native `knowledge_search` fallback behavior unchanged.
+
+- [ ] **Step 9: Run full gates and update PR metadata**
+
+Run:
+
+```bash
+DEBUG=false .venv/bin/python -m pytest -q --cov --cov-report=term-missing --cov-fail-under=45
+DEBUG=false .venv/bin/mutmut run --max-children 4
+.venv/bin/python scripts/check_mutmut_score.py --min-kill-rate 50 --max-other 0
+cd ..
+python3 scripts/check_docs.py
+git diff --check
+```
+
+Update PR #26 with the exact current mutation result and the approved
+development-only mutmut scope exception. Keep the PR Draft and unmerged.

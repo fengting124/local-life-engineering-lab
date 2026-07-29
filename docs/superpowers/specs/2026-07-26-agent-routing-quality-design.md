@@ -74,17 +74,20 @@ The latest 48-run real baseline is the comparison point:
 7. Narrow Guardrail fixes for explicit cross-merchant access and bulk
    high-risk execution.
 8. Unit, integration, mutation, Docker, and real DeepSeek verification.
+9. Bind high-risk order and amount proposals to the original user request.
 
 ### 3.2 Out of scope
 
-- Model, provider, temperature, Prompt text, or dependency upgrades.
+- Model, provider, temperature, Prompt text, or production dependency upgrades.
 - Multi-agent routing or a second LangGraph.
 - `TOOL_ROLE_MAP` permission changes.
 - Tool budget increases or new retry budgets.
 - EvalCase, fixture, contract, runner, or scoring changes.
 - RAG Pipeline, Milvus, BM25, Reranker, or embedding changes.
 - MCP Server, Java service, database, migration, or Docker topology changes.
-- HITL payload binding, approval semantics, resume flow, or checkpoint design.
+- Cryptographic approval-payload binding across HITL resume, approval semantics,
+  resume flow, or checkpoint design. Request-to-proposal target binding is in
+  scope because it must hold before an approval is created.
 - Reflection and Auto-Compact redesign.
 - Generic Guardrail framework rewrites.
 
@@ -560,8 +563,9 @@ No eval implementation file will change.
   and resume behavior.
 - `local-life-copilot/`, `local-life-server/`, database migrations, and Compose
   topology.
-- Python dependency files and the pinned LangChain, LangGraph, and model
-  versions.
+- Production Python dependencies and the pinned LangChain, LangGraph, and model
+  versions. The development-only mutmut pin is covered by the approved
+  exception in section 20.4.
 
 ## 14. Test Matrix
 
@@ -705,3 +709,58 @@ The following pre-existing risks are recorded but not fixed here:
   `docs/performance/01-metric-contract.md`
 - Project Git process:
   `docs/03-process/Git版本管理与提交规范.md`
+
+## 20. Draft PR Review Addendum
+
+This addendum was approved after review of Draft PR #26 on 2026-07-29. It
+narrows the remaining merge blockers without changing the graph, model, Prompt,
+permissions, budgets, RAG, Java services, database, or evaluation contract.
+
+### 20.1 Original request binding
+
+`RouteDecision` stores:
+
+```text
+route_target_order_hash: SHA-256(normalized order number) or null
+route_requested_amount_minor: positive integer minor units or null
+```
+
+The raw target order number is not checkpointed. High-risk actions without one
+unambiguous order and one unambiguous currency amount use `clarification`.
+Every order-scoped tool call is checked against the retained hash before MCP or
+HITL handling. A `query_order` response is checked again before its raw payload
+is retained or used. The final refund or compensation proposal must match the
+same order hash and exact requested amount. Paid amount remains evidence for
+eligibility and upper-bound checks; it is never substituted for the requested
+amount.
+
+### 20.2 Guardrail policy exemption
+
+The policy-question exemption remains lexical and narrow. Before applying it,
+the input is split on Chinese and English sentence punctuation, comma, colon,
+and parentheses. A separate clause that already matches a cross-scope access
+or bulk-sensitive command prevents exemption, even if another clause asks
+about policy, permissions, or approval.
+
+### 20.3 Dependency failure outcome
+
+Controlled MCP discovery failure or absence of the required MCP tool returns:
+
+```text
+evidence_stop_reason = internal_error
+stop_reason = internal_error
+```
+
+The full graph must preserve that outcome through `final_node`; it must never
+record the request as `completed`.
+
+### 20.4 Approved mutation-tool exception
+
+The production dependency freeze remains unchanged. The development-only
+mutation runner was upgraded from mutmut 3.3.1 to 3.6.0 after two GitHub
+Runner executions produced false `SIGXCPU` outcomes under the older fixed
+timeout heuristic. CI still runs the complete suite with four workers,
+`min-kill-rate=50`, and `max-other=0`. A cold-cache local run and GitHub run
+both reported 702 killed, 330 survived, and zero other outcomes out of 1032.
+This exception changes test infrastructure only and does not claim a
+like-for-like quality increase over historical 3.3.1 totals.
