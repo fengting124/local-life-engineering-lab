@@ -202,13 +202,30 @@ Locust 场景：
 
 | 验证 | 结果 |
 | --- | --- |
-| Agent 主测试套件 | 529 passed，覆盖率 73.67%；`agent/nodes.py` 81.0% |
-| Agent mutation gate | 702 / 1032 killed，68.0%，other=0（mutmut 3.6.0 冷缓存全量运行） |
+| Agent 主测试套件 | 554 passed，覆盖率 74.28%；`agent/nodes.py` 81.9% |
+| Agent mutation gate | 802 / 1155 killed，69.4%，other=0（mutmut 3.6.0，审查修复后冷缓存全量运行） |
 | Embedding 镜像测试 | 1 passed |
 | Eval 合同、fixture、评分回归 | 既有合同未修改；invalid=0，fixture=47/47 |
 | Compose Lite | 7 个必要服务 healthy，Agent 镜像源码 hash 一致 |
 | 后端四场景 | 0 HTTP failure |
 | k6 spike | 通过阈值、无超卖 |
+
+PR #26 审查修复另完成了一次当前源码 Docker Lite 烟雾测试：
+
+- Agent 镜像内 `nodes.py`、`tool_router.py`、`input_checker.py` 与宿主机
+  SHA-256 一致，MySQL、Redis、Server、Copilot、Agent、Embedding 和
+  Reranker 均为 healthy。
+- 逗号包装的跨商家命令返回 `400 BLOCKED_BY_GUARDRAILS`，并产生
+  `guardrails_blocked` 安全审计。
+- 缺少金额的退款请求直接澄清，工具审计为 0。
+- 最终源码重建后，`-20 元`退款请求同样直接澄清，工具审计与审批记录均为
+  0，确认非正数不会进入查询或 HITL。
+- `20 元`退款请求只执行一次 `query_order`，生成的唯一审批 payload 为
+  `order_id=202606100003`、`amount=2000`，审批前高风险工具执行为 0；
+  测试审批随后拒绝并以 `hitl_rejected` 结束。
+- SSE 当前会重复发送相同的 `final_answer` 或 `hitl_request` 事件，但本次
+  数据库只产生一条审批，也没有重复执行高风险工具。该流式展示问题不在本次
+  安全审查修复边界内，需由后续独立 API PR 处理。
 
 整体状态仍为 **PARTIAL**：Agent 安全门禁、传输、延迟和轨迹最低线通过，但参数与最终事实最低线未通过，且真实环境存在 `coupon_template.remaining_stock` schema 漂移。本轮是并发 1 的质量基线，不替代容量压测。
 
@@ -217,7 +234,7 @@ Locust 场景：
 1. 在独立 Java/DB PR 中统一 `coupon_template` schema 与 `CopilotCouponMapper`，恢复 Case 32、37 的真实工具执行。
 2. 单独处理 Case 16、18、21 的证据到回答合成，不修改 RAG 或评测合同来迁就结果。
 3. 由产品语义决定 Case 3、49 应澄清还是查询，再统一路由规格与评测合同；禁止 Case ID 特判。
-4. HITL 审批 payload 的不可变绑定和 checkpoint 恢复协议仍是已知风险，本 PR 按批准边界未修改。
+4. 用户请求的订单和金额现已在审批前绑定；HITL 审批 payload 在 checkpoint 恢复后的不可变签名仍是已知风险，本 PR 按批准边界未修改恢复协议。
 5. Agent 入口仍直接信任客户端身份 Header；生产必须由可信网关完成认证并覆盖/签名身份，不能允许公网客户端自报角色。
 6. 确定性高风险提案只在 DeepSeek 路径启用并完成本轮真实验收；其他 provider 保留原行为，尚未做等价验证。
 7. 为 SSE 增加脱敏 token usage 和模型调用次数，再建立单任务成本门槛；随后跑 10-30 分钟稳态和故障注入测试。

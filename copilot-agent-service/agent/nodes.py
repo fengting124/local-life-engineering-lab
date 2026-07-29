@@ -23,6 +23,7 @@ from agent.evidence_gate import (
     normalize_tool_outcome,
 )
 from agent.state import AgentState
+from agent.tool_router import order_target_hash
 from agent.trace import genai_span
 from mcp.mcp_client import McpClient, McpToolError
 from config.settings import settings
@@ -30,6 +31,14 @@ from config.settings import settings
 log = structlog.get_logger(__name__)
 
 HITL_TOOLS = {"execute_refund", "issue_compensation_coupon"}
+HIGH_RISK_ROUTE_TYPES = {"refund_action", "compensation_action"}
+ORDER_SCOPED_TOOLS = {
+    "query_order",
+    "query_payment",
+    "query_coupon_issue_log",
+    "query_mq_dead_letter",
+    *HITL_TOOLS,
+}
 
 # =========================================================
 # LLM 工厂（支持多 Provider 切换）
@@ -187,6 +196,7 @@ def _direct_route_answer(state: AgentState) -> str | None:
     if state.get("route_mode") == "clarification":
         labels = {
             "order_id": "具体订单号",
+            "amount": "明确的退款或补偿金额",
             "metric": "需要查询的经营指标",
             "date": "一个具体日期",
             "supported_date": "今天、昨天或一个具体日期",
@@ -232,6 +242,68 @@ def _successful_evidence(
     return facts if isinstance(facts, Mapping) else None
 
 
+def _request_binding_error(
+    state: Mapping[str, object],
+    tool_call: Mapping[str, object],
+) -> str | None:
+    tool_name = tool_call.get("name")
+    if tool_name not in ORDER_SCOPED_TOOLS:
+        return None
+    if (
+        state.get("route_task_type") not in HIGH_RISK_ROUTE_TYPES
+        and tool_name not in HITL_TOOLS
+    ):
+        return None
+
+    expected_order_hash = state.get("route_target_order_hash")
+    if not isinstance(expected_order_hash, str) or not expected_order_hash:
+        return "missing_request_target_binding"
+
+    args = tool_call.get("args")
+    if not isinstance(args, Mapping):
+        return "request_target_mismatch"
+    if order_target_hash(args.get("order_id")) != expected_order_hash:
+        return "request_target_mismatch"
+
+    if tool_name in HITL_TOOLS:
+        expected_amount = state.get("route_requested_amount_minor")
+        amount_key = (
+            "amount"
+            if tool_name == "execute_refund"
+            else "compensation_amount"
+        )
+        actual_amount = args.get(amount_key)
+        if (
+            isinstance(expected_amount, bool)
+            or not isinstance(expected_amount, int)
+            or expected_amount <= 0
+            or isinstance(actual_amount, bool)
+            or actual_amount != expected_amount
+        ):
+            return "request_amount_mismatch"
+    return None
+
+
+def _query_order_response_matches_request(
+    state: Mapping[str, object],
+    raw_result: object,
+) -> bool:
+    expected_order_hash = state.get("route_target_order_hash")
+    if not isinstance(expected_order_hash, str) or not expected_order_hash:
+        return state.get("route_task_type") not in HIGH_RISK_ROUTE_TYPES
+    if isinstance(raw_result, Mapping):
+        payload = raw_result
+    elif isinstance(raw_result, str):
+        try:
+            parsed = json.loads(raw_result)
+        except (TypeError, ValueError):
+            return False
+        payload = parsed if isinstance(parsed, Mapping) else {}
+    else:
+        return False
+    return order_target_hash(payload.get("order_no")) == expected_order_hash
+
+
 def _build_structured_high_risk_proposal(
     state: AgentState,
 ) -> tuple[AIMessage | None, bool]:
@@ -257,20 +329,32 @@ def _build_structured_high_risk_proposal(
 
     order_id = order.get("order_no")
     payment = order.get("payment")
-    amount = payment.get("paid_amount") if isinstance(payment, Mapping) else None
+    paid_amount = (
+        payment.get("paid_amount")
+        if isinstance(payment, Mapping)
+        else None
+    )
+    requested_amount = state.get("route_requested_amount_minor")
+    expected_order_hash = state.get("route_target_order_hash")
     if (
         not isinstance(order_id, str)
         or not order_id.strip()
-        or isinstance(amount, bool)
-        or not isinstance(amount, int)
-        or amount <= 0
+        or order_target_hash(order_id) != expected_order_hash
+        or isinstance(paid_amount, bool)
+        or not isinstance(paid_amount, int)
+        or paid_amount <= 0
+        or isinstance(requested_amount, bool)
+        or not isinstance(requested_amount, int)
+        or requested_amount <= 0
     ):
         return AIMessage(content="订单证据不完整，无法发起人工审批。"), True
 
     if next_tool == "execute_refund":
+        if requested_amount > paid_amount:
+            return AIMessage(content="退款金额超过订单实付金额，无法发起人工审批。"), True
         args = {
             "order_id": order_id.strip(),
-            "amount": amount,
+            "amount": requested_amount,
             "reason": "订单状态满足退款前置条件，等待人工审批",
         }
     else:
@@ -295,7 +379,7 @@ def _build_structured_high_risk_proposal(
         args = {
             "user_id": str(user_id).strip(),
             "order_id": order_id.strip(),
-            "compensation_amount": amount,
+            "compensation_amount": requested_amount,
             "reason": "优惠券发放失败已确认，等待人工审批",
         }
 
@@ -320,6 +404,7 @@ async def llm_node(state: AgentState) -> dict:
     direct_answer = _direct_route_answer(state)
     response = AIMessage(content=direct_answer) if direct_answer is not None else None
     high_risk_proposal_failed = False
+    controlled_tool_unavailable = False
     if response is None:
         tools = []
         llm_with_tools = _llm
@@ -365,6 +450,7 @@ async def llm_node(state: AgentState) -> dict:
                 response = AIMessage(
                     content="抱歉，发生内部错误，完成该请求所需的工具暂时不可用，请稍后重试。"
                 )
+                controlled_tool_unavailable = True
             else:
                 router = ToolRouter.from_state(state)
                 complete_tool_specs = [
@@ -516,6 +602,12 @@ async def llm_node(state: AgentState) -> dict:
         update.update({
             "route_next_tool": None,
             "evidence_stop_reason": "internal_error",
+        })
+    if controlled_tool_unavailable:
+        update.update({
+            "route_next_tool": None,
+            "evidence_stop_reason": "internal_error",
+            "stop_reason": "internal_error",
         })
     return update
 
@@ -738,6 +830,63 @@ async def tool_node(state: AgentState) -> dict:
             "evidence_stop_reason": "internal_error",
         }
 
+    binding_failures = [
+        (index, error)
+        for index, tool_call in enumerate(tool_calls)
+        if (error := _request_binding_error(state, tool_call)) is not None
+    ]
+    if binding_failures:
+        failed_index, binding_error = binding_failures[0]
+        failed_call = tool_calls[failed_index]
+        tool_name = failed_call["name"]
+        binding_status = (
+            "internal_error"
+            if binding_error == "missing_request_target_binding"
+            else "parameter_error"
+        )
+        log.warning(
+            "request_binding_rejected",
+            reason=binding_error,
+            tool=tool_name,
+        )
+        binding_messages = [
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "error": binding_status,
+                        "reason": (
+                            binding_error
+                            if index == failed_index
+                            else "batch_rejected_due_request_binding"
+                        ),
+                        "tool": tool_call["name"],
+                    },
+                    ensure_ascii=False,
+                ),
+                tool_call_id=tool_call.get("id", ""),
+                name=tool_call["name"],
+            )
+            for index, tool_call in enumerate(tool_calls)
+        ]
+        binding_update = advance_evidence(
+            {**state, **budget_state},
+            [ToolOutcome(tool_name, binding_status, {})],
+        )
+        binding_update.pop("messages", None)
+        if tool_name in HITL_TOOLS or binding_status == "internal_error":
+            binding_update.update({
+                "route_next_tool": None,
+                "evidence_stop_reason": binding_status,
+                "stop_reason": binding_status,
+            })
+        return {
+            **budget_state,
+            **binding_update,
+            "messages": binding_messages,
+            "last_tool_failed": True,
+            "last_tool_error": binding_error,
+        }
+
     pending_action = state.get("pending_action") or {}
     for tool_call in tool_calls:
         tool_name = tool_call["name"]
@@ -807,6 +956,38 @@ async def tool_node(state: AgentState) -> dict:
                         session_id=state.get("session_id"),
                         thread_id=state.get("thread_id"),
                     )
+            if (
+                tool_name == "query_order"
+                and not _query_order_response_matches_request(state, result)
+            ):
+                record_tool_call(
+                    tool_name,
+                    "internal_error",
+                    _time.time() - start,
+                )
+                log.warning(
+                    "query_order_response_binding_rejected",
+                    tool=tool_name,
+                )
+                outcome = normalize_tool_outcome(
+                    tool_name,
+                    error_reason="internal_error",
+                )
+                return (
+                    ToolMessage(
+                        content=json.dumps(
+                            {
+                                "error": "internal_error",
+                                "reason": "request_target_response_mismatch",
+                                "tool": tool_name,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        tool_call_id=call_id,
+                        name=tool_name,
+                    ),
+                    outcome,
+                )
             record_tool_call(tool_name, "success", _time.time() - start)
             log.info("tool_success", tool=tool_name, elapsed_ms=int((_time.time()-start)*1000))
             outcome = normalize_tool_outcome(tool_name, raw_result=result)

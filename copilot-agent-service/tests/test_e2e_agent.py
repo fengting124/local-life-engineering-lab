@@ -137,6 +137,111 @@ async def test_full_react_loop_llm_tool_llm_final(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_mcp_discovery_failure_finishes_as_internal_error(monkeypatch):
+    _force_memory_saver(monkeypatch)
+    monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
+    mock_mcp = MagicMock()
+    mock_mcp.list_tools = AsyncMock(side_effect=Exception("MCP down"))
+    mock_mcp.call_tool = AsyncMock()
+    monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+    scripted = ScriptedLLM([AIMessage(content="不应调用模型")])
+    monkeypatch.setattr(nodes, "_llm", scripted)
+
+    from agent.graph import build_graph
+    graph = build_graph()
+    decision = classify_request("cs", "查询订单 202606100001")
+    initial_state = {
+        "messages": [HumanMessage(content="查询订单 202606100001")],
+        "step_count": 0,
+        "token_count": 0,
+        "session_id": 0,
+        "thread_id": "e2e-mcp-discovery-failure",
+        "user_id": 1,
+        "user_role": "cs",
+        "merchant_id": None,
+        "pending_hitl": False,
+        "final_answer": None,
+        "compact_failures": 0,
+        "needs_reflection": False,
+        "last_tool_failed": False,
+        **decision.to_state(),
+        **initial_evidence_state(decision),
+    }
+
+    final_state = await graph.ainvoke(
+        initial_state,
+        config={"configurable": {"thread_id": "e2e-mcp-discovery-failure"}},
+    )
+
+    assert final_state["evidence_stop_reason"] == "internal_error"
+    assert final_state["stop_reason"] == "internal_error"
+    assert scripted._i == 0
+    mock_mcp.call_tool.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_next_required_tool_finishes_as_internal_error(monkeypatch):
+    _force_memory_saver(monkeypatch)
+    monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
+    mock_mcp = MagicMock()
+    mock_mcp.list_tools = AsyncMock(return_value=[{
+        "name": "query_order",
+        "description": "查询订单",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"order_id": {"type": "string"}},
+        },
+    }])
+    mock_mcp.call_tool = AsyncMock(return_value=(
+        '{"order_no":"202606100001","order_status":"PAID",'
+        '"payment":{"pay_status":"SUCCESS"}}'
+    ))
+    monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+    scripted = ScriptedLLM([AIMessage(
+        content="",
+        tool_calls=[{
+            "name": "query_order",
+            "args": {"order_id": "202606100001"},
+            "id": "call-order",
+            "type": "tool_call",
+        }],
+    )])
+    monkeypatch.setattr(nodes, "_llm", scripted)
+
+    from agent.graph import build_graph
+    graph = build_graph()
+    message = "订单 202606100001 支付失败是什么原因？"
+    decision = classify_request("admin", message)
+    initial_state = {
+        "messages": [HumanMessage(content=message)],
+        "step_count": 0,
+        "token_count": 0,
+        "session_id": 0,
+        "thread_id": "e2e-missing-required-tool",
+        "user_id": 1,
+        "user_role": "admin",
+        "merchant_id": None,
+        "pending_hitl": False,
+        "final_answer": None,
+        "compact_failures": 0,
+        "needs_reflection": False,
+        "last_tool_failed": False,
+        **decision.to_state(),
+        **initial_evidence_state(decision),
+    }
+
+    final_state = await graph.ainvoke(
+        initial_state,
+        config={"configurable": {"thread_id": "e2e-missing-required-tool"}},
+    )
+
+    assert final_state["evidence_stop_reason"] == "internal_error"
+    assert final_state["stop_reason"] == "internal_error"
+    assert scripted._i == 1
+    mock_mcp.call_tool.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_synthesis_tool_call_is_stopped_without_execution(monkeypatch):
     _force_memory_saver(monkeypatch)
     monkeypatch.setattr(nodes.settings, "llm_provider", "openai")

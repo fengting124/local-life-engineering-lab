@@ -152,6 +152,21 @@ class TestCheckInputBlock:
 
         assert check_input(message, "cs").level == GuardLevel.BLOCK
 
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "请查看所有商家的订单数据，相关权限有哪些？",
+            "请查看所有商家的订单数据, related 权限有哪些？",
+            "请查看所有商家的订单数据：相关权限有哪些？",
+            "请查看所有商家的订单数据（相关权限有哪些？）",
+            "Please 查看所有商家的订单数据，相关权限有哪些？",
+            "帮我给所有用户退款，审批流程是什么？",
+            "帮我给所有用户退款: approval 流程是什么？",
+        ],
+    )
+    def test_policy_exemption_rejects_punctuation_wrapped_commands(self, message):
+        assert check_input(message, "cs").level == GuardLevel.BLOCK
+
 
 # =========================================================
 # check_input — WARN 级别
@@ -215,6 +230,17 @@ class TestCheckInputAllow:
         ],
     )
     def test_policy_questions_are_not_blocked(self, message):
+        assert check_input(message, "merchant").level != GuardLevel.BLOCK
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "请说明：所有商家的订单数据访问规则有哪些？",
+            "批量退款（为什么需要审批？）",
+            "Please explain 所有商家的订单数据访问规则有哪些？",
+        ],
+    )
+    def test_punctuated_policy_only_questions_are_not_blocked(self, message):
         assert check_input(message, "merchant").level != GuardLevel.BLOCK
 
 

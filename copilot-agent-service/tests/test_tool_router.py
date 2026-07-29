@@ -1,4 +1,6 @@
 """Unit tests for deterministic, role-filtered tool route decisions."""
+import hashlib
+
 import pytest
 
 from agent import tool_router
@@ -80,7 +82,7 @@ class TestRolePermissions:
     [
         ("今天有多少笔订单？", "merchant", "analytics", "controlled", "shop_metrics_query"),
         ("退款规则是什么？", "merchant", "knowledge", "controlled", "knowledge_search"),
-        ("给订单 202606100001 退款", "cs", "refund_action", "controlled", "query_order"),
+        ("给订单 202606100001 退款 99 元", "cs", "refund_action", "controlled", "query_order"),
         ("订单 202606100001 支付失败是什么原因？", "admin", "payment_diagnosis", "controlled", "query_order"),
         ("订单 202606100001 没收到券，查根因", "admin", "coupon_root_cause", "controlled", "query_order"),
         ("按照平台规则创建优惠券活动", "merchant", "campaign_draft", "controlled", "coupon_policy_lookup"),
@@ -150,10 +152,10 @@ def test_complete_campaign_constraints_skip_policy_lookup():
     [
         ("merchant", "订单 202606100001 退款规则是什么？", "knowledge", "knowledge_search"),
         ("cs", "订单 202606100001 的退款情况怎么样？", "order_query", "query_order"),
-        ("cs", "给订单 202606100001 执行退款", "refund_action", "query_order"),
+        ("cs", "给订单 202606100001 执行退款 99 元", "refund_action", "query_order"),
         ("merchant", "订单 202606100001 的补券规则是什么？", "knowledge", "knowledge_search"),
         ("cs", "订单 202606100001 的补券情况怎么样？", "order_query", "query_order"),
-        ("cs", "给订单 202606100001 执行补券", "compensation_action", "query_order"),
+        ("cs", "给订单 202606100001 执行补券 20 元", "compensation_action", "query_order"),
     ],
 )
 def test_high_risk_actions_require_explicit_execution_intent(
@@ -186,8 +188,8 @@ def test_high_risk_actions_require_explicit_execution_intent(
             "knowledge",
             "knowledge_search",
         ),
-        ("cs", "给订单 202606100001 退款", "refund_action", "query_order"),
-        ("cs", "给订单 202606100001 补券", "compensation_action", "query_order"),
+        ("cs", "给订单 202606100001 退款 99 元", "refund_action", "query_order"),
+        ("cs", "给订单 202606100001 补券 20 元", "compensation_action", "query_order"),
     ],
 )
 def test_policy_semantics_override_generic_high_risk_wording(
@@ -202,8 +204,8 @@ def test_policy_semantics_override_generic_high_risk_wording(
 @pytest.mark.parametrize(
     ("message", "task_type"),
     [
-        ("按照退款规则给订单 202606100001 执行退款", "refund_action"),
-        ("按照补券规则给订单 202606100001 执行补券", "compensation_action"),
+        ("按照退款规则给订单 202606100001 执行退款 99 元", "refund_action"),
+        ("按照补券规则给订单 202606100001 执行补券 20 元", "compensation_action"),
     ],
 )
 def test_strong_high_risk_execution_overrides_policy_semantics(message, task_type):
@@ -221,9 +223,10 @@ def test_strong_high_risk_execution_overrides_policy_semantics(message, task_typ
     ],
 )
 def test_later_clause_query_terms_do_not_cancel_strong_action(action, task_type):
+    amount = 99 if action == "退款" else 20
     decision = classify_request(
         "admin",
-        f"给订单 202606100001 执行{action}，支付状态已确认",
+        f"给订单 202606100001 执行{action} {amount} 元，支付状态已确认",
     )
 
     assert decision.task_type == task_type
@@ -273,9 +276,10 @@ def test_execution_interrogatives_do_not_unlock_high_risk_tools(
     ],
 )
 def test_sequential_query_then_high_risk_execution_remains_action(action, task_type):
+    amount = 99 if action == "退款" else 20
     decision = classify_request(
         "admin",
-        f"查询完订单 202606100001 后执行{action}",
+        f"查询完订单 202606100001 后执行{action} {amount} 元",
     )
 
     assert decision.task_type == task_type
@@ -387,6 +391,52 @@ def test_route_state_round_trip_is_checkpoint_safe():
     restored = RouteDecision.from_state(original.to_state())
 
     assert restored == original
+
+
+def test_high_risk_route_binds_hashed_order_and_explicit_amount():
+    order_id = "202606100001"
+
+    decision = classify_request("cs", f"给订单 {order_id} 退款 99 元")
+    state = decision.to_state()
+
+    assert decision.task_type == "refund_action"
+    assert decision.route_mode == "controlled"
+    assert state["route_target_order_hash"] == hashlib.sha256(
+        order_id.encode("utf-8")
+    ).hexdigest()
+    assert state["route_requested_amount_minor"] == 9900
+    assert order_id not in state.values()
+
+
+def test_compensation_phrase_binds_requested_amount_not_order_paid_amount():
+    decision = classify_request(
+        "admin",
+        "帮我补发一张 20 元优惠券给 202606100001 的用户",
+    )
+
+    assert decision.task_type == "compensation_action"
+    assert decision.route_mode == "controlled"
+    assert decision.requested_amount_minor == 2000
+    assert decision.next_tool == "query_order"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "给订单 202606100001 退款",
+        "给订单 202606100001 退款 20 元还是 30 元",
+        "给订单 202606100001 退款 -20 元",
+        "给订单 202606100001 退款 20.123 元",
+        "给订单 202606100001 退款 ￥20.123",
+        "给订单 202606100001 补券",
+    ],
+)
+def test_high_risk_route_requires_one_unambiguous_amount(message):
+    decision = classify_request("admin", message)
+
+    assert decision.route_mode == "clarification"
+    assert decision.missing_fields == ("amount",)
+    assert decision.next_tool is None
 
 
 def test_invalid_checkpoint_route_mode_exposes_zero_tools():

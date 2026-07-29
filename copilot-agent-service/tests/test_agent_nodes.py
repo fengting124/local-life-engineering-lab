@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from agent import nodes
 from agent.graph import route_after_tool
+from agent.tool_router import order_target_hash
 from mcp.mcp_client import McpToolError
 
 
@@ -43,6 +44,8 @@ def make_state(messages, **over) -> dict:
         route_authorized_tools=[],
         route_next_tool=None,
         route_missing_fields=[],
+        route_target_order_hash=None,
+        route_requested_amount_minor=None,
         required_evidence=[],
         evidence_collected={},
         evidence_complete=False,
@@ -224,6 +227,7 @@ class TestToolNode:
     ):
         mock_mcp = MagicMock()
         mock_mcp.call_tool = AsyncMock(return_value=json.dumps({
+            "order_no": "202606100001",
             "order_status": "PAID",
             "payment": {"pay_status": "SUCCESS"},
             "coupon": {"coupon_status": None},
@@ -238,6 +242,8 @@ class TestToolNode:
             ["query_order", "execute_refund"],
             "query_order",
             user_role="cs",
+            route_target_order_hash=order_target_hash("202606100001"),
+            route_requested_amount_minor=100,
         )
 
         first = await nodes.tool_node(state)
@@ -358,6 +364,13 @@ class TestToolNode:
         state = make_state(
             [ai_with_tool_call("execute_refund", args)],
             user_role="cs",
+            route_task_type="refund_action",
+            route_mode="controlled",
+            route_required_tools=["query_order", "execute_refund"],
+            route_authorized_tools=["query_order", "execute_refund"],
+            route_next_tool="execute_refund",
+            route_target_order_hash=order_target_hash("123"),
+            route_requested_amount_minor=100,
         )
 
         result = await nodes.tool_node(state)
@@ -378,6 +391,13 @@ class TestToolNode:
             [ai_with_tool_call("execute_refund", args)],
             user_role="cs",
             pending_action={"action_type": "execute_refund", "approval_id": "APPROVAL_1"},
+            route_task_type="refund_action",
+            route_mode="controlled",
+            route_required_tools=["query_order", "execute_refund"],
+            route_authorized_tools=["query_order", "execute_refund"],
+            route_next_tool="execute_refund",
+            route_target_order_hash=order_target_hash("123"),
+            route_requested_amount_minor=100,
         )
 
         result = await nodes.tool_node(state)
@@ -386,6 +406,139 @@ class TestToolNode:
         mock_mcp.call_tool.assert_awaited_once()
         _, kwargs = mock_mcp.call_tool.await_args
         assert kwargs["arguments"]["approval_id"] == "APPROVAL_1"
+
+    @pytest.mark.asyncio
+    async def test_high_risk_route_rejects_model_order_drift_before_mcp(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.call_tool = AsyncMock(return_value="不应调用")
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        state = controlled_state(
+            [ai_with_tool_call(
+                "query_order",
+                {"order_id": "202606100099"},
+            )],
+            "refund_action",
+            ["query_order", "execute_refund"],
+            ["query_order", "execute_refund"],
+            "query_order",
+            user_role="cs",
+            route_target_order_hash=order_target_hash("202606100001"),
+            route_requested_amount_minor=2000,
+        )
+
+        result = await nodes.tool_node(state)
+
+        mock_mcp.call_tool.assert_not_awaited()
+        assert result["last_tool_failed"] is True
+        assert result["evidence_collected"]["query_order"]["status"] == (
+            "parameter_error"
+        )
+        assert "202606100099" not in result["messages"][0].content
+
+    @pytest.mark.asyncio
+    async def test_high_risk_route_rejects_cross_order_mcp_response(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.call_tool = AsyncMock(return_value=json.dumps({
+            "order_no": "202606100099",
+            "order_status": "PAID",
+            "payment": {"paid_amount": 9900},
+        }))
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        state = controlled_state(
+            [ai_with_tool_call(
+                "query_order",
+                {"order_id": "202606100001"},
+            )],
+            "refund_action",
+            ["query_order", "execute_refund"],
+            ["query_order", "execute_refund"],
+            "query_order",
+            user_role="cs",
+            route_target_order_hash=order_target_hash("202606100001"),
+            route_requested_amount_minor=2000,
+        )
+
+        result = await nodes.tool_node(state)
+
+        mock_mcp.call_tool.assert_awaited_once()
+        assert result["evidence_stop_reason"] == "internal_error"
+        assert result["route_next_tool"] is None
+        assert "202606100099" not in result["messages"][0].content
+
+    @pytest.mark.asyncio
+    async def test_high_risk_tool_rejects_order_and_amount_drift_before_hitl(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.call_tool = AsyncMock(return_value="不应调用")
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        state = controlled_state(
+            [ai_with_tool_call("execute_refund", {
+                "order_id": "202606100099",
+                "amount": 9900,
+                "reason": "错误目标",
+            })],
+            "refund_action",
+            ["query_order", "execute_refund"],
+            ["query_order", "execute_refund"],
+            "execute_refund",
+            user_role="cs",
+            route_target_order_hash=order_target_hash("202606100001"),
+            route_requested_amount_minor=2000,
+        )
+        state["evidence_collected"] = {
+            "query_order": {
+                "status": "success",
+                "attempts": 1,
+                "facts": {"found": True, "order_status": "PAID"},
+            },
+        }
+
+        result = await nodes.tool_node(state)
+
+        assert result.get("pending_hitl") is not True
+        assert result["evidence_stop_reason"] == "parameter_error"
+        assert result["stop_reason"] == "parameter_error"
+        mock_mcp.call_tool.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unbound_high_risk_tool_later_in_batch_is_rejected(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.call_tool = AsyncMock(return_value="不应调用")
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        state = make_state(
+            [ai_with_tool_calls([
+                {
+                    "name": "query_order",
+                    "args": {"order_id": "202606100001"},
+                    "id": "query",
+                },
+                {
+                    "name": "execute_refund",
+                    "args": {
+                        "order_id": "202606100001",
+                        "amount": 2000,
+                        "reason": "无请求绑定",
+                    },
+                    "id": "refund",
+                },
+            ])],
+            user_role="cs",
+        )
+
+        result = await nodes.tool_node(state)
+
+        assert result.get("pending_hitl") is not True
+        assert result["evidence_stop_reason"] == "internal_error"
+        assert result["stop_reason"] == "internal_error"
+        assert len(result["messages"]) == 2
+        mock_mcp.call_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_success_returns_tool_message(self, monkeypatch, capsys):
@@ -811,7 +964,7 @@ class TestLlmNode:
 
         result = await nodes.llm_node(make_state(
             [
-                HumanMessage(content="给订单退款"),
+                HumanMessage(content="给订单 202606100003 退款 20 元"),
                 ai_with_tool_call(
                     "query_order",
                     {"order_id": "202606100003"},
@@ -833,6 +986,8 @@ class TestLlmNode:
             route_required_tools=["query_order", "execute_refund"],
             route_authorized_tools=["query_order", "execute_refund"],
             route_next_tool="execute_refund",
+            route_target_order_hash=order_target_hash("202606100003"),
+            route_requested_amount_minor=2000,
             evidence_collected={
                 "query_order": {
                     "status": "success",
@@ -846,7 +1001,7 @@ class TestLlmNode:
         assert tool_call["name"] == "execute_refund"
         assert tool_call["args"] == {
             "order_id": "202606100003",
-            "amount": 2990,
+            "amount": 2000,
             "reason": "订单状态满足退款前置条件，等待人工审批",
         }
         fake_llm.ainvoke.assert_not_awaited()
@@ -889,6 +1044,8 @@ class TestLlmNode:
             route_required_tools=["query_order", "execute_refund"],
             route_authorized_tools=["query_order", "execute_refund"],
             route_next_tool="execute_refund",
+            route_target_order_hash=order_target_hash("202606100003"),
+            route_requested_amount_minor=2000,
             evidence_collected={
                 "query_order": {
                     "status": "success",
@@ -920,7 +1077,7 @@ class TestLlmNode:
 
         result = await nodes.llm_node(make_state(
             [
-                HumanMessage(content="给订单补偿券"),
+                HumanMessage(content="给订单 202606100003 补偿券 20 元"),
                 ToolMessage(
                     content=json.dumps({
                         "order_no": "202606100003",
@@ -955,6 +1112,8 @@ class TestLlmNode:
                 "issue_compensation_coupon",
             ],
             route_next_tool="issue_compensation_coupon",
+            route_target_order_hash=order_target_hash("202606100003"),
+            route_requested_amount_minor=2000,
             evidence_collected={
                 "query_order": {
                     "status": "success",
@@ -977,7 +1136,7 @@ class TestLlmNode:
         assert tool_call["args"] == {
             "user_id": "9000000001",
             "order_id": "202606100003",
-            "compensation_amount": 2990,
+            "compensation_amount": 2000,
             "reason": "优惠券发放失败已确认，等待人工审批",
         }
         fake_llm.ainvoke.assert_not_awaited()
@@ -1034,6 +1193,8 @@ class TestLlmNode:
                 "issue_compensation_coupon",
             ],
             route_next_tool="issue_compensation_coupon",
+            route_target_order_hash=order_target_hash("202606100003"),
+            route_requested_amount_minor=2000,
             evidence_collected={
                 "query_order": {
                     "status": "success",
@@ -1108,6 +1269,8 @@ class TestLlmNode:
                 "issue_compensation_coupon",
             ],
             route_next_tool="issue_compensation_coupon",
+            route_target_order_hash=order_target_hash("202606100003"),
+            route_requested_amount_minor=2000,
             evidence_collected={
                 "query_order": {
                     "status": "success",
@@ -1261,6 +1424,27 @@ class TestLlmNode:
         fake_llm.ainvoke.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_amount_clarification_uses_business_label(self, monkeypatch):
+        mcp_factory = MagicMock()
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        monkeypatch.setattr(nodes, "McpClient", mcp_factory)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="给订单 202606100001 退款")],
+            route_task_type="refund_action",
+            route_mode="clarification",
+            route_missing_fields=["amount"],
+            route_next_tool=None,
+        ))
+
+        assert "明确的退款或补偿金额" in result["final_answer"]
+        assert "amount" not in result["final_answer"]
+        mcp_factory.assert_not_called()
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_initial_permission_denial_skips_mcp_rag_and_llm(self, monkeypatch):
         from rag import knowledge_tool
 
@@ -1302,6 +1486,8 @@ class TestLlmNode:
         ))
 
         assert "内部错误" in result["final_answer"]
+        assert result["evidence_stop_reason"] == "internal_error"
+        assert result["stop_reason"] == "internal_error"
         fake_llm.ainvoke.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1330,6 +1516,8 @@ class TestLlmNode:
         assert result["final_answer"] == (
             "抱歉，发生内部错误，完成该请求所需的工具暂时不可用，请稍后重试。"
         )
+        assert result["evidence_stop_reason"] == "internal_error"
+        assert result["stop_reason"] == "internal_error"
         fake_llm.bind_tools.assert_not_called()
         fake_llm.ainvoke.assert_not_awaited()
 

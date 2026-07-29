@@ -70,6 +70,10 @@ class AgentState(TypedDict):
     route_authorized_tools: list[str]
     route_next_tool: str | None
     route_missing_fields: list[str]
+    # SHA-256 of the normalized user-requested order; never the raw order ID.
+    route_target_order_hash: str | None
+    # Explicit user-requested high-risk amount in minor currency units.
+    route_requested_amount_minor: int | None
 
     # Bounded tool evidence used to gate synthesis; never raw request or tool data.
     required_evidence: list[str]

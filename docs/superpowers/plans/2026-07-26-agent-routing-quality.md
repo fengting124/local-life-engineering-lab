@@ -1870,7 +1870,7 @@ Do not mark the PR Ready and do not merge it.
 - `llm_node` and `tool_node` return `internal_error` for terminal dependency
   discovery failures
 
-- [ ] **Step 1: Add failing route-binding tests**
+- [x] **Step 1: Add failing route-binding tests**
 
 Cover raw-order omission from state, stable SHA-256 normalization, `20 元` to
 `2000` minor units, missing/ambiguous amount clarification, and the existing
@@ -1886,14 +1886,14 @@ DEBUG=false .venv/bin/python -m pytest tests/test_tool_router.py -q
 Expected before implementation: failures for missing route fields and amount
 clarification.
 
-- [ ] **Step 2: Implement minimal route binding**
+- [x] **Step 2: Implement minimal route binding**
 
 Add the two immutable decision fields, serialize/restore them, parse only
 explicit currency-marked positive amounts with `Decimal`, and hash the
 normalized order number with SHA-256. High-risk actions missing either binding
 return clarification without exposing a tool.
 
-- [ ] **Step 3: Add failing tool-boundary and proposal tests**
+- [x] **Step 3: Add failing tool-boundary and proposal tests**
 
 Cover model-proposed order B for user target A, MCP response order B after a
 validated A query, an otherwise valid order with paid amount `9900` and
@@ -1909,7 +1909,7 @@ DEBUG=false .venv/bin/python -m pytest tests/test_agent_nodes.py -q
 Expected before implementation: the mismatched query reaches MCP or the
 proposal uses the tool-derived order/amount.
 
-- [ ] **Step 4: Enforce the binding at each boundary**
+- [x] **Step 4: Enforce the binding at each boundary**
 
 Before MCP/HITL, compare every high-risk route's order-scoped `order_id` and
 write amount with retained route state. After `query_order`, compare
@@ -1917,7 +1917,7 @@ write amount with retained route state. After `query_order`, compare
 retained requested amount, retaining paid amount only as a positive
 eligibility and maximum-refund check.
 
-- [ ] **Step 5: Add failing punctuation-wrapped Guardrail tests**
+- [x] **Step 5: Add failing punctuation-wrapped Guardrail tests**
 
 Parameterize comma, colon, parentheses, and Chinese/English mixed variants.
 Keep policy-only questions as positive controls.
@@ -1931,20 +1931,20 @@ DEBUG=false .venv/bin/python -m pytest tests/test_guardrails.py -q
 Expected before implementation: at least the comma and colon command wrappers
 are incorrectly allowed.
 
-- [ ] **Step 6: Implement clause-aware policy exemption**
+- [x] **Step 6: Implement clause-aware policy exemption**
 
 Split policy questions on sentence punctuation, comma, colon, and parentheses.
 Do not apply the exemption when a separate non-question clause matches a
 command-shaped exempt rule. Do not add a semantic model or broaden BLOCK
 patterns beyond the reviewed forms.
 
-- [ ] **Step 7: Add failing dependency-outcome tests**
+- [x] **Step 7: Add failing dependency-outcome tests**
 
 Extend unit tests and add full-graph tests for MCP discovery exception and a
 missing required MCP tool. Assert both `evidence_stop_reason` and
 `stop_reason` are `internal_error`.
 
-- [ ] **Step 8: Preserve terminal internal errors**
+- [x] **Step 8: Preserve terminal internal errors**
 
 Set `evidence_stop_reason` and `stop_reason` in `llm_node` when required tool
 discovery fails. Keep native `knowledge_search` fallback behavior unchanged.

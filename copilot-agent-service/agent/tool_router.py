@@ -1,5 +1,7 @@
 """Deterministic, role-filtered tool route decisions for the current request."""
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+import hashlib
 import re
 from typing import Mapping, Sequence
 
@@ -88,6 +90,13 @@ COMPENSATION_ACTION_TERMS = (
     "赔付券",
     "补偿券",
 )
+_CURRENCY_AMOUNT_PATTERN = re.compile(
+    r"(?:"
+    r"[¥￥]\s*([+-]?\s*\d+(?:\.\d+)?)(?![\d.])"
+    r"|(?<![\d.])([+-]?\s*\d+(?:\.\d+)?)\s*(?:元|块|人民币)(?![\d.])"
+    r")",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -99,6 +108,8 @@ class RouteDecision:
     authorized_tools: tuple[str, ...] = ()
     next_tool: str | None = None
     missing_fields: tuple[str, ...] = ()
+    target_order_hash: str | None = None
+    requested_amount_minor: int | None = None
 
     def to_state(self) -> dict[str, object]:
         return {
@@ -109,6 +120,8 @@ class RouteDecision:
             "route_authorized_tools": list(self.authorized_tools),
             "route_next_tool": self.next_tool,
             "route_missing_fields": list(self.missing_fields),
+            "route_target_order_hash": self.target_order_hash,
+            "route_requested_amount_minor": self.requested_amount_minor,
         }
 
     @classmethod
@@ -124,6 +137,8 @@ class RouteDecision:
             authorized_tools=tuple(state.get("route_authorized_tools", ())),
             next_tool=state.get("route_next_tool"),
             missing_fields=tuple(state.get("route_missing_fields", ())),
+            target_order_hash=state.get("route_target_order_hash"),
+            requested_amount_minor=state.get("route_requested_amount_minor"),
         )
 
 
@@ -135,6 +150,8 @@ def _decision(
     route_mode: str = "controlled",
     required_tools: Sequence[str] = (),
     missing_fields: Sequence[str] = (),
+    target_order_hash: str | None = None,
+    requested_amount_minor: int | None = None,
 ) -> RouteDecision:
     required = tuple(required_tools)
     authorized = tuple(
@@ -149,6 +166,8 @@ def _decision(
         authorized_tools=authorized,
         next_tool=first,
         missing_fields=tuple(missing_fields),
+        target_order_hash=target_order_hash,
+        requested_amount_minor=requested_amount_minor,
     )
 
 
@@ -159,6 +178,31 @@ def _contains_any(text: str, terms: Sequence[str]) -> bool:
 def _order_ids(text: str) -> tuple[str, ...]:
     matches = re.findall(r"(?<!\d)\d{12,}(?!\d)", text)
     return tuple(dict.fromkeys(matches))
+
+
+def order_target_hash(value: object) -> str | None:
+    """Hash a normalized order number without retaining it in route state."""
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _requested_amounts_minor(text: str) -> tuple[int, ...]:
+    amounts: list[int] = []
+    for match in _CURRENCY_AMOUNT_PATTERN.finditer(text):
+        raw_amount = re.sub(r"\s+", "", match.group(1) or match.group(2))
+        try:
+            amount = Decimal(raw_amount)
+        except (InvalidOperation, TypeError):
+            continue
+        minor = amount * 100
+        if amount <= 0 or minor != minor.to_integral_value():
+            continue
+        amounts.append(int(minor))
+    return tuple(dict.fromkeys(amounts))
 
 
 def _has_high_risk_query(text: str) -> bool:
@@ -298,8 +342,13 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
     analytics_intent = has_aggregate or has_metric or has_unsupported_date
 
     refund_intent = _has_high_risk_execution(text, REFUND_ACTION_TERMS)
-    compensation_intent = _has_high_risk_execution(
+    compensation_action_text = re.sub(
+        r"补发.{0,16}优惠券",
+        "补发优惠券",
         text,
+    )
+    compensation_intent = _has_high_risk_execution(
+        compensation_action_text,
         COMPENSATION_ACTION_TERMS,
     )
 
@@ -331,20 +380,35 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
     if refund_intent:
         if not has_one_order:
             return _clarification(user_role, "refund_action", 100, "order_id")
+        requested_amounts = _requested_amounts_minor(text)
+        if len(requested_amounts) != 1:
+            return _clarification(user_role, "refund_action", 100, "amount")
         return _decision(
             user_role,
             "refund_action",
             100,
             required_tools=TASK_TOOL_PLANS["refund_action"],
+            target_order_hash=order_target_hash(order_ids[0]),
+            requested_amount_minor=requested_amounts[0],
         )
     if compensation_intent:
         if not has_one_order:
             return _clarification(user_role, "compensation_action", 100, "order_id")
+        requested_amounts = _requested_amounts_minor(text)
+        if len(requested_amounts) != 1:
+            return _clarification(
+                user_role,
+                "compensation_action",
+                100,
+                "amount",
+            )
         return _decision(
             user_role,
             "compensation_action",
             100,
             required_tools=TASK_TOOL_PLANS["compensation_action"],
+            target_order_hash=order_target_hash(order_ids[0]),
+            requested_amount_minor=requested_amounts[0],
         )
 
     diagnostic_scores: dict[str, int] = {}

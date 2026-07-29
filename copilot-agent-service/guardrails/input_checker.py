@@ -134,6 +134,7 @@ _CAUSAL_RESTRICTION_QUESTION_PATTERN = re.compile(
     r"(?:不能|不可以|需要|必须|不允许)",
     re.IGNORECASE,
 )
+_POLICY_CLAUSE_SEPARATOR_PATTERN = re.compile(r"[，,:：()（）]")
 
 
 # =========================================================
@@ -142,6 +143,39 @@ _CAUSAL_RESTRICTION_QUESTION_PATTERN = re.compile(
 
 def _is_complete_single_question(text: str) -> bool:
     return bool(re.fullmatch(r"[^。！？!?；;\n]{1,120}[?？]", text))
+
+
+def _is_policy_clause(clause: str) -> bool:
+    has_policy_noun = any(noun in clause for noun in _POLICY_NOUNS)
+    has_question_phrase = any(
+        phrase in clause for phrase in _QUESTION_PHRASES
+    )
+    return (
+        has_policy_noun and has_question_phrase
+    ) or bool(_CAUSAL_RESTRICTION_QUESTION_PATTERN.match(clause))
+
+
+def _has_standalone_sensitive_command(text: str) -> bool:
+    clauses = [
+        clause.strip()
+        for clause in _POLICY_CLAUSE_SEPARATOR_PATTERN.split(text)
+        if clause.strip()
+    ]
+    if len(clauses) < 2:
+        return False
+    exempt_patterns = [
+        pattern
+        for pattern, rule_name in _BLOCK_PATTERNS
+        if rule_name in _POLICY_QUESTION_EXEMPT_RULES
+    ]
+    return any(
+        not _is_policy_clause(clause)
+        and any(
+            re.search(pattern, clause, re.IGNORECASE | re.DOTALL)
+            for pattern in exempt_patterns
+        )
+        for clause in clauses
+    )
 
 
 def _is_clear_policy_question(text: str) -> bool:
@@ -156,12 +190,10 @@ def _is_clear_policy_question(text: str) -> bool:
         return False
     if _EXECUTION_CONTINUATION_PATTERN.search(question_body):
         return False
+    if _has_standalone_sensitive_command(question_body):
+        return False
 
-    has_policy_noun = any(noun in question_body for noun in _POLICY_NOUNS)
-    has_question_phrase = any(phrase in question_body for phrase in _QUESTION_PHRASES)
-    return (
-        has_policy_noun and has_question_phrase
-    ) or bool(_CAUSAL_RESTRICTION_QUESTION_PATTERN.match(question_body))
+    return _is_policy_clause(question_body)
 
 
 def check_input(user_message: str, user_role: str = "merchant") -> GuardResult:

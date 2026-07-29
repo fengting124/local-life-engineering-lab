@@ -760,7 +760,10 @@ The production dependency freeze remains unchanged. The development-only
 mutation runner was upgraded from mutmut 3.3.1 to 3.6.0 after two GitHub
 Runner executions produced false `SIGXCPU` outcomes under the older fixed
 timeout heuristic. CI still runs the complete suite with four workers,
-`min-kill-rate=50`, and `max-other=0`. A cold-cache local run and GitHub run
-both reported 702 killed, 330 survived, and zero other outcomes out of 1032.
-This exception changes test infrastructure only and does not claim a
-like-for-like quality increase over historical 3.3.1 totals.
+`min-kill-rate=50`, and `max-other=0`. The pre-remediation cold-cache local
+run and GitHub run both reported 702 killed, 330 survived, and zero other
+outcomes out of 1032. After the review remediation added target/amount and
+clause-boundary logic, a new local cold-cache run reported 802 killed, 353
+survived, and zero other outcomes out of 1155. This exception changes test
+infrastructure only and does not claim a like-for-like quality increase over
+historical 3.3.1 totals.

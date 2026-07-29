@@ -2,7 +2,7 @@
   "branch": "fix/agent-routing-quality",
   "base_sha": "60f5e86",
   "verification_sha": "5e2085d",
-  "generated_at": "2026-07-28T15:34:30",
+  "generated_at": "2026-07-29T17:44:32+0800",
   "environment": {
     "docker": "28.1.1",
     "docker_compose": "2.35.1",
@@ -157,11 +157,45 @@
     ],
     "residual_security_risks": [
       "Agent ingress identity still trusts client headers unless a trusted gateway overwrites or signs them",
-      "HITL approval payload binding and checkpoint resume protocol are outside this change",
+      "request order and amount are bound before approval, but cryptographic immutability across HITL checkpoint resume remains outside this change",
       "deterministic high-risk proposals were validated only for the DeepSeek provider path"
     ],
     "quality_gate": "deepseek_route_safety_pass_quality_partial",
     "quality_improvement_claimed": false
+  },
+  "review_remediation": {
+    "scope": "PR #26 merge-blocking safety review; no model-quality claim",
+    "real_deepseek_rerun": false,
+    "python_tests_passed": 554,
+    "coverage_percent": 74.28,
+    "mutation": {
+      "tool": "mutmut 3.6.0",
+      "cold_cache": true,
+      "total": 1155,
+      "killed": 802,
+      "survived": 353,
+      "other": 0,
+      "kill_rate_percent": 69.4
+    },
+    "request_order_and_amount_bound_before_hitl": true,
+    "punctuation_wrapped_guardrail_commands_blocked": true,
+    "dependency_discovery_failure_stop_reason": "internal_error",
+    "docker_lite": {
+      "current_source_matches_container": true,
+      "required_services_healthy": true,
+      "guardrail_security_audit_recorded": true,
+      "missing_amount_tool_execution_count": 0,
+      "negative_amount_tool_execution_count": 0,
+      "negative_amount_approval_count": 0,
+      "bound_refund": {
+        "order_id": "202606100003",
+        "requested_amount_minor": 2000,
+        "preapproval_high_risk_execution_count": 0,
+        "test_approval_final_status": "REJECTED",
+        "resume_stop_reason": "hitl_rejected"
+      }
+    },
+    "known_observation": "SSE repeats final_answer or hitl_request events, while approval persistence and high-risk execution remain single; fix is deferred to an API-scoped PR"
   },
   "rag": {
     "artifact": "artifacts/performance/agent-retry-final-20260722-212514/real-rag-benchmark.json",
@@ -179,7 +213,7 @@
     "Agent tool argument score is 45.33 of 48, below the 47 minimum",
     "Agent final fact accuracy is 38 of 48, below the 42 minimum",
     "CopilotCouponMapper and coupon_template schema disagree on remaining_stock",
-    "HITL approval payload binding and checkpoint resume protocol remain outside this change",
+    "cryptographic immutability of approved payloads across HITL checkpoint resume remains outside this change",
     "SSE does not expose reliable token usage or cost",
     "long-duration capacity and fault-injection tests remain"
   ]
