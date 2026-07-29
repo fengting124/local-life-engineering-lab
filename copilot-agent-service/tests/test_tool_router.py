@@ -483,7 +483,9 @@ def test_refund_application_process_questions_are_not_actions(message):
         "给订单 202606100001 退款 20.123 元",
         "给订单 202606100001 退款 20.123 元还是 30 元",
         "给订单 202606100001 退款 ￥20.123",
+        "给订单 202606100001 退款 20 元或者退款 30 元",
         "给订单 202606100001 补券",
+        "帮我给订单 202606100001 补券 20 元或者补券 30 元",
     ],
 )
 def test_high_risk_route_requires_one_unambiguous_amount(message):

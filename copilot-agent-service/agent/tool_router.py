@@ -194,7 +194,10 @@ def _requested_amounts_minor(
     text: str,
     action_terms: Sequence[str],
 ) -> tuple[int, ...]:
-    action_start = max((text.rfind(term) for term in action_terms), default=-1)
+    action_start = min(
+        (text.find(term) for term in action_terms if term in text),
+        default=-1,
+    )
     if action_start < 0:
         return ()
 
