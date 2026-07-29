@@ -1949,7 +1949,7 @@ missing required MCP tool. Assert both `evidence_stop_reason` and
 Set `evidence_stop_reason` and `stop_reason` in `llm_node` when required tool
 discovery fails. Keep native `knowledge_search` fallback behavior unchanged.
 
-- [ ] **Step 9: Run full gates and update PR metadata**
+- [x] **Step 9: Run full gates and update PR metadata**
 
 Run:
 

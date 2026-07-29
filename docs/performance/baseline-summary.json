@@ -1,8 +1,8 @@
 {
   "branch": "fix/agent-routing-quality",
   "base_sha": "60f5e86",
-  "verification_sha": "5e2085d",
-  "generated_at": "2026-07-29T17:44:32+0800",
+  "verification_sha": "783713a",
+  "generated_at": "2026-07-29T17:48:31+0800",
   "environment": {
     "docker": "28.1.1",
     "docker_compose": "2.35.1",
