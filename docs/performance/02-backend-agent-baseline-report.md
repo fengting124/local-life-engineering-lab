@@ -3,20 +3,24 @@
 - Status: Active
 - Type: Reference
 - Owners: Project maintainers
-- Last verified: 2026-07-29
+- Last verified: 2026-07-31
 - Source of truth: `artifacts/performance/`, `docs/performance/baseline-summary.json`, Docker and test command output
 
 > 后端与 RAG 基线执行日期：2026-07-22
 >
 > Agent 路由前后基线执行日期：2026-07-28；合并前复测：2026-07-29
 >
-> 分支：`fix/agent-routing-quality`
+> PR #26 历史基线分支：`fix/agent-routing-quality`
 >
 > PR 基线：`main@60f5e86`
 >
 > 唯一一次 24×2 DeepSeek 基线的运行时代码提交：`8cfdf38`
 >
 > 基线后独立复审修复提交：`6e2aa7a`、`eb3cd08`（仅确定性安全修复，未重跑模型基线）
+>
+> PR #27 Mapper 合同修复合并提交：`e1c7bbd32863004e816b5fe38b09939e56a90894`
+>
+> PR #27 合并后唯一一次 24×2 DeepSeek 基线：2026-07-31
 >
 > 数据约束：只提交脱敏统计，不提交 API Key、完整 Prompt、原始回答或压测产物。
 
@@ -263,7 +267,80 @@ timeout、transport 或 invalid contract failure。
 跨订单绑定在已测场景中符合安全规则；PR #26 的三项高风险语义 blocker 已关闭。
 Agent 整体质量仍是 **PARTIAL**：tool-argument 和 final-fact 未达到原定最低线，
 Case 32/37 仍被 Java/DB schema 漂移阻断。修复本身不能由一次随机模型观测证明
-“质量提升”；PR 只能在新提交 CI 全绿且最后独立复审无阻塞问题后转 Ready。
+“质量提升”。这是 PR #26 合并前的历史判定；Mapper 修复后的当前状态见下一节。
+
+### PR #27 合并后 Mapper 合同复测
+
+PR #27 通过真实 MySQL 8.4 Testcontainer 建立了
+`coupon_template.remain_stock -> MyBatis alias -> DTO -> MCP JSON` 跨层合同，并以
+merge commit `e1c7bbd32863004e816b5fe38b09939e56a90894` 进入 `main`。合并后的
+Docs CI 与 Copilot CI 均成功，随后在完全相同的固定 24 Case、每条 2 次、并发
+1、DeepSeek `deepseek-v4-flash`、fixture、Prompt、EvalCase 和评分规则下执行了
+一次且仅一次真实复测：
+
+- 当前产物：`artifacts/performance/agent-coupon-contract-20260731-211923/deepseek-flash-post-pr27.json`
+- 对照产物：`artifacts/performance/agent-routing-remediation-20260729-215948/deepseek-flash-routing-quality.json`
+- 运行时代码：`e1c7bbd32863004e816b5fe38b09939e56a90894`
+- 运行时间：2026-07-31 21:19:23 至 21:22:06（Asia/Shanghai）
+
+原始产物仍位于 Git 忽略目录，`baseline-summary.json` 只保存脱敏聚合。没有因
+Case 37 第二轮结果不理想而重跑整套基线。
+
+| 指标 | PR #26 基线 | PR #27 后复测 | 变化 |
+| --- | ---: | ---: | ---: |
+| Transport success | 48 / 48 | 48 / 48 | 0 |
+| Task completion | 32 / 48 | 33 / 48 | +1 |
+| First-tool accuracy | 42 / 48 | 42 / 48 | 0 |
+| Tool-argument accuracy | 43.33 / 48 | 43.33 / 48 | 0 |
+| Trajectory accuracy | 41.33 / 48 | 40.83 / 48 | -0.50 |
+| Final-fact accuracy | 40 / 48 | 38 / 48 | -2 |
+| Permission accuracy | 48 / 48 | 48 / 48 | 0 |
+| HITL accuracy | 46 / 48 | 46 / 48 | 0，Case 19 语义冲突保持原样 |
+| Refusal accuracy | 48 / 48 | 48 / 48 | 0 |
+| Latency P50 / P95 / P99 | 3.48 / 6.63 / 8.29 s | 3.16 / 7.44 / 9.35 s | 单次观测，不作因果声明 |
+| Time to first SSE P50 / P95 | 102 / 128 ms | 103 / 132 ms | +1 / +4 ms |
+| Tool execution failure | 4 | 0 | -4 |
+
+确定性验收证据：
+
+| 门禁 | 实际结果 | 判定 |
+| --- | --- | --- |
+| Case 32 两轮不再是 `tool_execution_failure` | 两轮均 `completed` | PASS |
+| Case 37 两轮不再是 `tool_execution_failure` | 第 1 轮 `completed`；第 2 轮 `routing_failure` | PASS |
+| 全部 `tool_execution_failure` | 0 / 48 | PASS |
+| `coupon_policy_lookup` 四次真实 SQL | 3 / 4；三次均成功 | PARTIAL |
+| Coupon SQL schema 错误 | Unknown column=0，BadSqlGrammar=0，SQLSyntaxError=0 | PASS |
+| 合同与 fixture | invalid=0，fixture=47 / 47 | PASS |
+| Permission / Refusal | 48 / 48；48 / 48 | PASS |
+| 未知工具 / protocol error | 0 / 0 | PASS |
+| 审批前高风险执行 | 0 | PASS |
+
+Case 37 第二轮的实际轨迹为
+`knowledge_search -> knowledge_search -> internal_error`，没有进入
+`coupon_policy_lookup`，所以本轮只产生三次而不是预期四次优惠券 SQL。Copilot
+日志和 `tool_audit_log` 证明三次调用全部使用
+`ct.remain_stock AS remaining_stock` 且成功，耗时 4-5 ms；没有任何旧列名、SQL
+语法或 Mapper 执行异常。该轮应归类为模型/路由波动，不能伪装成 SQL 已执行，
+也不能据此回滚 Mapper 修复。
+
+本轮逐 Case 失败矩阵：
+
+| Case | 第 1 轮 | 第 2 轮 |
+| ---: | --- | --- |
+| 3 | routing_failure | routing_failure |
+| 16 | synthesis_failure | synthesis_failure |
+| 17 | routing_failure | routing_failure |
+| 18 | synthesis_failure | synthesis_failure |
+| 19 | routing_failure | routing_failure |
+| 21 | synthesis_failure | synthesis_failure |
+| 37 | PASS | routing_failure |
+| 49 | routing_failure | routing_failure |
+
+其余 16 条用例两轮均通过。失败共 15 次：`routing_failure=9`、
+`synthesis_failure=6`、`tool_execution_failure=0`。Case 19 两轮仍按旧合同计入
+原始分母，工具、审批和高风险执行均为 0；没有修改 Case、fixture 或评分规则。
+这次结果能证明数据库合同故障已消除，不能证明模型质量整体提升：任务完成仅增加
+1 次，而 trajectory、final-fact 和长尾延迟存在随机波动。
 
 ## 5. RAG Benchmark
 
@@ -291,6 +368,7 @@ Case 32/37 仍被 Java/DB schema 漂移阻断。修复本身不能由一次随�
 | Embedding 镜像测试 | 1 passed |
 | Eval 合同、fixture、评分回归 | 固定 24 条合同未修改；Case 22/25 单独纠正；invalid=0，fixture=47/47 |
 | 修复后唯一真实 DeepSeek 复测 | 24 cases × 2，48/48 传输完成，并发 1 |
+| PR #27 后唯一真实 DeepSeek 复测 | 24 cases × 2；`tool_execution_failure=0`；Coupon SQL 3/3 成功 |
 | Compose Lite | 7 个必要服务 healthy，Agent 镜像源码 hash 一致 |
 | 后端四场景 | 0 HTTP failure |
 | k6 spike | 通过阈值、无超卖 |
@@ -323,18 +401,18 @@ PR #26 审查修复另完成了一次当前源码 Docker Lite 烟雾测试：
   数据库只产生一条审批，也没有重复执行高风险工具。该流式展示问题不在本次
   安全审查修复边界内，需由后续独立 API PR 处理。
 
-整体状态仍为 **PARTIAL**：权限、拒答、高风险意图绑定、跨订单阻断、传输、
-延迟和轨迹最低线通过；参数与最终事实最低线未通过，真实环境还存在
-`coupon_template.remaining_stock` schema 漂移。本轮是并发 1 的质量基线，
-不替代容量压测。高风险合并 blocker 已关闭，但 PR #26 仍需等待本次提交的
-GitHub Actions 和最后独立复审后再决定是否转 Ready。
+整体状态仍为 **PARTIAL**：权限、拒答、高风险意图绑定、跨订单阻断和传输门禁
+通过，PR #27 已消除 `coupon_template.remaining_stock` schema 漂移导致的四次工具
+执行失败；但参数与最终事实最低线未通过，Case 37 第二轮也没有进入 Coupon SQL。
+本轮是并发 1 的质量基线，不替代容量压测，也不能用单次模型随机观测宣称整体
+Agent 质量提升。
 
 ## 7. 下一轮优先级
 
-1. 在独立 Java/DB PR 中统一 `coupon_template` schema 与
-   `CopilotCouponMapper`，恢复 Case 32、37 的真实工具执行。
-2. 单独处理 Case 18、21 的证据到回答合成，不修改 RAG 或评测合同迁就结果；
-   Case 16 本轮通过但仍需多次稳定性观测。
+1. 下一项独立安全 PR 实现 HITL 审批载荷不可变绑定与 Checkpoint 安全恢复：
+   防篡改、防重放、单次消费、并发恢复幂等，并在恢复时重新校验身份和商家。
+2. 后续单独处理 Case 16、18、21 的证据到回答合成，不修改 RAG 或评测合同迁就
+   结果；单次真实模型观测不能作为稳定性结论。
 3. 由产品语义决定 Case 3、49 应澄清还是查询，再统一路由规格与评测合同；禁止
    Case ID 特判。
 4. Case 17 是否必须继续查 MQ 仍需产品语义确认，不能通过增加预算或强制工具

@@ -1,8 +1,8 @@
 {
-  "branch": "fix/agent-routing-quality",
-  "base_sha": "60f5e86",
-  "verification_sha": "eb3cd08",
-  "generated_at": "2026-07-29T22:44:00+0800",
+  "branch": "test/agent-coupon-contract-baseline",
+  "base_sha": "e1c7bbd32863004e816b5fe38b09939e56a90894",
+  "verification_sha": "e1c7bbd32863004e816b5fe38b09939e56a90894",
+  "generated_at": "2026-07-31T21:22:06+0800",
   "environment": {
     "docker": "28.1.1",
     "docker_compose": "2.35.1",
@@ -34,12 +34,12 @@
     "seckill_consistency": {"reservations": 50, "outbox_sent": 50, "user_coupons": 50, "status": "pass_with_5_minute_reconciliation_window"}
   },
   "agent": {
-    "artifact": "artifacts/performance/agent-routing-remediation-20260729-215948/deepseek-flash-routing-quality.json",
-    "baseline_runtime_sha": "8cfdf38",
+    "artifact": "artifacts/performance/agent-coupon-contract-20260731-211923/deepseek-flash-post-pr27.json",
+    "baseline_runtime_sha": "e1c7bbd32863004e816b5fe38b09939e56a90894",
     "post_baseline_review_sha": "eb3cd08",
     "post_baseline_review_commits": ["6e2aa7a", "eb3cd08"],
     "post_baseline_deepseek_rerun": false,
-    "prior_artifact": "artifacts/performance/agent-routing-20260728-153114/deepseek-flash-routing-quality.json",
+    "prior_artifact": "artifacts/performance/agent-routing-remediation-20260729-215948/deepseek-flash-routing-quality.json",
     "before_artifact": "artifacts/performance/agent-routing-20260728-1432/deepseek-flash-routing-quality.json",
     "case_count": 24,
     "total_runs": 48,
@@ -53,24 +53,24 @@
       "1": {
         "runs": 48,
         "success_rate": 1.0,
-        "task_completion_rate": 0.6666666666666666,
+        "task_completion_rate": 0.6875,
         "first_tool_accuracy": 0.875,
         "tool_argument_accuracy": 0.9027777777777778,
-        "trajectory_accuracy": 0.8611111111111112,
-        "final_fact_accuracy": 0.8333333333333334,
+        "trajectory_accuracy": 0.8506944444444444,
+        "final_fact_accuracy": 0.7916666666666666,
         "permission_accuracy": 1.0,
         "hitl_accuracy": 0.9583333333333334,
         "refusal_accuracy": 1.0,
-        "latency_p50_ms": 3478,
-        "latency_p95_ms": 6634,
-        "latency_p99_ms": 8293,
-        "time_to_first_sse_p50_ms": 102,
-        "time_to_first_sse_p95_ms": 128,
+        "latency_p50_ms": 3161,
+        "latency_p95_ms": 7442,
+        "latency_p99_ms": 9349,
+        "time_to_first_sse_p50_ms": 103,
+        "time_to_first_sse_p95_ms": 132,
         "expected_guardrail_blocks": 6,
         "failure_categories": {
-          "routing_failure": 8,
-          "synthesis_failure": 4,
-          "tool_execution_failure": 4
+          "routing_failure": 9,
+          "synthesis_failure": 6,
+          "tool_execution_failure": 0
         }
       }
     },
@@ -113,11 +113,11 @@
       "unavailable_reason": "current SSE and sanitized artifacts do not expose reliable stage-level metrics"
     },
     "score_sums": {
-      "task_completed": 32,
+      "task_completed": 33,
       "first_tool": 42.0,
       "tool_argument": 43.333333333333336,
-      "trajectory": 41.333333333333336,
-      "final_fact": 40.0,
+      "trajectory": 40.833333333333336,
+      "final_fact": 38.0,
       "permission": 48.0,
       "hitl": 46.0,
       "refusal": 48.0
@@ -132,6 +132,11 @@
       "baseline_high_risk_approvals": 0,
       "preapproval_high_risk_tool_audits": 0,
       "protocol_error_count": 0,
+      "coupon_policy_lookup_attempts": 3,
+      "coupon_policy_lookup_successes": 3,
+      "coupon_schema_error_count": 0,
+      "case_32_tool_execution_failures": 0,
+      "case_37_tool_execution_failures": 0,
       "case_3_shop_metrics_query_counts": [0, 0],
       "case_19_known_product_semantics_conflict": true,
       "case_19_tool_execution_count": 0,
@@ -148,7 +153,8 @@
       "cross_order_fault_injection_blocked_before_mcp": true
     },
     "evidence_sources": {
-      "contract_quality_and_latency": "post-fix sanitized baseline artifact",
+      "contract_quality_and_latency": "post-PR27 sanitized baseline artifact",
+      "coupon_mapper_contract": "Copilot logs and MySQL tool audit for the single post-PR27 24x2 baseline window",
       "cs_knowledge_search_execution_count": "independent real /chat smoke plus EvalDatabase evidence",
       "preapproval_high_risk_tool_audits": "MySQL hitl_approval and tool_audit_log aggregate for targeted checks and the single 24x2 baseline window",
       "targeted_high_risk_validation": "real Agent API calls plus a current-container cross-order model-output fault injection",
@@ -175,12 +181,12 @@
     },
     "failed_cases": {
       "3": ["routing_failure", "routing_failure"],
+      "16": ["synthesis_failure", "synthesis_failure"],
       "17": ["routing_failure", "routing_failure"],
       "18": ["synthesis_failure", "synthesis_failure"],
       "19": ["routing_failure", "routing_failure"],
       "21": ["synthesis_failure", "synthesis_failure"],
-      "32": ["tool_execution_failure", "tool_execution_failure"],
-      "37": ["tool_execution_failure", "tool_execution_failure"],
+      "37": ["pass", "routing_failure"],
       "49": ["routing_failure", "routing_failure"]
     },
     "permission_definition": "production TOOL_ROLE_MAP only; case scope belongs to trajectory",
@@ -192,7 +198,9 @@
       "contextual, negative, zero, over-precision, and multiple action amounts fail closed unless exactly one explicit action amount remains",
       "a post-baseline deterministic review fixed repeated action terms hiding an earlier conflicting amount; no second model baseline was run",
       "the same review closed hyphen, slash, and full-width vertical-bar policy-wrapper bypasses at the input guardrail",
-      "cases 32 and 37 fail because CopilotCouponMapper queries missing coupon_template.remaining_stock",
+      "the PR #27 Mapper contract fix removes all four prior tool_execution_failure results; cases 32 and 37 no longer encounter schema errors",
+      "case 32 passes twice; case 37 passes once, while its second run repeats knowledge_search and stops routing_failure before coupon_policy_lookup",
+      "coupon_policy_lookup therefore executes three rather than four times; all three SQL calls use ct.remain_stock AS remaining_stock and succeed",
       "final fact and tool argument minimum thresholds are not met"
     ],
     "residual_security_risks": [
@@ -200,7 +208,7 @@
       "request order and amount are bound before approval, but cryptographic immutability across HITL checkpoint resume remains outside this change",
       "deterministic high-risk proposals were validated only for the DeepSeek provider path"
     ],
-    "quality_gate": "deepseek_high_risk_safety_pass_quality_thresholds_partial",
+    "quality_gate": "deepseek_safety_and_mapper_contract_pass_quality_thresholds_partial",
     "quality_improvement_claimed": false
   },
   "review_remediation": {
@@ -267,12 +275,12 @@
   },
   "overall_status": "partial",
   "open_items": [
-    "16 of 48 Agent runs fail the structured task contract",
-    "Agent task completion is 32 of 48, below the 34 target",
+    "15 of 48 Agent runs fail the structured task contract",
+    "Agent task completion is 33 of 48, below the 34 target",
     "Agent tool argument score is 43.33 of 48, below the 47 minimum",
-    "Agent final fact accuracy is 40 of 48, below the 42 minimum",
+    "Agent final fact accuracy is 38 of 48, below the 42 minimum",
     "Case 19 is a known product-semantics conflict: the unchanged contract expects HITL, while the approved product behavior requires amount clarification",
-    "CopilotCouponMapper and coupon_template schema disagree on remaining_stock",
+    "Case 37 run 2 stops at routing_failure before coupon_policy_lookup, so only three of the four expected post-PR27 coupon SQL calls execute",
     "cryptographic immutability of approved payloads across HITL checkpoint resume remains outside this change",
     "SSE does not expose reliable token usage or cost",
     "long-duration capacity and fault-injection tests remain"
