@@ -127,8 +127,8 @@ For compensation, `target_user_id` is required and `amount_minor` maps to
 
 Python and Java must share committed test vectors for canonical bytes and the
 HMAC-SHA-256 result. A separate `HITL_PAYLOAD_SIGNING_SECRET` is used rather than
-reusing the MCP identity-signing key. Development may have an explicit local
-default; non-development startup must reject an absent or known default secret.
+reusing the MCP identity-signing key. Every runtime environment injects it from
+non-committed configuration; startup rejects an absent value.
 
 `order_target_hash` remains an unkeyed SHA-256 hash of the normalized order ID
 for lookup and diagnostics. It is not the authorization credential.
