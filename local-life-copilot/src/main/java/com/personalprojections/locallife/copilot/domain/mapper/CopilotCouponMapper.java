@@ -33,10 +33,8 @@ public interface CopilotCouponMapper {
                 ct.discount_value,
                 ct.min_order_amount,
                 ct.total_stock,
-                ct.remaining_stock,
+                ct.remain_stock AS remaining_stock,
                 ct.status,
-                ct.start_time,
-                ct.end_time,
                 ct.shop_id,
                 s.shop_name,
                 s.merchant_id
@@ -62,10 +60,8 @@ public interface CopilotCouponMapper {
                 ct.discount_value,
                 ct.min_order_amount,
                 ct.total_stock,
-                ct.remaining_stock,
+                ct.remain_stock AS remaining_stock,
                 ct.status,
-                ct.start_time,
-                ct.end_time,
                 ct.shop_id,
                 s.shop_name,
                 s.merchant_id
