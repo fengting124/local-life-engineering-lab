@@ -13,10 +13,17 @@ LangGraph 负责 merge 到完整 state，节点之间通过 state 传递信息�
 """
 import json
 import structlog
+from collections.abc import Mapping
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage, RemoveMessage
 from langchain_core.language_models import BaseChatModel
 
+from agent.evidence_gate import (
+    ToolOutcome,
+    advance_evidence,
+    normalize_tool_outcome,
+)
 from agent.state import AgentState
+from agent.tool_router import order_target_hash
 from agent.trace import genai_span
 from mcp.mcp_client import McpClient, McpToolError
 from config.settings import settings
@@ -24,6 +31,14 @@ from config.settings import settings
 log = structlog.get_logger(__name__)
 
 HITL_TOOLS = {"execute_refund", "issue_compensation_coupon"}
+HIGH_RISK_ROUTE_TYPES = {"refund_action", "compensation_action"}
+ORDER_SCOPED_TOOLS = {
+    "query_order",
+    "query_payment",
+    "query_coupon_issue_log",
+    "query_mq_dead_letter",
+    *HITL_TOOLS,
+}
 
 # =========================================================
 # LLM 工厂（支持多 Provider 切换）
@@ -177,6 +192,211 @@ def _build_system_prompt(tools: list[dict], conversation_summary: str | None = N
 # 节点实现
 # =========================================================
 
+def _direct_route_answer(state: AgentState) -> str | None:
+    if state.get("route_mode") == "clarification":
+        labels = {
+            "order_id": "具体订单号",
+            "amount": "明确的退款或补偿金额",
+            "metric": "需要查询的经营指标",
+            "date": "一个具体日期",
+            "supported_date": "今天、昨天或一个具体日期",
+            "target": "一个具体业务目标",
+        }
+        fields = [
+            labels.get(field, field)
+            for field in state.get("route_missing_fields", [])
+        ]
+        requested = "、".join(fields) or "更具体的业务信息"
+        return f"请补充{requested}，我再继续处理。"
+    if (
+        state.get("evidence_stop_reason") == "permission_denied"
+        and not state.get("evidence_collected")
+    ):
+        return "当前角色无法获取完成该任务所需的证据，请升级给有权限的管理员处理。"
+    return None
+
+
+def _latest_tool_payload(
+    messages: list,
+    tool_name: str,
+) -> dict[str, object] | None:
+    for message in reversed(messages):
+        if not isinstance(message, ToolMessage) or message.name != tool_name:
+            continue
+        try:
+            payload = json.loads(message.content)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+    return None
+
+
+def _successful_evidence(
+    state: AgentState,
+    tool_name: str,
+) -> Mapping[str, object] | None:
+    record = state.get("evidence_collected", {}).get(tool_name)
+    if not isinstance(record, Mapping) or record.get("status") != "success":
+        return None
+    facts = record.get("facts")
+    return facts if isinstance(facts, Mapping) else None
+
+
+def _request_binding_error(
+    state: Mapping[str, object],
+    tool_call: Mapping[str, object],
+) -> str | None:
+    tool_name = tool_call.get("name")
+    if tool_name not in ORDER_SCOPED_TOOLS:
+        return None
+    if (
+        state.get("route_task_type") not in HIGH_RISK_ROUTE_TYPES
+        and tool_name not in HITL_TOOLS
+    ):
+        return None
+
+    expected_order_hash = state.get("route_target_order_hash")
+    if not isinstance(expected_order_hash, str) or not expected_order_hash:
+        return "missing_request_target_binding"
+
+    args = tool_call.get("args")
+    if not isinstance(args, Mapping):
+        return "request_target_mismatch"
+    if order_target_hash(args.get("order_id")) != expected_order_hash:
+        return "request_target_mismatch"
+
+    if tool_name in HITL_TOOLS:
+        expected_amount = state.get("route_requested_amount_minor")
+        amount_key = (
+            "amount"
+            if tool_name == "execute_refund"
+            else "compensation_amount"
+        )
+        actual_amount = args.get(amount_key)
+        if (
+            isinstance(expected_amount, bool)
+            or not isinstance(expected_amount, int)
+            or expected_amount <= 0
+            or isinstance(actual_amount, bool)
+            or actual_amount != expected_amount
+        ):
+            return "request_amount_mismatch"
+    return None
+
+
+def _query_order_response_matches_request(
+    state: Mapping[str, object],
+    raw_result: object,
+) -> bool:
+    expected_order_hash = state.get("route_target_order_hash")
+    if not isinstance(expected_order_hash, str) or not expected_order_hash:
+        return state.get("route_task_type") not in HIGH_RISK_ROUTE_TYPES
+    if isinstance(raw_result, Mapping):
+        payload = raw_result
+    elif isinstance(raw_result, str):
+        try:
+            parsed = json.loads(raw_result)
+        except (TypeError, ValueError):
+            return False
+        payload = parsed if isinstance(parsed, Mapping) else {}
+    else:
+        return False
+    return order_target_hash(payload.get("order_no")) == expected_order_hash
+
+
+def _build_structured_high_risk_proposal(
+    state: AgentState,
+) -> tuple[AIMessage | None, str | None]:
+    next_tool = state.get("route_next_tool")
+    if next_tool not in HITL_TOOLS:
+        return None, None
+
+    order_facts = _successful_evidence(state, "query_order")
+    order = _latest_tool_payload(state["messages"], "query_order")
+    order_status = (
+        order_facts.get("order_status")
+        if order_facts is not None
+        else None
+    )
+    if (
+        order_facts is None
+        or order_facts.get("found") is not True
+        or order_status not in {"PAID", "COMPLETED"}
+        or order is None
+        or order.get("order_status") != order_status
+    ):
+        return AIMessage(content="订单证据不完整，无法发起人工审批。"), "internal_error"
+
+    order_id = order.get("order_no")
+    payment = order.get("payment")
+    paid_amount = (
+        payment.get("paid_amount")
+        if isinstance(payment, Mapping)
+        else None
+    )
+    requested_amount = state.get("route_requested_amount_minor")
+    expected_order_hash = state.get("route_target_order_hash")
+    if (
+        not isinstance(order_id, str)
+        or not order_id.strip()
+        or order_target_hash(order_id) != expected_order_hash
+        or isinstance(paid_amount, bool)
+        or not isinstance(paid_amount, int)
+        or paid_amount <= 0
+        or isinstance(requested_amount, bool)
+        or not isinstance(requested_amount, int)
+        or requested_amount <= 0
+    ):
+        return AIMessage(content="订单证据不完整，无法发起人工审批。"), "internal_error"
+
+    if next_tool == "execute_refund":
+        if requested_amount > paid_amount:
+            return (
+                AIMessage(content="退款金额超过订单实付金额，无法发起人工审批。"),
+                "business_rejected",
+            )
+        args = {
+            "order_id": order_id.strip(),
+            "amount": requested_amount,
+            "reason": "订单状态满足退款前置条件，等待人工审批",
+        }
+    else:
+        coupon_facts = _successful_evidence(state, "query_coupon_issue_log")
+        coupon_result = _latest_tool_payload(
+            state["messages"],
+            "query_coupon_issue_log",
+        )
+        user_id = order.get("user_id")
+        if (
+            coupon_facts is None
+            or coupon_facts.get("coupon_issue_status") != "FAILED"
+            or coupon_facts.get("coupon_failure_confirmed") is not True
+            or coupon_result is None
+            or coupon_result.get("order_id") != order_id.strip()
+            or coupon_result.get("order_status") != order_status
+            or isinstance(user_id, bool)
+            or not isinstance(user_id, (str, int))
+            or not str(user_id).strip()
+        ):
+            return AIMessage(content="补偿证据不完整，无法发起人工审批。"), "internal_error"
+        args = {
+            "user_id": str(user_id).strip(),
+            "order_id": order_id.strip(),
+            "compensation_amount": requested_amount,
+            "reason": "优惠券发放失败已确认，等待人工审批",
+        }
+
+    return AIMessage(
+        content="",
+        tool_calls=[{
+            "name": next_tool,
+            "args": args,
+            "id": f"controlled-{next_tool}-{state['step_count']}",
+            "type": "tool_call",
+        }],
+    ), None
+
+
 async def llm_node(state: AgentState) -> dict:
     """
     LLM 节点：调用 Claude 决定下一步动作。
@@ -184,89 +404,159 @@ async def llm_node(state: AgentState) -> dict:
     输入：完整消息历史 + 系统提示
     输出：新的 assistant 消息（含 tool_calls 或 Final Answer）
     """
-    # 构建 MCP Client 获取工具列表
-    mcp = McpClient(
-        user_id=state["user_id"],
-        user_role=state["user_role"],
-        merchant_id=state.get("merchant_id"),
-    )
-
-    try:
-        all_tools = await mcp.list_tools()
-    except Exception as e:
-        log.error("mcp_list_tools_failed", error=str(e))
-        all_tools = []  # 工具获取失败时降级为纯 LLM 回答
-
-    # ---- Tool Router：按角色和任务类型过滤完整工具集合 ----
-    # 原生工具和 MCP 工具共用一条路由，确保 Prompt 与 bind_tools 权限一致。
-    from agent.tool_router import ToolRouter
-    from rag import knowledge_tool
-    messages = state.get("messages", [])
-    last_user_msg = ""
-    for msg in reversed(messages):
-        if hasattr(msg, "type") and msg.type == "human":
-            last_user_msg = msg.content if isinstance(msg.content, str) else ""
-            break
-    # 将历史消息文本拼接作为上下文（供 context_filter 使用）
-    context_text = " ".join([
-        m.content for m in messages[-10:]  # 只取最近 10 条
-        if isinstance(getattr(m, "content", ""), str)
-    ])
-    router = ToolRouter(
-        user_role=state.get("user_role", "merchant"),
-        user_message=last_user_msg,
-        conversation_context=context_text,
-    )
-    complete_tool_specs = [*all_tools, knowledge_tool.get_knowledge_search_tool_spec()]
-    tools = router.route(complete_tool_specs)
-
-    native_selected = any(t["name"] == "knowledge_search" for t in tools)
-    mcp_tools = [t for t in tools if t["name"] != "knowledge_search"]
-    lc_tools = _convert_to_lc_tools(mcp_tools)
-    if native_selected:
-        lc_tools.append(
-            knowledge_tool.make_knowledge_search_tool(
-                merchant_id=state.get("merchant_id")
+    direct_answer = _direct_route_answer(state)
+    response = AIMessage(content=direct_answer) if direct_answer is not None else None
+    high_risk_proposal_stop_reason = None
+    controlled_tool_unavailable = False
+    if response is None:
+        tools = []
+        llm_with_tools = _llm
+        if (
+            state.get("synthesis_only")
+            and settings.llm_provider.lower() == "deepseek"
+        ):
+            llm_with_tools = _llm.bind(
+                extra_body={"thinking": {"type": "disabled"}}
             )
-        )
 
-    # 绑定工具到 LLM
-    llm_with_tools = _llm.bind_tools(lc_tools) if lc_tools else _llm
+        if not state.get("synthesis_only"):
+            # 原生工具和 MCP 工具共用一条路由，确保 Prompt 与 bind_tools 权限一致。
+            from agent.tool_router import ToolRouter
+            from rag import knowledge_tool
 
-    # 构建消息列表（System + 历史消息）
-    # ---- Prompt Caching（Claude 专属优化，节省 80-90% input token 成本）----
-    # cache_control={"type":"ephemeral"} 告知 Claude 将此消息缓存 5 分钟。
-    # 系统提示（角色定义 + 工具说明）是每轮对话都重复的稳定内容，适合缓存。
-    # 注意：只缓存稳定内容；用户消息和工具结果不缓存（每次都不同）。
-    # 面试说法：「通过 Prompt Caching 将稳定的 System Prompt 缓存，
-    #   多轮对话中 input tokens 减少约 80%，成本从 ~$0.006/次降至 ~$0.001/次」
-    system_msg = SystemMessage(
-        content=_build_system_prompt(tools, conversation_summary=state.get("conversation_summary")),
-        additional_kwargs={"cache_control": {"type": "ephemeral"}},
+            mcp = McpClient(
+                user_id=state["user_id"],
+                user_role=state["user_role"],
+                merchant_id=state.get("merchant_id"),
+            )
+            try:
+                all_tools = await mcp.list_tools()
+                mcp_available = True
+            except Exception as e:
+                log.error("mcp_list_tools_failed", error=str(e))
+                all_tools = []
+                mcp_available = False
+
+            next_tool = state.get("route_next_tool")
+            discovered_tool_names = {
+                tool["name"] for tool in all_tools
+            }
+            if (
+                state.get("route_mode") == "controlled"
+                and next_tool
+                and next_tool != "knowledge_search"
+                and (
+                    not mcp_available
+                    or next_tool not in discovered_tool_names
+                )
+            ):
+                response = AIMessage(
+                    content="抱歉，发生内部错误，完成该请求所需的工具暂时不可用，请稍后重试。"
+                )
+                controlled_tool_unavailable = True
+            else:
+                router = ToolRouter.from_state(state)
+                complete_tool_specs = [
+                    *all_tools,
+                    knowledge_tool.get_knowledge_search_tool_spec(),
+                ]
+                tools = router.route(complete_tool_specs)
+
+                if (
+                    settings.llm_provider.lower() == "deepseek"
+                    and next_tool in HITL_TOOLS
+                    and tools
+                ):
+                    response, high_risk_proposal_stop_reason = (
+                        _build_structured_high_risk_proposal(state)
+                    )
+
+                if response is None:
+                    native_selected = any(
+                        tool["name"] == "knowledge_search" for tool in tools
+                    )
+                    mcp_tools = [
+                        tool for tool in tools if tool["name"] != "knowledge_search"
+                    ]
+                    lc_tools = _convert_to_lc_tools(mcp_tools)
+                    if native_selected:
+                        lc_tools.append(
+                            knowledge_tool.make_knowledge_search_tool(
+                                merchant_id=state.get("merchant_id")
+                            )
+                        )
+
+                    tool_choice = (
+                        next_tool
+                        if state.get("route_mode") == "controlled" and tools
+                        else None
+                    )
+                    if lc_tools:
+                        binding_kwargs = {}
+                        if tool_choice:
+                            binding_kwargs["tool_choice"] = tool_choice
+                            if settings.llm_provider.lower() == "deepseek":
+                                binding_kwargs["extra_body"] = {
+                                    "thinking": {"type": "disabled"}
+                                }
+                        llm_with_tools = _llm.bind_tools(
+                            lc_tools,
+                            **binding_kwargs,
+                        )
+
+        if response is None:
+            # 构建消息列表（System + 历史消息）
+            # ---- Prompt Caching（Claude 专属优化，节省 80-90% input token 成本）----
+            # cache_control={"type":"ephemeral"} 告知 Claude 将此消息缓存 5 分钟。
+            # 系统提示（角色定义 + 工具说明）是每轮对话都重复的稳定内容，适合缓存。
+            # 注意：只缓存稳定内容；用户消息和工具结果不缓存（每次都不同）。
+            # 面试说法：「通过 Prompt Caching 将稳定的 System Prompt 缓存，
+            #   多轮对话中 input tokens 减少约 80%，成本从 ~$0.006/次降至 ~$0.001/次」
+            system_msg = SystemMessage(
+                content=_build_system_prompt(
+                    tools,
+                    conversation_summary=state.get("conversation_summary"),
+                ),
+                additional_kwargs={"cache_control": {"type": "ephemeral"}},
+            )
+            messages = [system_msg] + state["messages"]
+
+            async with genai_span(
+                "llm.invoke",
+                "llm",
+                provider=settings.llm_provider,
+                model=settings.llm_model or "provider-default",
+                step=state["step_count"],
+                session_id=state.get("session_id"),
+                thread_id=state.get("thread_id"),
+            ):
+                response = await llm_with_tools.ainvoke(messages)
+
+    usage = getattr(response, "usage_metadata", {}) or {}
+    synthesis_tool_call_rejected = bool(
+        state.get("synthesis_only")
+        and getattr(response, "tool_calls", None)
     )
-    messages = [system_msg] + state["messages"]
-
-    # 调用 LLM
-    async with genai_span(
-        "llm.invoke",
-        "llm",
-        provider=settings.llm_provider,
-        model=settings.llm_model or "provider-default",
-        step=state["step_count"],
-        session_id=state.get("session_id"),
-        thread_id=state.get("thread_id"),
-    ):
-        response = await llm_with_tools.ainvoke(messages)
+    if synthesis_tool_call_rejected:
+        log.warning(
+            "synthesis_tool_call_rejected",
+            proposed_tools=[
+                tool_call.get("name", "unknown")
+                for tool_call in response.tool_calls
+            ],
+        )
+        response = AIMessage(
+            content="依赖工具返回异常，本次任务未生成未经证实的结论。"
+        )
 
     log.info(
         "llm_response",
         step=state["step_count"],
         has_tool_calls=bool(getattr(response, "tool_calls", None)),
-        token_usage=getattr(response, "usage_metadata", {}),
+        token_usage=usage,
     )
 
     # 更新 token 计数
-    usage = getattr(response, "usage_metadata", {}) or {}
     new_tokens = usage.get("total_tokens", 0)
 
     # 检查是否是 Final Answer（无 tool_calls）
@@ -298,7 +588,7 @@ async def llm_node(state: AgentState) -> dict:
     except Exception as e:
         log.warning("save_assistant_message_failed", error=str(e))
 
-    return {
+    update = {
         "messages": [response],
         "step_count": state["step_count"] + 1,
         "token_count": state["token_count"] + new_tokens,
@@ -306,6 +596,23 @@ async def llm_node(state: AgentState) -> dict:
         "last_tool_failed": False,  # 重置
         "needs_reflection": False,  # 重置
     }
+    if synthesis_tool_call_rejected:
+        update.update({
+            "route_next_tool": None,
+            "evidence_stop_reason": "internal_error",
+        })
+    if high_risk_proposal_stop_reason:
+        update.update({
+            "route_next_tool": None,
+            "evidence_stop_reason": high_risk_proposal_stop_reason,
+        })
+    if controlled_tool_unavailable:
+        update.update({
+            "route_next_tool": None,
+            "evidence_stop_reason": "internal_error",
+            "stop_reason": "internal_error",
+        })
+    return update
 
 
 def _detect_loop(messages: list, tool_name: str, args: dict) -> bool:
@@ -439,6 +746,8 @@ async def tool_node(state: AgentState) -> dict:
             "last_tool_failed": True,
             "policy_denied_tool": denied_tool,
             "stop_reason": "permission_denied",
+            "route_next_tool": None,
+            "evidence_stop_reason": "permission_denied",
         }
 
     budget = evaluate_tool_batch(
@@ -486,6 +795,99 @@ async def tool_node(state: AgentState) -> dict:
             "tool_budget_exhausted": True,
             "tool_budget_reason": budget.reason,
             "stop_reason": "tool_budget_exhausted",
+            "route_next_tool": None,
+            "evidence_stop_reason": "tool_budget_exhausted",
+        }
+
+    if state.get("route_mode") == "controlled" and (
+        len(tool_calls) != 1
+        or tool_calls[0]["name"] != state.get("route_next_tool")
+    ):
+        log.warning(
+            "controlled_tool_batch_rejected",
+            expected_tool=state.get("route_next_tool"),
+            proposed_tools=[tool_call["name"] for tool_call in tool_calls],
+        )
+        rejected_messages = [
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "error": "internal_error",
+                        "reason": "invalid_controlled_tool_batch",
+                        "tool": tool_call["name"],
+                    },
+                    ensure_ascii=False,
+                ),
+                tool_call_id=tool_call.get("id", ""),
+                name=tool_call["name"],
+            )
+            for tool_call in tool_calls
+        ]
+        return {
+            **budget_state,
+            "messages": rejected_messages,
+            "last_tool_failed": True,
+            "last_tool_error": "invalid_controlled_tool_batch",
+            "stop_reason": "internal_error",
+            "route_next_tool": None,
+            "evidence_stop_reason": "internal_error",
+        }
+
+    binding_failures = [
+        (index, error)
+        for index, tool_call in enumerate(tool_calls)
+        if (error := _request_binding_error(state, tool_call)) is not None
+    ]
+    if binding_failures:
+        failed_index, binding_error = binding_failures[0]
+        failed_call = tool_calls[failed_index]
+        tool_name = failed_call["name"]
+        binding_status = (
+            "internal_error"
+            if binding_error == "missing_request_target_binding"
+            else "parameter_error"
+        )
+        log.warning(
+            "request_binding_rejected",
+            reason=binding_error,
+            tool=tool_name,
+        )
+        binding_messages = [
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "error": binding_status,
+                        "reason": (
+                            binding_error
+                            if index == failed_index
+                            else "batch_rejected_due_request_binding"
+                        ),
+                        "tool": tool_call["name"],
+                    },
+                    ensure_ascii=False,
+                ),
+                tool_call_id=tool_call.get("id", ""),
+                name=tool_call["name"],
+            )
+            for index, tool_call in enumerate(tool_calls)
+        ]
+        binding_update = advance_evidence(
+            {**state, **budget_state},
+            [ToolOutcome(tool_name, binding_status, {})],
+        )
+        binding_update.pop("messages", None)
+        if tool_name in HITL_TOOLS or binding_status == "internal_error":
+            binding_update.update({
+                "route_next_tool": None,
+                "evidence_stop_reason": binding_status,
+                "stop_reason": binding_status,
+            })
+        return {
+            **budget_state,
+            **binding_update,
+            "messages": binding_messages,
+            "last_tool_failed": True,
+            "last_tool_error": binding_error,
         }
 
     pending_action = state.get("pending_action") or {}
@@ -521,8 +923,10 @@ async def tool_node(state: AgentState) -> dict:
         merchant_id=state.get("merchant_id"),
     )
 
-    async def _execute_single_tool(tool_call: dict) -> ToolMessage:
-        """执行单个工具调用，返回 ToolMessage（无论成功或失败）。"""
+    async def _execute_single_tool(
+        tool_call: dict,
+    ) -> tuple[ToolMessage, ToolOutcome]:
+        """执行单个工具调用，返回配对的消息与规范化结果。"""
         tool_name = tool_call["name"]
         tool_args = tool_call.get("args", {})
         call_id   = tool_call.get("id", "")
@@ -555,25 +959,76 @@ async def tool_node(state: AgentState) -> dict:
                         session_id=state.get("session_id"),
                         thread_id=state.get("thread_id"),
                     )
+            if (
+                tool_name == "query_order"
+                and not _query_order_response_matches_request(state, result)
+            ):
+                record_tool_call(
+                    tool_name,
+                    "internal_error",
+                    _time.time() - start,
+                )
+                log.warning(
+                    "query_order_response_binding_rejected",
+                    tool=tool_name,
+                )
+                outcome = normalize_tool_outcome(
+                    tool_name,
+                    error_reason="internal_error",
+                )
+                return (
+                    ToolMessage(
+                        content=json.dumps(
+                            {
+                                "error": "internal_error",
+                                "reason": "request_target_response_mismatch",
+                                "tool": tool_name,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        tool_call_id=call_id,
+                        name=tool_name,
+                    ),
+                    outcome,
+                )
             record_tool_call(tool_name, "success", _time.time() - start)
             log.info("tool_success", tool=tool_name, elapsed_ms=int((_time.time()-start)*1000))
-            return ToolMessage(content=result, tool_call_id=call_id, name=tool_name)
+            outcome = normalize_tool_outcome(tool_name, raw_result=result)
+            return (
+                ToolMessage(
+                    content=result,
+                    tool_call_id=call_id,
+                    name=tool_name,
+                ),
+                outcome,
+            )
 
         except McpToolError as e:
             record_tool_call(tool_name, e.reason, _time.time() - start)
             log.warning("tool_failed", tool=tool_name, reason=e.reason, detail=e.detail)
-            return ToolMessage(
-                content=f"[工具错误] {json.dumps(e.to_dict(), ensure_ascii=False)}",
-                tool_call_id=call_id,
-                name=tool_name,
+            outcome = normalize_tool_outcome(tool_name, error_reason=e.reason)
+            return (
+                ToolMessage(
+                    content=f"[工具错误] {json.dumps(e.to_dict(), ensure_ascii=False)}",
+                    tool_call_id=call_id,
+                    name=tool_name,
+                ),
+                outcome,
             )
         except Exception as e:
             record_tool_call(tool_name, "internal_error", _time.time() - start)
             log.error("tool_exception", tool=tool_name, error=str(e))
-            return ToolMessage(
-                content=f"[工具异常] {tool_name} 执行时发生内部错误: {str(e)[:200]}",
-                tool_call_id=call_id,
-                name=tool_name,
+            outcome = normalize_tool_outcome(
+                tool_name,
+                error_reason="internal_error",
+            )
+            return (
+                ToolMessage(
+                    content=f"[工具异常] {tool_name} 执行时发生内部错误: {str(e)[:200]}",
+                    tool_call_id=call_id,
+                    name=tool_name,
+                ),
+                outcome,
             )
 
     # ---- 按并发安全性分批执行 ----
@@ -602,7 +1057,7 @@ async def tool_node(state: AgentState) -> dict:
             results[idx] = r
 
     tool_messages = []
-    any_failed = False
+    tool_outcomes = []
     last_error = None
 
     for i, result in enumerate(results):
@@ -610,22 +1065,21 @@ async def tool_node(state: AgentState) -> dict:
             # gather 捕获的未预期异常（不应该发生，_execute_single_tool 已处理所有异常）
             call_id = tool_calls[i].get("id", "")
             tool_name = tool_calls[i]["name"]
-            tool_messages.append(ToolMessage(
+            tool_message = ToolMessage(
                 content=f"[系统异常] {str(result)[:200]}",
                 tool_call_id=call_id,
                 name=tool_name,
-            ))
-            any_failed = True
-            last_error = str(result)
+            )
+            outcome = normalize_tool_outcome(
+                tool_name,
+                error_reason="internal_error",
+            )
         else:
-            tm: ToolMessage = result
-            tool_messages.append(tm)
-            # 检查是否是错误消息
-            content_str = str(tm.content or "")
-            if content_str.startswith("[工具错误]") or content_str.startswith("[工具异常]") \
-                    or content_str.startswith("[系统异常]"):
-                any_failed = True
-                last_error = content_str[:200]
+            tool_message, outcome = result
+        tool_messages.append(tool_message)
+        tool_outcomes.append(outcome)
+        if outcome.status != "success":
+            last_error = str(tool_message.content or "")[:200]
 
     # ---- 持久化所有工具消息 ----
     try:
@@ -650,10 +1104,26 @@ async def tool_node(state: AgentState) -> dict:
     except Exception as e:
         log.warning("save_tool_message_failed", error=str(e))
 
+    evidence_update = advance_evidence(
+        {**state, **budget_state},
+        tool_outcomes,
+    )
+    evidence_update.pop("messages", None)
+    technical_failure_statuses = {
+        "parameter_error",
+        "permission_denied",
+        "timeout",
+        "business_rejected",
+        "internal_error",
+    }
     return {
         **budget_state,
+        **evidence_update,
         "messages": tool_messages,
-        "last_tool_failed": any_failed,
+        "last_tool_failed": any(
+            outcome.status in technical_failure_statuses
+            for outcome in tool_outcomes
+        ),
         "last_tool_error": last_error,
     }
 
@@ -968,7 +1438,10 @@ async def final_node(state: AgentState) -> dict:
     final_answer = state.get("final_answer")
 
     # 策略终止优先于通用上限，避免被误记为正常完成。
-    requested_stop = state.get("stop_reason")
+    requested_stop = (
+        state.get("evidence_stop_reason")
+        or state.get("stop_reason")
+    )
     if requested_stop == "permission_denied" or state.get("policy_denied_tool"):
         stop_reason = "permission_denied"
         final_answer = final_answer or "当前角色没有权限执行该工具，任务已安全终止。"
@@ -978,6 +1451,21 @@ async def final_node(state: AgentState) -> dict:
     elif requested_stop == "tool_loop_detected":
         stop_reason = "tool_loop_detected"
         final_answer = final_answer or "检测到重复工具调用，已停止继续执行。"
+    elif requested_stop in {
+        "not_found",
+        "parameter_error",
+        "timeout",
+        "business_rejected",
+        "internal_error",
+    }:
+        stop_reason = requested_stop
+        final_answer = final_answer or {
+            "not_found": "未找到与请求匹配的业务记录，未继续调用下游工具。",
+            "parameter_error": "工具参数仍不符合要求，请核对必要信息后重试。",
+            "timeout": "依赖工具连续超时，本次任务已停止，请稍后重试。",
+            "business_rejected": "当前业务状态不满足继续处理的前置条件。",
+            "internal_error": "依赖工具返回异常，本次任务未生成未经证实的结论。",
+        }[requested_stop]
     elif step_count >= settings.agent_max_steps:
         stop_reason = "max_steps"
         if not final_answer:

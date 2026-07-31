@@ -67,10 +67,26 @@ _BLOCK_PATTERNS: list[tuple[str, str]] = [
     # 尝试越权访问其他商家数据
     (r"查[^\n]{0,20}商家.{0,10}(所有|全部|其他|任意).{0,10}(订单|数据|信息)",
      "cross_merchant_access"),
+    (
+        r"(查|查看|导出|列出|给我).{0,20}(所有|全部|其他|任意).{0,10}商家"
+        r".{0,20}(订单|数据|信息)",
+        "cross_merchant_access_prefix",
+    ),
     (r"merchant_id\s*=\s*[\"']?\d+[\"']?\s*(,|\s).*(?:all|all_merchants|all_orders)",
      "explicit_cross_merchant"),
 
     # 高风险动作越权 / 跳过审批
+    (
+        r"(给|将|对|帮我).{0,20}(所有|全部|批量|\d+\s*(个|笔|条))"
+        r".{0,20}(订单|用户).{0,20}(退款|补发|补券|补偿券)",
+        "bulk_sensitive_action",
+    ),
+    (
+        r"(直接|立即|现在).{0,10}(退款|补发|补券|补偿券)"
+        r".{0,20}(给|处理).{0,10}(所有|全部|批量)"
+        r".{0,20}(用户|订单|投诉)",
+        "bulk_sensitive_action_reversed",
+    ),
     (r"(忽略|绕过|跳过).{0,20}(权限|rbac|审批|hitl).{0,30}(退款|补偿券|补券|execute_refund|issue_compensation_coupon)",
      "bypass_rbac_or_hitl_for_sensitive_action"),
     (r"(退款|补偿券|补券|execute_refund|issue_compensation_coupon).{0,30}(不用|无需|跳过|绕过).{0,20}(审批|hitl|客服|人工)",
@@ -93,10 +109,93 @@ _WARN_PATTERNS: list[tuple[str, str]] = [
     (r"<(script|iframe|img)[^>]*>",                        "html_injection_attempt"),
 ]
 
+_POLICY_QUESTION_EXEMPT_RULES = frozenset({
+    "cross_merchant_access_prefix",
+    "bulk_sensitive_action",
+    "bulk_sensitive_action_reversed",
+})
+
+_POLICY_NOUNS = ("规则", "政策", "流程", "审批", "权限")
+_QUESTION_PHRASES = ("是什么", "有哪些", "为什么", "为何", "如何", "怎么", "是否", "能否")
+_BYPASS_TOKENS = ("绕过", "跳过", "忽略", "规避", "绕开", "bypass")
+_EXECUTION_CONTINUATION_PATTERN = re.compile(
+    r"(?:然后|同时|顺便|另外|接着|随后|并且|并|以及|再|还要|之后).{0,16}(?:"
+    r"(?:查|查看|查询|导出|列出)"
+    r"|(?:立即|直接|现在|马上|请|帮我).{0,8}(?:退款|补发|补券|发放)"
+    r"|(?:退款|补发|补券|发放).{0,8}(?:给|处理|针对).{0,8}"
+    r"(?:所有|全部|批量|\d+\s*(?:个|笔|条))"
+    r"|(?:给|处理|针对).{0,8}(?:所有|全部|批量|\d+\s*(?:个|笔|条))"
+    r".{0,8}(?:退款|补发|补券|发放)"
+    r")",
+    re.IGNORECASE,
+)
+_CAUSAL_RESTRICTION_QUESTION_PATTERN = re.compile(
+    r"^(?:请|麻烦)?(?:帮我)?(?:解释|说明)?(?:为什么|为何)"
+    r"(?:不能|不可以|需要|必须|不允许)",
+    re.IGNORECASE,
+)
+# Treat every punctuation or symbol boundary as a clause separator.
+_POLICY_CLAUSE_SEPARATOR_PATTERN = re.compile(r"(?:[^\w\s]|_)+")
+
 
 # =========================================================
 # 检测函数
 # =========================================================
+
+def _is_complete_single_question(text: str) -> bool:
+    return bool(re.fullmatch(r"[^。！？!?；;\n]{1,120}[?？]", text))
+
+
+def _is_policy_clause(clause: str) -> bool:
+    has_policy_noun = any(noun in clause for noun in _POLICY_NOUNS)
+    has_question_phrase = any(
+        phrase in clause for phrase in _QUESTION_PHRASES
+    )
+    return (
+        has_policy_noun and has_question_phrase
+    ) or bool(_CAUSAL_RESTRICTION_QUESTION_PATTERN.match(clause))
+
+
+def _has_standalone_sensitive_command(text: str) -> bool:
+    clauses = [
+        clause.strip()
+        for clause in _POLICY_CLAUSE_SEPARATOR_PATTERN.split(text)
+        if clause.strip()
+    ]
+    if len(clauses) < 2:
+        return False
+    exempt_patterns = [
+        pattern
+        for pattern, rule_name in _BLOCK_PATTERNS
+        if rule_name in _POLICY_QUESTION_EXEMPT_RULES
+    ]
+    return any(
+        not _is_policy_clause(clause)
+        and any(
+            re.search(pattern, clause, re.IGNORECASE | re.DOTALL)
+            for pattern in exempt_patterns
+        )
+        for clause in clauses
+    )
+
+
+def _is_clear_policy_question(text: str) -> bool:
+    """识别无绕过或执行续句的完整政策/原因问句。"""
+    stripped = text.strip()
+    if not _is_complete_single_question(stripped):
+        return False
+
+    question_body = stripped[:-1]
+    normalized_body = question_body.lower()
+    if any(token in normalized_body for token in _BYPASS_TOKENS):
+        return False
+    if _EXECUTION_CONTINUATION_PATTERN.search(question_body):
+        return False
+    if _has_standalone_sensitive_command(question_body):
+        return False
+
+    return _is_policy_clause(question_body)
+
 
 def check_input(user_message: str, user_role: str = "merchant") -> GuardResult:
     """
@@ -111,6 +210,11 @@ def check_input(user_message: str, user_role: str = "merchant") -> GuardResult:
     # ---- BLOCK 级别检测 ----
     for pattern, rule_name in _BLOCK_PATTERNS:
         if re.search(pattern, text, re.IGNORECASE | re.DOTALL):
+            if (
+                rule_name in _POLICY_QUESTION_EXEMPT_RULES
+                and _is_clear_policy_question(text)
+            ):
+                continue
             log.warning(
                 "guardrails_blocked",
                 rule=rule_name,
