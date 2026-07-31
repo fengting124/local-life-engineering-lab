@@ -63,7 +63,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 如果将来有人不小心移除了 {@link com.personalprojections.locallife.copilot.config.AsyncConfig}
  * 或改掉了 TaskDecorator 的逻辑，这条用例会立即变红——这是有意设下的回归绊线。
  */
-@SpringBootTest
+@SpringBootTest(properties = "spring.flyway.enabled=false")
 @ExtendWith(OutputCaptureExtension.class)
 class ToolAuditServiceIntegrationTest {
 
