@@ -2083,8 +2083,27 @@ return `400 BLOCKED_BY_GUARDRAILS`, each emits a traced `security_audit`, and
 the isolated users create no session or tool-audit rows. Confirm final image and
 host/container source hashes match.
 
-- [ ] **Step 5: Complete remote verification**
+- [x] **Step 5: Complete remote verification**
 
 Commit the final evidence update, push, refresh PR #26, wait for all checks on
 the new head, and finish the independent review. Keep the PR Draft and do not
 merge; recommend Ready only when no blocking finding remains.
+
+Final independent review on 2026-07-31 found zero blocking findings across
+`8cfdf38..6e2aa7a`, `6e2aa7a..eb3cd08`, and `eb3cd08..d9dcd67`. The reviewed
+code head `d9dcd67` was `MERGEABLE/CLEAN`; its Docs and Agent
+`test-and-mutation` checks passed, and PR #26 had no comments, submitted
+reviews, or review threads.
+
+The fixed baseline contains exactly Cases 1-6, 16-21, 31-37, and 46-50, with
+two runs per case; Cases 22 and 25 are absent. An offline replay over the same
+48 sanitized rows produced refusal score sums of 48.0 with both the old and
+current formulas, with zero changed rows and zero differences from the stored
+scores. Case 19 remains two `routing_failure` rows in the 48-run denominator.
+The model baseline remains attributable only to runtime commit `8cfdf38`;
+`6e2aa7a` and `eb3cd08` have deterministic test and Docker smoke evidence only.
+No post-baseline permission map, tool budget, Prompt, graph topology, production
+dependency, EvalCase, fixture, or scoring change was found. The final
+documentation-only head must pass the same Docs and Agent checks before the PR
+is changed from Draft to Ready; the PR remains unmerged pending explicit
+approval.
