@@ -17,8 +17,16 @@ MySQL raises `Unknown column 'ct.remaining_stock'`, which propagates through
 `coupon_policy_lookup` and deterministically causes the Case 32 and 37 tool
 chains to be classified as `tool_execution_failure`.
 
-The external contract is correct: the Copilot DTO uses `remainingStock` and the
-MCP JSON response uses `remaining_stock`. Only the SQL-to-DTO boundary is wrong.
+The real-MySQL RED/GREEN cycle exposed a second stale assumption in the same
+projection: `coupon_template` has never contained `start_time` or `end_time` in
+the repository migrations. Coupon validity is relative (`valid_days` after
+receipt), while campaign windows belong to the one-to-many `seckill_session`
+table. The mapper therefore must not invent a single template time window.
+
+The inventory contract is correct: the Copilot DTO uses `remainingStock` and
+the MCP JSON response uses `remaining_stock`. The SQL-to-DTO boundary is wrong;
+the existing optional MCP `start_time` and `end_time` fields remain `null`
+rather than reporting an arbitrary or fabricated campaign window.
 
 ## Selected Approach
 
@@ -61,6 +69,10 @@ ct.remain_stock AS remaining_stock
 It must be used by both `selectCouponTemplateById` and
 `selectCouponTemplatesByMerchant`.
 
+Both queries also omit stale `ct.start_time` and `ct.end_time` projections.
+Joining an arbitrary seckill session or deriving dates from template creation
+would change business meaning and is outside this repair.
+
 ## Test Design
 
 The integration test first lands while the mapper is still broken. Running the
@@ -79,10 +91,11 @@ After the two-line SQL repair, the same test must verify:
   dependency is changed.
 
 The Flyway libraries and Testcontainers modules are test-scoped and use Spring
-Boot dependency-management versions. Test resources disable Flyway by default
-so existing Spring tests that use the shared development database do not gain a
-new migration lifecycle; this integration test explicitly enables it and
-supplies the two repository migration locations.
+Boot dependency-management versions. The existing audit integration test
+locally disables Flyway because it intentionally uses the pre-initialized
+development/CI database. The new contract test explicitly enables Flyway and
+supplies the two repository migration locations. No test `application.yml` is
+used because it would shadow the production datasource resource.
 
 ## Verification
 
@@ -101,7 +114,9 @@ is deferred until this PR is merged into `main`.
 
 Allowed production change:
 
-- `local-life-copilot/.../CopilotCouponMapper.java`: two SQL expressions.
+- `local-life-copilot/.../CopilotCouponMapper.java`: map both inventory
+  projections to `remain_stock AS remaining_stock` and remove the four stale
+  template time projections exposed by the same real-schema test.
 
 Allowed support changes:
 
