@@ -30,7 +30,7 @@
 **Files:**
 - Modify: `local-life-copilot/pom.xml`
 - Create: `local-life-copilot/src/test/resources/application.yml`
-- Create: `local-life-copilot/src/test/java/com/personalprojections/locallife/copilot/domain/mapper/CopilotCouponSchemaContractIT.java`
+- Create: `local-life-copilot/src/test/java/com/personalprojections/locallife/copilot/domain/mapper/CopilotCouponSchemaContractIntegrationTest.java`
 
 **Interfaces:**
 - Consumes: Server migrations `V1` through `V13` and Copilot migrations `V101` through `V103`.
@@ -79,7 +79,7 @@ Call `selectCouponTemplateById(940000000001L)` and assert
 Run:
 
 ```bash
-mvn -B -pl local-life-copilot -Dtest=CopilotCouponSchemaContractIT#mapperReadsPhysicalRemainStock test
+mvn -B -pl local-life-copilot -Dtest=CopilotCouponSchemaContractIntegrationTest#mapperReadsPhysicalRemainStock test
 ```
 
 Expected: FAIL from MySQL/MyBatis because `ct.remaining_stock` does not exist.
@@ -90,7 +90,7 @@ the broken query.
 
 **Files:**
 - Modify: `local-life-copilot/src/main/java/com/personalprojections/locallife/copilot/domain/mapper/CopilotCouponMapper.java`
-- Test: `local-life-copilot/src/test/java/com/personalprojections/locallife/copilot/domain/mapper/CopilotCouponSchemaContractIT.java`
+- Test: `local-life-copilot/src/test/java/com/personalprojections/locallife/copilot/domain/mapper/CopilotCouponSchemaContractIntegrationTest.java`
 
 **Interfaces:**
 - Consumes: MySQL `coupon_template.remain_stock`.
@@ -122,7 +122,7 @@ Use `JdbcTemplate` against `information_schema.columns` and assert
 ### Task 3: Prove the Signed MCP Case 32/37 Path
 
 **Files:**
-- Modify: `local-life-copilot/src/test/java/com/personalprojections/locallife/copilot/domain/mapper/CopilotCouponSchemaContractIT.java`
+- Modify: `local-life-copilot/src/test/java/com/personalprojections/locallife/copilot/domain/mapper/CopilotCouponSchemaContractIntegrationTest.java`
 
 **Interfaces:**
 - Consumes: signed JSON-RPC `tools/call` requests for `coupon_policy_lookup`.
@@ -156,7 +156,7 @@ and `remaining_stock=37`.
 Run:
 
 ```bash
-mvn -B -pl local-life-copilot -Dtest=CopilotCouponSchemaContractIT test
+mvn -B -pl local-life-copilot -Dtest=CopilotCouponSchemaContractIntegrationTest test
 ```
 
 Expected: mapper, schema, and both MCP shapes pass without `Unknown column` or
