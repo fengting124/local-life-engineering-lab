@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-- Status: Verification complete; Draft PR publication pending
+- Status: Complete; Draft PR #27 open
 - Type: Plan
 - Owners: Project maintainers
 - Last verified: 2026-07-31
@@ -253,26 +253,34 @@ Neither issue changes coupon query success and neither is repaired in this PR.
 
 - [x] **Step 1: Review scope and secrets**
 
-Confirm the production diff contains only two Mapper SQL lines and no API key,
-`.env`, database file, log, or generated report is tracked.
+Confirm the production diff contains only the scoped Mapper projection repair
+and no API key, `.env`, database file, log, or generated report is tracked.
 
 - [x] **Step 2: Commit with traceable messages**
 
 Use Goal, Changes, Verification, and Risk sections in every commit. Keep test
 infrastructure, mapper repair, MCP proof, and final evidence logically reviewable.
 
-- [ ] **Step 3: Push the feature branch**
+- [x] **Step 3: Push the feature branch**
 
 ```bash
 git push -u origin fix/copilot-coupon-schema-drift
 ```
 
-- [ ] **Step 4: Create Draft PR #27**
+- [x] **Step 4: Create Draft PR #27**
 
 Target `main`, include RED unknown-column evidence, GREEN mapper/MCP proof, full
 test and Docker results, and state that the `24x2` DeepSeek baseline was not run.
 
-- [ ] **Step 5: Wait for PR checks**
+- [x] **Step 5: Wait for PR checks**
 
 Keep the PR Draft. Report CI results and residual boundaries; do not merge
 without explicit approval.
+
+Draft PR #27 is open at
+`https://github.com/fengting124/local-life-engineering-lab/pull/27`.
+At verification head `780f1778ef7f2898f1997791e3231da0fb019fd6`, Docs CI and the
+Copilot test job both completed successfully; the latter initialized service
+containers, applied database migrations, and ran the test suite. GitHub emitted
+only its repository-level Node.js 20 action deprecation annotation. The PR
+remains Draft and unmerged.
