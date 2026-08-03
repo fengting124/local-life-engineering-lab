@@ -76,7 +76,7 @@
 - Produces Java `ApprovalPayloadSigner.sign(ApprovalPayload)` and `matches(ApprovalPayload, String)`.
 - Later tasks must use these APIs and must not independently serialize approval payloads.
 
-- [ ] **Step 1: Add failing Python contract-vector tests**
+- [x] **Step 1: Add failing Python contract-vector tests**
 
 Use a fixed non-production test key and assert one exact canonical string and HMAC:
 
@@ -100,7 +100,7 @@ Also assert key-order independence at construction, trim normalization, changed
 order/amount/user/merchant/role/reason mismatch, non-positive amount rejection,
 unknown tool rejection, and `hmac.compare_digest` verification.
 
-- [ ] **Step 2: Run the Python tests and confirm RED**
+- [x] **Step 2: Run the Python tests and confirm RED**
 
 Run:
 
@@ -110,7 +110,7 @@ DEBUG=false PYTHONPATH=copilot-agent-service python -m pytest -q copilot-agent-s
 
 Expected: collection or import failure because `session.hitl_binding` does not exist.
 
-- [ ] **Step 3: Implement the minimal Python contract**
+- [x] **Step 3: Implement the minimal Python contract**
 
 Implement a frozen dataclass with an explicit ordered dictionary:
 
@@ -146,16 +146,16 @@ Serialize with compact UTF-8 JSON and HMAC-SHA-256. Add
 Tests inject a dedicated non-production value without relying on repository
 defaults.
 
-- [ ] **Step 4: Run Python tests and confirm GREEN**
+- [x] **Step 4: Run Python tests and confirm GREEN**
 
 Expected: all `test_hitl_binding.py` tests pass.
 
-- [ ] **Step 5: Add failing Java tests with the same vector**
+- [x] **Step 5: Add failing Java tests with the same vector**
 
 The Java test must copy the exact canonical JSON and HMAC produced by the Python
 test, then test constant-time match and each mutated field.
 
-- [ ] **Step 6: Run the Java test and confirm RED**
+- [x] **Step 6: Run the Java test and confirm RED**
 
 ```bash
 mvn -B -pl local-life-copilot -Dtest=ApprovalPayloadSignerTest test
@@ -163,14 +163,14 @@ mvn -B -pl local-life-copilot -Dtest=ApprovalPayloadSignerTest test
 
 Expected: compilation failure because the HITL signer classes do not exist.
 
-- [ ] **Step 7: Implement the minimal Java contract**
+- [x] **Step 7: Implement the minimal Java contract**
 
 Use a Java record for typed fields and an `ObjectMapper` configured only for
 compact deterministic output. Build a `LinkedHashMap` in the same key order as
 Python, sign UTF-8 bytes with `HmacSHA256`, and compare decoded bytes with
 `MessageDigest.isEqual`.
 
-- [ ] **Step 8: Run both contract suites and commit**
+- [x] **Step 8: Run both contract suites and commit**
 
 Expected: Python and Java vectors match exactly.
 
@@ -179,6 +179,15 @@ Commit title:
 ```text
 feat(hitl): define immutable approval payload contract
 ```
+
+**Verification evidence (2026-08-03):**
+
+- Python RED: `ModuleNotFoundError: session.hitl_binding` before implementation.
+- Java RED: compilation failed because `ApprovalPayload` and
+  `ApprovalPayloadSigner` did not exist.
+- Python focused HITL/checkpoint regression: `143 passed`.
+- Java contract vector: `13 passed`.
+- Java full clean module regression with MySQL and Testcontainers: `101 passed`.
 
 ---
 

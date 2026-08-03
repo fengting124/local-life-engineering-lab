@@ -94,6 +94,12 @@ mcp:
     secret: ${MCP_CONTEXT_SIGNING_SECRET:local-life-mcp-context-secret}
     max-clock-skew-seconds: ${MCP_CONTEXT_SIGNING_MAX_CLOCK_SKEW_SECONDS:300}
 
+# ===== HITL 审批载荷绑定 =====
+hitl:
+  payload-signing:
+    # 无仓库默认值；每个运行环境必须显式注入独立密钥。
+    secret: ${HITL_PAYLOAD_SIGNING_SECRET:}
+
 # ===== 日志 =====
 logging:
   level:

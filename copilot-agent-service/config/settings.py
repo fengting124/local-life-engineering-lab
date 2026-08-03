@@ -17,7 +17,7 @@ Agent Service 全局配置。
   LLM_MODEL=deepseek-v4-flash
   # LLM_BASE_URL 不填则用各 provider 默认地址
 """
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # Agent -> MCP 身份上下文签名密钥。必须与 local-life-copilot 的
     # mcp.context-signing.secret 一致，用于防止伪造 X-User-* Header。
     mcp_context_signing_secret: str = "local-life-mcp-context-secret"
+
+    # HITL 审批载荷使用独立密钥做 HMAC 绑定。所有环境必须显式注入，
+    # 不与 MCP 身份签名密钥复用，也不在仓库中提供默认值。
+    hitl_payload_signing_secret: str
 
     # ===== MySQL（会话/消息/checkpoint 存储）=====
     db_url: str = "mysql+aiomysql://root:123456@localhost:3306/local_life"
@@ -87,6 +91,14 @@ class Settings(BaseSettings):
         "http://localhost:5173,http://127.0.0.1:5173,"
         "http://localhost:3000,http://127.0.0.1:3000"
     )
+
+    @field_validator("hitl_payload_signing_secret")
+    @classmethod
+    def validate_hitl_payload_signing_secret(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("hitl_payload_signing_secret must not be blank")
+        return normalized
 
     class Config:
         env_file = ".env"
