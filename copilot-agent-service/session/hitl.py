@@ -11,6 +11,7 @@ HITL（Human-In-The-Loop）审批服务。
 HITL 是 LocalLife Copilot 企业级 Agent 的核心安全机制：
   高风险动作（退款/补券）必须经人工审批，不允许 AI 自主执行。
 """
+import hashlib
 import structlog
 from datetime import datetime, timedelta
 from sqlalchemy import select, update
@@ -23,9 +24,15 @@ log = structlog.get_logger(__name__)
 # =========================================================
 # hitl_approval SQLAlchemy 模型（内联，避免过多文件）
 # =========================================================
-from sqlalchemy import BigInteger, String, Text, JSON, DateTime, func
+from sqlalchemy import BigInteger, Integer, String, Text, JSON, DateTime, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from session.models import Base
+from config.settings import settings
+from session.hitl_binding import ApprovalPayload, sign_payload
+
+
+class HitlBindingError(RuntimeError):
+    """Raised when an approval cannot be bound to one exact checkpoint."""
 
 
 class HitlApproval(Base):
@@ -46,17 +53,34 @@ class HitlApproval(Base):
     id:               Mapped[int]       = mapped_column(BigInteger, primary_key=True)
     session_id:       Mapped[int]       = mapped_column(BigInteger, nullable=False)
     thread_id:        Mapped[str]       = mapped_column(String(64), nullable=False)
-    checkpoint_id:    Mapped[str]       = mapped_column(String(64), nullable=False)
+    checkpoint_id:    Mapped[str | None] = mapped_column(String(64), nullable=True)
     action_type:      Mapped[str]       = mapped_column(String(50), nullable=False)
     action_payload:   Mapped[dict]      = mapped_column(JSON, nullable=False)
+    payload_version:  Mapped[int | None] = mapped_column(Integer, nullable=True)
+    payload_digest:   Mapped[str | None] = mapped_column(String(64), nullable=True)
+    order_target_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    merchant_id:      Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    requested_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    requested_role:   Mapped[str | None] = mapped_column(String(32), nullable=True)
     agent_reason:     Mapped[str]       = mapped_column(Text, nullable=False)
     status:           Mapped[str]       = mapped_column(String(20), default="PENDING")
     approver_id:      Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     approver_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     approved_at:      Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    execution_id:     Mapped[str | None] = mapped_column(String(64), nullable=True)
+    execution_lease_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    executing_at:     Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    executed_at:      Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    execution_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    execution_error:  Mapped[str | None] = mapped_column(Text, nullable=True)
     expire_at:        Mapped[datetime]  = mapped_column(DateTime, nullable=False)
     created_at:       Mapped[datetime]  = mapped_column(DateTime, default=func.now())
     updated_at:       Mapped[datetime]  = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if self.checkpoint_id is None and (self.status or "PENDING") != "PENDING":
+            raise HitlBindingError("checkpoint binding is required outside PENDING")
 
 
 # =========================================================
@@ -72,9 +96,7 @@ class HitlService:
         self,
         session_id: int,
         thread_id: str,
-        checkpoint_id: str,
-        action_type: str,
-        action_payload: dict,
+        approval_payload: ApprovalPayload,
         agent_reason: str,
         expire_hours: int = 24,
     ) -> int:
@@ -83,25 +105,41 @@ class HitlService:
 
         :param session_id:     会话 ID（关联 agent_session）
         :param thread_id:      LangGraph thread ID（恢复时找到 checkpoint）
-        :param checkpoint_id:  挂起时的 checkpoint ID（恢复 Agent 的起点）
-        :param action_type:    高风险动作类型（execute_refund / issue_compensation_coupon）
-        :param action_payload: 动作参数（退款金额、用户 ID 等）
+        :param approval_payload: 规范化且待签名的高风险业务参数
         :param agent_reason:   Agent 的申请理由（根因分析结论，方便审批者判断）
         :param expire_hours:   过期时间（默认 24 小时）
         :return: 审批记录 ID（approval_id）
         """
         approval_id = _snowflake_id()
         expire_at = datetime.now() + timedelta(hours=expire_hours)
+        action_payload = dict(approval_payload.canonical_dict())
+        payload_digest = sign_payload(
+            approval_payload,
+            settings.hitl_payload_signing_secret,
+        )
 
         async with AsyncSessionLocal() as db:
             approval = HitlApproval(
                 id=approval_id,
                 session_id=session_id,
                 thread_id=thread_id,
-                checkpoint_id=checkpoint_id,
-                action_type=action_type,
+                checkpoint_id=None,
+                action_type=approval_payload.tool_name,
                 action_payload=action_payload,
+                payload_version=approval_payload.payload_version,
+                payload_digest=payload_digest,
+                order_target_hash=hashlib.sha256(
+                    approval_payload.order_id.encode("utf-8")
+                ).hexdigest(),
+                merchant_id=(
+                    int(approval_payload.merchant_id)
+                    if approval_payload.merchant_id
+                    else None
+                ),
+                requested_user_id=int(approval_payload.requested_user_id),
+                requested_role=approval_payload.requested_role,
                 agent_reason=agent_reason,
+                status="PENDING",
                 expire_at=expire_at,
             )
             db.add(approval)
@@ -110,11 +148,46 @@ class HitlService:
         log.info(
             "hitl_approval_created",
             approval_id=approval_id,
-            action_type=action_type,
+            action_type=approval_payload.tool_name,
             thread_id=thread_id,
             expire_at=expire_at.isoformat(),
         )
         return approval_id
+
+    async def bind_checkpoint(
+        self,
+        db: AsyncSession,
+        *,
+        approval_id: int,
+        thread_id: str,
+        checkpoint_id: str,
+        payload_digest: str,
+    ) -> None:
+        """Bind a pending approval to the exact checkpoint in the caller transaction."""
+        transition = await db.execute(
+            update(HitlApproval)
+            .where(
+                HitlApproval.id == approval_id,
+                HitlApproval.thread_id == thread_id,
+                HitlApproval.payload_digest == payload_digest,
+                HitlApproval.checkpoint_id.is_(None),
+                HitlApproval.status == "PENDING",
+            )
+            .values(checkpoint_id=checkpoint_id, updated_at=datetime.now())
+        )
+        if transition.rowcount == 1:
+            return
+
+        approval = await db.get(HitlApproval, approval_id)
+        if (
+            approval is not None
+            and approval.id == approval_id
+            and approval.thread_id == thread_id
+            and approval.checkpoint_id == checkpoint_id
+            and approval.payload_digest == payload_digest
+        ):
+            return
+        raise HitlBindingError("approval checkpoint binding mismatch")
 
     async def approve(
         self,

@@ -207,19 +207,19 @@ feat(hitl): define immutable approval payload contract
 - Produces `HitlService.bind_checkpoint(db, approval_id, thread_id, checkpoint_id, payload_digest) -> None`.
 - Stores `pending_action.approval_id`, `payload_digest`, and canonical payload in the checkpoint.
 
-- [ ] **Step 1: Write failing migration/model tests**
+- [x] **Step 1: Write failing migration/model tests**
 
 Assert the SQLAlchemy model exposes every V104 column and permits
 `checkpoint_id=None` only while status is `PENDING`. Add a migration contract
 assertion for indexes on status/lease and digest lookup.
 
-- [ ] **Step 2: Write failing approval-creation tests**
+- [x] **Step 2: Write failing approval-creation tests**
 
 Assert creation stores normalized identity columns, `order_target_hash`,
 payload version, digest, expiry, and `checkpoint_id=None`. Assert the input dict
 is copied and later caller mutation cannot alter stored values.
 
-- [ ] **Step 3: Write failing checkpoint binding tests**
+- [x] **Step 3: Write failing checkpoint binding tests**
 
 Construct a checkpoint with:
 
@@ -237,7 +237,7 @@ Assert `aput()` inserts the checkpoint and conditionally binds the same approval
 inside one SQLAlchemy transaction. Same tuple is idempotent; changed thread,
 checkpoint, approval ID, or digest raises `HitlBindingError` and rolls back.
 
-- [ ] **Step 4: Run focused tests and confirm RED**
+- [x] **Step 4: Run focused tests and confirm RED**
 
 ```bash
 DEBUG=false PYTHONPATH=copilot-agent-service python -m pytest -q \
@@ -246,19 +246,19 @@ DEBUG=false PYTHONPATH=copilot-agent-service python -m pytest -q \
   copilot-agent-service/tests/test_agent_nodes.py
 ```
 
-- [ ] **Step 5: Add V104 and extend the SQLAlchemy model**
+- [x] **Step 5: Add V104 and extend the SQLAlchemy model**
 
 V104 must alter `checkpoint_id` to nullable, add the binding/execution columns,
 and preserve existing rows without marking them executable. Use nullable new
 columns first; application validation enforces the new contract.
 
-- [ ] **Step 6: Implement approval creation and checkpoint binding**
+- [x] **Step 6: Implement approval creation and checkpoint binding**
 
 Keep canonicalization in `hitl_binding.py`. `checkpointer.aput()` should extract
 only `approval_id` and `payload_digest`, execute the checkpoint insert and
 conditional approval update, then commit once.
 
-- [ ] **Step 7: Make `hitl_node` fail closed**
+- [x] **Step 7: Make `hitl_node` fail closed**
 
 If approval persistence fails or returns no ID, return:
 
@@ -274,13 +274,22 @@ If approval persistence fails or returns no ID, return:
 
 Never emit a pending approval with an empty ID.
 
-- [ ] **Step 8: Run focused tests and commit**
+- [x] **Step 8: Run focused tests and commit**
 
 Commit title:
 
 ```text
 feat(hitl): bind approvals to persisted checkpoints
 ```
+
+**Verification evidence (2026-08-03):**
+
+- RED: focused collection failed because `HitlBindingError` and checkpoint
+  binding did not exist.
+- Python HITL/API/checkpoint regression: `157 passed`.
+- MySQL 8.4 Testcontainers migration run: V101-V104 included in `17`
+  validated migrations; contract integration tests `5 passed`.
+- Sensitive persistence exception detail is not emitted to logs.
 
 ---
 

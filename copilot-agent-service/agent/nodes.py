@@ -1369,8 +1369,6 @@ async def hitl_node(state: AgentState) -> dict:
     action_type  = pending.get("action_type", "unknown")
     action_payload = dict(pending.get("payload") or {})
     merchant_id = state.get("merchant_id")
-    if merchant_id is not None:
-        action_payload["merchant_id"] = merchant_id
     agent_reason = pending.get("reason", "Agent 认为需要执行此高风险动作")
     session_id   = state.get("session_id")
     thread_id    = state.get("thread_id", "")
@@ -1383,25 +1381,52 @@ async def hitl_node(state: AgentState) -> dict:
     )
 
     # ---- 写 hitl_approval 到 MySQL ----
-    # LangGraph 的 checkpoint_id 在此时已由 checkpointer 生成，
-    # 但 Python API 中无法直接从节点内获取当前 checkpoint_id。
-    # 折中方案：用 thread_id 作为恢复标识符（从最新 checkpoint 恢复）。
-    # 生产升级：langgraph 提供了 get_state() 可以获取当前 checkpoint_id。
-    approval_id = None
     try:
         from session.hitl import hitl_service
+        from session.hitl_binding import ApprovalPayload, sign_payload
+
+        amount_key = (
+            "amount"
+            if action_type == "execute_refund"
+            else "compensation_amount"
+        )
+        approval_payload = ApprovalPayload(
+            payload_version=1,
+            tool_name=action_type,
+            order_id=action_payload.get("order_id"),
+            amount_minor=action_payload.get(amount_key),
+            target_user_id=(
+                action_payload.get("user_id", "")
+                if action_type == "issue_compensation_coupon"
+                else ""
+            ),
+            merchant_id=merchant_id if merchant_id is not None else "",
+            requested_user_id=state.get("user_id"),
+            requested_role=state.get("user_role"),
+            reason=action_payload.get("reason") or agent_reason,
+        )
         approval_id = await hitl_service.create_approval(
             session_id=session_id or 0,
             thread_id=thread_id,
-            checkpoint_id=thread_id,   # 简化：用 thread_id 标识恢复点
-            action_type=action_type,
-            action_payload=action_payload,
+            approval_payload=approval_payload,
             agent_reason=agent_reason,
+        )
+        if not approval_id:
+            raise RuntimeError("approval persistence returned no ID")
+        payload_digest = sign_payload(
+            approval_payload,
+            settings.hitl_payload_signing_secret,
         )
         log.info("hitl_approval_written", approval_id=approval_id)
     except Exception as e:
-        # 写 DB 失败时不能阻塞主流程，记录错误后继续挂起
-        log.error("hitl_approval_write_failed", error=str(e))
+        log.error("hitl_approval_write_failed", error_type=type(e).__name__)
+        return {
+            "pending_hitl": False,
+            "pending_action": None,
+            "evidence_stop_reason": "internal_error",
+            "stop_reason": "internal_error",
+            "final_answer": "审批服务暂时不可用，本次高风险操作未提交。",
+        }
 
     # ---- 生成挂起通知消息 ----
     hitl_message = AIMessage(content=(
@@ -1420,6 +1445,8 @@ async def hitl_node(state: AgentState) -> dict:
         "pending_action": {
             **pending,
             "approval_id": approval_id,
+            "payload_digest": payload_digest,
+            "approval_payload": approval_payload.canonical_dict(),
         },
     }
 

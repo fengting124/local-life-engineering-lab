@@ -5,12 +5,14 @@ import pytest
 
 from session import checkpointer as ckpt_mod
 from session.checkpointer import AsyncMySQLCheckpointer
+from session.hitl import HitlBindingError
 
 
 class FakeSession:
     def __init__(self):
         self.executed = []
         self.commits = 0
+        self.rollbacks = 0
 
     async def __aenter__(self):
         return self
@@ -23,6 +25,74 @@ class FakeSession:
 
     async def commit(self):
         self.commits += 1
+
+    async def rollback(self):
+        self.rollbacks += 1
+
+
+def _hitl_checkpoint(approval_id=1001, digest="a" * 64):
+    return {
+        "id": "checkpoint-hitl-1",
+        "channel_values": {
+            "pending_hitl": True,
+            "pending_action": {
+                "approval_id": approval_id,
+                "payload_digest": digest,
+            },
+        },
+        "channel_versions": {},
+        "versions_seen": {},
+    }
+
+
+@pytest.mark.asyncio
+async def test_aput_binds_pending_approval_in_checkpoint_transaction(monkeypatch):
+    fake_session = FakeSession()
+    binding = AsyncMock()
+    monkeypatch.setattr(ckpt_mod, "AsyncSessionLocal", lambda: fake_session)
+    monkeypatch.setattr(ckpt_mod.hitl_service, "bind_checkpoint", binding)
+    saver = AsyncMySQLCheckpointer()
+
+    result = await saver.aput(
+        {"configurable": {"thread_id": "thread-1"}},
+        _hitl_checkpoint(),
+        {"step": "hitl"},
+        {},
+    )
+
+    assert fake_session.commits == 1
+    assert fake_session.rollbacks == 0
+    assert len(fake_session.executed) == 1
+    binding.assert_awaited_once_with(
+        fake_session,
+        approval_id=1001,
+        thread_id="thread-1",
+        checkpoint_id="checkpoint-hitl-1",
+        payload_digest="a" * 64,
+    )
+    assert result["configurable"]["checkpoint_id"] == "checkpoint-hitl-1"
+
+
+@pytest.mark.asyncio
+async def test_aput_rolls_back_checkpoint_when_approval_binding_fails(monkeypatch):
+    fake_session = FakeSession()
+    monkeypatch.setattr(ckpt_mod, "AsyncSessionLocal", lambda: fake_session)
+    monkeypatch.setattr(
+        ckpt_mod.hitl_service,
+        "bind_checkpoint",
+        AsyncMock(side_effect=HitlBindingError("checkpoint binding mismatch")),
+    )
+
+    with pytest.raises(HitlBindingError, match="mismatch"):
+        await AsyncMySQLCheckpointer().aput(
+            {"configurable": {"thread_id": "thread-1"}},
+            _hitl_checkpoint(),
+            {"step": "hitl"},
+            {},
+        )
+
+    assert fake_session.commits == 0
+    assert fake_session.rollbacks == 1
 
 
 @pytest.mark.asyncio
