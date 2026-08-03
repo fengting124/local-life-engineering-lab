@@ -448,12 +448,20 @@ class TestToolNode:
         mock_mcp.call_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_high_risk_tool_with_approval_executes_mcp(self, monkeypatch):
+    async def test_high_risk_tool_with_approval_overrides_model_supplied_credentials(
+        self, monkeypatch
+    ):
         mock_mcp = MagicMock()
         mock_mcp.call_tool = AsyncMock(return_value="退款成功")
         monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
 
-        args = {"order_id": "123", "amount": 100, "reason": "用户要求退款"}
+        args = {
+            "order_id": "123",
+            "amount": 100,
+            "reason": "用户要求退款",
+            "approval_id": "MODEL_CONTROLLED_ID",
+            "approval_digest": "b" * 64,
+        }
         state = make_state(
             [ai_with_tool_call("execute_refund", args)],
             user_role="cs",

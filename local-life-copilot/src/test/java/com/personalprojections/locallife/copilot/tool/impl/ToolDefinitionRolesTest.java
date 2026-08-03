@@ -25,12 +25,16 @@ class ToolDefinitionRolesTest {
 
     @Test
     void highRiskToolsRequireHitlAndAllowCsAfterApproval() {
-        var refund = new ExecuteRefundTool(objectMapper, null).getDefinition();
-        var coupon = new IssueCompensationCouponTool(objectMapper, null).getDefinition();
+        var refund = new ExecuteRefundTool(objectMapper, null, null).getDefinition();
+        var coupon = new IssueCompensationCouponTool(objectMapper, null, null).getDefinition();
 
         assertThat(refund.isXRequiresHitl()).isTrue();
         assertThat(coupon.isXRequiresHitl()).isTrue();
         assertThat(refund.getXAllowedRoles()).isEqualTo(List.of("cs", "admin"));
         assertThat(coupon.getXAllowedRoles()).isEqualTo(List.of("cs", "admin"));
+        assertThat(refund.getInputSchema().path("required").toString())
+                .contains("approval_id", "approval_digest");
+        assertThat(coupon.getInputSchema().path("required").toString())
+                .contains("approval_id", "approval_digest");
     }
 }

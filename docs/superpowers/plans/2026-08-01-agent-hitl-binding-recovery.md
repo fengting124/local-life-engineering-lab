@@ -480,22 +480,22 @@ feat(copilot): atomically consume HITL approvals
 - Neither tool calls `LocalLifeInternalClient` unless `ApprovalExecutionGuard` returns `CLAIMED`.
 - `REPLAY` returns the stored successful result without a Server call.
 
-- [ ] **Step 1: Write failing Java tool tests**
+- [x] **Step 1: Write failing Java tool tests**
 
 Assert missing digest, mismatched digest, in-progress approval, wrong caller, and
 wrong tool never call the internal client. Assert one claimed call completes and
 one replay returns the first result with internal-client call count still one.
 
-- [ ] **Step 2: Write failing Python injection tests**
+- [x] **Step 2: Write failing Python injection tests**
 
 Assert the model cannot supply or override `approval_id`/`approval_digest`, and
 the tool node injects both values only from the validated `pending_action`.
 
-- [ ] **Step 3: Run tests and confirm RED**
+- [x] **Step 3: Run tests and confirm RED**
 
 Run the two Java tool tests and the named Python high-risk node tests.
 
-- [ ] **Step 4: Integrate `ApprovalExecutionGuard`**
+- [x] **Step 4: Integrate `ApprovalExecutionGuard`**
 
 Each tool follows:
 
@@ -511,13 +511,25 @@ return result;
 Any exception after claim leaves the approval `EXECUTING`; do not guess that the
 Server did not commit.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Commit title:
 
 ```text
 fix(copilot): enforce approved payload at MCP boundary
 ```
+
+**Verification evidence (2026-08-03):**
+
+- RED: Java test compilation failed because both high-risk tools lacked the
+  approval guard constructor dependency.
+- Java high-risk tool and schema tests: `34 passed`.
+- Python tool-node regression: `62 passed`; model-supplied approval ID and
+  digest were overwritten by the bound `pending_action` values.
+- Full clean Copilot module regression: `128 passed`.
+- Missing caller identity, missing digest, denied approval, and live execution
+  lease all produced zero internal Server calls; replay returned the sanitized
+  stored result without a second call.
 
 ---
 

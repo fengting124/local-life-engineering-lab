@@ -6,6 +6,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.personalprojections.locallife.copilot.rbac.RbacContext;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -17,6 +20,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /** Validates, atomically claims, and idempotently completes HITL approvals. */
+@Component
 public class ApprovalExecutionGuard {
 
     private static final Set<String> SENSITIVE_KEY_FRAGMENTS = Set.of(
@@ -29,10 +33,11 @@ public class ApprovalExecutionGuard {
     private final Clock clock;
     private final Duration leaseDuration;
 
+    @Autowired
     public ApprovalExecutionGuard(
             HitlApprovalMapper mapper,
             ObjectMapper objectMapper,
-            String signingSecret
+            @Value("${hitl.payload-signing.secret}") String signingSecret
     ) {
         this(
                 mapper,

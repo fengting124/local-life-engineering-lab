@@ -3,7 +3,10 @@ package com.personalprojections.locallife.copilot.tool.impl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.personalprojections.locallife.copilot.hitl.ApprovalExecutionGuard;
+import com.personalprojections.locallife.copilot.hitl.ApprovalPayload;
 import com.personalprojections.locallife.copilot.mcp.dto.ToolDefinition;
+import com.personalprojections.locallife.copilot.rbac.RbacContext;
 import com.personalprojections.locallife.copilot.tool.McpTool;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -45,6 +48,7 @@ public class IssueCompensationCouponTool implements McpTool {
 
     private final ObjectMapper objectMapper;
     private final com.personalprojections.locallife.copilot.client.LocalLifeInternalClient internalClient;
+    private final ApprovalExecutionGuard approvalGuard;
 
     @Override
     public String getName() {
@@ -80,11 +84,17 @@ public class IssueCompensationCouponTool implements McpTool {
         approvalIdProp.put("description", "HITL 审批 ID（审批通过后自动填入）");
         properties.set("approval_id", approvalIdProp);
 
+        ObjectNode approvalDigestProp = objectMapper.createObjectNode();
+        approvalDigestProp.put("type", "string");
+        approvalDigestProp.put("description", "审批载荷签名，由系统在恢复审批时自动注入");
+        properties.set("approval_digest", approvalDigestProp);
+
         ObjectNode inputSchema = objectMapper.createObjectNode();
         inputSchema.put("type", "object");
         inputSchema.set("properties", properties);
         inputSchema.putArray("required")
-                .add("user_id").add("order_id").add("compensation_amount").add("reason").add("approval_id");
+                .add("user_id").add("order_id").add("compensation_amount")
+                .add("reason").add("approval_id").add("approval_digest");
 
         return ToolDefinition.builder()
                 .name("issue_compensation_coupon")
@@ -109,16 +119,75 @@ public class IssueCompensationCouponTool implements McpTool {
         int    compensationAmount = extractInt(arguments, "compensation_amount");
         String reason            = extractRequiredString(arguments, "reason");
         String approvalId        = extractRequiredString(arguments, "approval_id");
+        String approvalDigest    = extractRequiredString(arguments, "approval_digest");
 
         if (compensationAmount <= 0) {
             throw new ToolParameterException("compensation_amount 必须大于 0", "单位为分，如 2000 表示 20 元");
+        }
+
+        RbacContext caller = requireCaller();
+        ApprovalPayload payload = new ApprovalPayload(
+                ApprovalPayload.SUPPORTED_VERSION,
+                getName(),
+                orderId,
+                compensationAmount,
+                userId,
+                optionalId(caller.getMerchantId()),
+                String.valueOf(caller.getUserId()),
+                caller.getRole(),
+                reason
+        );
+        ApprovalExecutionGuard.ExecutionDecision decision = claim(
+                approvalId,
+                approvalDigest,
+                payload,
+                caller
+        );
+        if (decision.isReplay()) {
+            return decision.result();
+        }
+        if (!decision.isClaimed()) {
+            throw new ToolBusinessException("审批对应的补偿券操作正在执行，请勿重复提交");
         }
 
         log.info("[IssueCompensationCouponTool] 发放补偿券: userId={}, orderId={}, amount={}分, approvalId={}",
                 userId, orderId, compensationAmount, approvalId);
 
         // 调用 LocalLife Server 内部补偿券 API（POST /internal/orders/{orderNo}/compensate-coupon）
-        return internalClient.compensateCoupon(orderId, userId, compensationAmount, approvalId, reason);
+        Object result = internalClient.compensateCoupon(
+                orderId,
+                userId,
+                compensationAmount,
+                approvalId,
+                reason
+        );
+        approvalGuard.complete(decision.claim(), result);
+        return result;
+    }
+
+    private ApprovalExecutionGuard.ExecutionDecision claim(
+            String approvalId,
+            String approvalDigest,
+            ApprovalPayload payload,
+            RbacContext caller
+    ) {
+        try {
+            return approvalGuard.claim(approvalId, approvalDigest, payload, caller);
+        } catch (ApprovalExecutionGuard.ApprovalExecutionDeniedException denied) {
+            throw new ToolPermissionException("HITL 审批凭证无效或不可执行");
+        }
+    }
+
+    private RbacContext requireCaller() {
+        RbacContext caller = RbacContext.get();
+        if (caller == null || caller.getUserId() == null || caller.getRole() == null) {
+            throw new ToolPermissionException("调用者身份缺失");
+        }
+        return caller;
+    }
+
+    private String optionalId(Long value) {
+        return value == null ? "" : String.valueOf(value);
     }
 
     private String extractRequiredString(JsonNode args, String key) {
