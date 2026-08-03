@@ -24,6 +24,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -296,5 +297,51 @@ class ExecuteRefundToolTest {
 
         verify(guard, never()).claim(anyString(), anyString(), any(), any());
         verifyNoInteractions(internalClient);
+    }
+
+    @Test
+    void execute_transportTimeoutLeavesClaimIncompleteAndRetryCanFinish() throws Exception {
+        ApprovalExecutionGuard.ExecutionClaim recoveredClaim =
+                new ApprovalExecutionGuard.ExecutionClaim(1001L, "execution-2", APPROVAL_DIGEST);
+        when(guard.claim(anyString(), anyString(), any(), any()))
+                .thenReturn(
+                        new ApprovalExecutionGuard.ExecutionDecision(
+                                ApprovalExecutionGuard.ExecutionStatus.CLAIMED,
+                                claim,
+                                null,
+                                null
+                        ),
+                        new ApprovalExecutionGuard.ExecutionDecision(
+                                ApprovalExecutionGuard.ExecutionStatus.CLAIMED,
+                                recoveredClaim,
+                                null,
+                                null
+                        )
+                );
+        Map<String, Object> committedResult = Map.of(
+                "refund_status", "SUCCESS",
+                "refund_id", "REFUND_FIRST"
+        );
+        when(internalClient.refund(
+                "1234567890123456789", 2990, "APPROVAL_001", "协商一致"
+        )).thenThrow(new RuntimeException("simulated timeout after Server commit"))
+                .thenReturn(committedResult);
+        JsonNode arguments = args(
+                "{\"order_id\":\"1234567890123456789\",\"amount\":2990,"
+                        + "\"approval_id\":\"APPROVAL_001\",\"reason\":\"协商一致\"}"
+        );
+
+        assertThatThrownBy(() -> tool.execute(arguments.deepCopy()))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("simulated timeout");
+        verify(guard, never()).complete(eq(claim), any());
+
+        Object retried = tool.execute(arguments.deepCopy());
+
+        assertThat(retried).isSameAs(committedResult);
+        verify(internalClient, times(2)).refund(
+                "1234567890123456789", 2990, "APPROVAL_001", "协商一致"
+        );
+        verify(guard).complete(recoveredClaim, committedResult);
     }
 }

@@ -17,6 +17,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.concurrent.atomic.AtomicReference;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
@@ -100,5 +102,39 @@ class InternalServiceTest {
         SideEffectLedger updated = updateCaptor.getValue();
         assertThat(updated.getStatus()).isEqualTo("SUCCESS");
         assertThat(updated.getResultSnapshot()).contains("\"refundNo\"");
+    }
+
+    @Test
+    void executeRefund_responseLostAfterCommit_retryReplaysWithoutSecondOrderMutation() {
+        AtomicReference<SideEffectLedger> committedLedger = new AtomicReference<>();
+        when(sideEffectLedgerMapper.selectOne(any()))
+                .thenAnswer(invocation -> committedLedger.get());
+        when(orderInfoMapper.selectOne(any())).thenReturn(OrderInfo.builder()
+                .id(1001L)
+                .orderNo("ORDER_1")
+                .orderStatus("PAID")
+                .orderAmount(2990)
+                .deleted(0)
+                .build());
+        doAnswer(invocation -> {
+            SideEffectLedger ledger = invocation.getArgument(0);
+            ledger.setId(7001L);
+            return 1;
+        }).when(sideEffectLedgerMapper).insert((SideEffectLedger) any());
+        doAnswer(invocation -> {
+            committedLedger.set(invocation.getArgument(0));
+            return 1;
+        }).when(sideEffectLedgerMapper).updateById((SideEffectLedger) any());
+
+        RefundResult committed = internalService.executeRefund(
+                "ORDER_1", 2990, "APPROVAL_001", "库存不足");
+        RefundResult replayed = internalService.executeRefund(
+                "ORDER_1", 2990, "APPROVAL_001", "库存不足");
+
+        assertThat(replayed.getRefundNo()).isEqualTo(committed.getRefundNo());
+        assertThat(replayed.getStatus()).isEqualTo("SUCCESS");
+        verify(orderInfoMapper, times(1)).update(any(), any());
+        verify(sideEffectLedgerMapper, times(1)).insert((SideEffectLedger) any());
+        verify(sideEffectLedgerMapper, times(1)).updateById((SideEffectLedger) any());
     }
 }

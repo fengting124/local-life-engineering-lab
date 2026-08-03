@@ -544,40 +544,66 @@ fix(copilot): enforce approved payload at MCP boundary
 - Reuses the approval ID as the Server ledger idempotency key.
 - Does not change Server production behavior unless a deterministic test exposes a real ledger defect.
 
-- [ ] **Step 1: Add concurrent resume test**
+- [x] **Step 1: Add concurrent resume test**
 
 Start two async `/chat/resume` requests for one approval. Assert one reaches the
 MCP execution path, the other reports in-progress/already-processed, and the
 approval has one execution ID.
 
-- [ ] **Step 2: Add Server-success/Copilot-timeout test**
+- [x] **Step 2: Add Server-success/Copilot-timeout test**
 
 Make the first internal call commit its ledger result and then raise a simulated
 transport timeout. Expire the execution lease, retry with the same digest, and
 assert the Server returns the original result with one ledger row.
 
-- [ ] **Step 3: Add Agent-timeout-after-Copilot-success test**
+- [x] **Step 3: Add Agent-timeout-after-Copilot-success test**
 
 Complete the Java approval but interrupt Python before the next checkpoint.
 Resume again and assert `EXECUTED` result replay without a second MCP/Server call.
 
-- [ ] **Step 4: Add restart and exact-checkpoint tests**
+- [x] **Step 4: Add restart and exact-checkpoint tests**
 
 Recreate the Agent graph/checkpointer objects between approval and resume. Assert
 the exact persisted checkpoint restores and tampered later checkpoints are
 ignored.
 
-- [ ] **Step 5: Run all focused Python and Java suites**
+- [x] **Step 5: Run all focused Python and Java suites**
 
 Expected: zero duplicate side effects and every tamper scenario denied.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Commit title:
 
 ```text
 test(hitl): cover replay concurrency and crash recovery
 ```
+
+**Verification evidence (2026-08-03):**
+
+- Two concurrent `/chat/resume` requests both observe the same pending approval,
+  but the approval CAS allows exactly one request to enter the Agent graph; the
+  race test passed five consecutive runs.
+- The real execution race is verified at its ownership boundary with MySQL 8.4,
+  `ApprovalExecutionGuard`, and `ExecuteRefundTool`: one request reaches the
+  mocked Server, the other receives in-progress, the stored result replays, and
+  the Server client is called once.
+- Expired-lease recovery changes the execution ID, rejects completion from the
+  stale worker, and allows only the recovered owner to persist `EXECUTED`.
+- A simulated response loss after Server commit reuses the approval ID as the
+  ledger key; retry returns the original refund result with one order mutation
+  and one ledger insert/update.
+- A recreated Python checkpointer loads the bound checkpoint ID and its pending
+  writes without calling the unqualified latest-checkpoint query. Existing
+  resume tests reject tampering and replay an `EXECUTED` result without
+  restarting the graph.
+- Focused Python HITL/chat/checkpoint/node suites: `185 passed`.
+- Focused Copilot recovery suites: `21 passed`; full clean Copilot module:
+  `131 passed`.
+- Focused Server ledger suite: `3 passed`; full clean Server module:
+  `183 passed` after restoring the stopped local Redis dependency. The initial
+  failure was the external `localhost:6379` connection timeout, not a code
+  regression.
 
 ---
 

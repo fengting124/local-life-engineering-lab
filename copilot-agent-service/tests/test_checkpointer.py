@@ -130,18 +130,20 @@ async def test_aput_writes_persists_each_pending_write(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_aget_tuple_returns_deserialized_pending_writes(monkeypatch):
+async def test_recreated_checkpointer_reads_exact_checkpoint_with_pending_writes(
+    monkeypatch,
+):
     fake_session = FakeSession()
     monkeypatch.setattr(ckpt_mod, "AsyncSessionLocal", lambda: fake_session)
 
-    saver = AsyncMySQLCheckpointer()
+    original_saver = AsyncMySQLCheckpointer()
     checkpoint = {
         "id": "checkpoint-1",
         "channel_values": {},
         "channel_versions": {},
         "versions_seen": {},
     }
-    serialized_state = saver.serde.dumps(checkpoint)
+    serialized_state = original_saver.serde.dumps(checkpoint)
     row = {
         "thread_id": "thread-1",
         "checkpoint_id": "checkpoint-1",
@@ -151,15 +153,23 @@ async def test_aget_tuple_returns_deserialized_pending_writes(monkeypatch):
         else serialized_state,
         "metadata": json.dumps({"step": "hitl"}),
     }
-    pending_payload = saver.serde.dumps({"content": "恢复前未合并的输出"})
+    pending_payload = original_saver.serde.dumps(
+        {"content": "恢复前未合并的输出"}
+    )
     encoded_pending_payload = (
         pending_payload.decode("utf-8")
         if isinstance(pending_payload, bytes)
         else pending_payload
     )
 
-    saver._fetch_one = AsyncMock(return_value=row)
-    saver._fetch_pending_writes = AsyncMock(
+    # Simulate an Agent process restart: recovery uses a fresh saver instance,
+    # not any in-memory state from the instance that serialized the checkpoint.
+    restarted_saver = AsyncMySQLCheckpointer()
+    restarted_saver._fetch_one = AsyncMock(return_value=row)
+    restarted_saver._fetch_latest = AsyncMock(
+        side_effect=AssertionError("bound HITL recovery must not read latest")
+    )
+    restarted_saver._fetch_pending_writes = AsyncMock(
         return_value=[
             {
                 "task_id": "task-1",
@@ -169,7 +179,7 @@ async def test_aget_tuple_returns_deserialized_pending_writes(monkeypatch):
         ]
     )
 
-    result = await saver.aget_tuple(
+    result = await restarted_saver.aget_tuple(
         {
             "configurable": {
                 "thread_id": "thread-1",
@@ -182,6 +192,10 @@ async def test_aget_tuple_returns_deserialized_pending_writes(monkeypatch):
     assert result.pending_writes == [
         ("task-1", "messages", {"content": "恢复前未合并的输出"})
     ]
-    saver._fetch_pending_writes.assert_awaited_once_with(
+    restarted_saver._fetch_one.assert_awaited_once_with(
+        fake_session, "thread-1", "checkpoint-1"
+    )
+    restarted_saver._fetch_latest.assert_not_awaited()
+    restarted_saver._fetch_pending_writes.assert_awaited_once_with(
         fake_session, "thread-1", "checkpoint-1"
     )

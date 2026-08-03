@@ -1,7 +1,11 @@
 package com.personalprojections.locallife.copilot.hitl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.personalprojections.locallife.copilot.client.LocalLifeInternalClient;
 import com.personalprojections.locallife.copilot.rbac.RbacContext;
+import com.personalprojections.locallife.copilot.tool.McpTool.ToolBusinessException;
+import com.personalprojections.locallife.copilot.tool.impl.ExecuteRefundTool;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,12 +23,20 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @SpringBootTest
 @Testcontainers
@@ -150,6 +162,113 @@ class HitlApprovalContractIntegrationTest {
                 Integer.class,
                 APPROVAL_ID
         )).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentRefundExecutionsCallServerOnceThenReplayStoredResult() throws Exception {
+        LocalLifeInternalClient internalClient = mock(LocalLifeInternalClient.class);
+        ExecuteRefundTool refundTool = new ExecuteRefundTool(objectMapper, internalClient, guard);
+        ObjectNode arguments = objectMapper.createObjectNode()
+                .put("order_id", payload.orderId())
+                .put("amount", payload.amountMinor())
+                .put("approval_id", String.valueOf(APPROVAL_ID))
+                .put("approval_digest", digest)
+                .put("reason", payload.reason());
+        Map<String, Object> serverResult = Map.of(
+                "refund_status", "SUCCESS",
+                "refund_id", "REFUND_ONCE"
+        );
+        CountDownLatch serverEntered = new CountDownLatch(1);
+        CountDownLatch releaseServer = new CountDownLatch(1);
+        when(internalClient.refund(
+                payload.orderId(),
+                payload.amountMinor(),
+                String.valueOf(APPROVAL_ID),
+                payload.reason()
+        )).thenAnswer(invocation -> {
+            serverEntered.countDown();
+            assertThat(releaseServer.await(5, TimeUnit.SECONDS)).isTrue();
+            return serverResult;
+        });
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        Future<Object> first = pool.submit(() -> executeAsRequester(refundTool, arguments));
+        try {
+            assertThat(serverEntered.await(5, TimeUnit.SECONDS)).isTrue();
+            Future<Object> second = pool.submit(() -> executeAsRequester(refundTool, arguments));
+
+            assertThatThrownBy(second::get)
+                    .isInstanceOf(ExecutionException.class)
+                    .hasCauseInstanceOf(ToolBusinessException.class);
+        } finally {
+            releaseServer.countDown();
+            pool.shutdown();
+        }
+
+        assertThat(first.get(5, TimeUnit.SECONDS)).isSameAs(serverResult);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT status FROM hitl_approval WHERE id = ?",
+                String.class,
+                APPROVAL_ID
+        )).isEqualTo("EXECUTED");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT execution_result FROM hitl_approval WHERE id = ?",
+                String.class,
+                APPROVAL_ID
+        )).contains("REFUND_ONCE");
+
+        Object replay = executeAsRequester(refundTool, arguments);
+        assertThat(replay).isEqualTo(serverResult);
+        verify(internalClient, times(1)).refund(
+                payload.orderId(),
+                payload.amountMinor(),
+                String.valueOf(APPROVAL_ID),
+                payload.reason()
+        );
+    }
+
+    @Test
+    void expiredLeaseRecoversWithSameDigestAndCompletesForReplay() {
+        RbacContext caller = requester();
+        ApprovalExecutionGuard.ExecutionDecision first = guard.claim(
+                String.valueOf(APPROVAL_ID), digest, payload, caller
+        );
+        jdbcTemplate.update(
+                "UPDATE hitl_approval SET execution_lease_until = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE id = ?",
+                APPROVAL_ID
+        );
+
+        ApprovalExecutionGuard.ExecutionDecision recovered = guard.claim(
+                String.valueOf(APPROVAL_ID), digest, payload, caller
+        );
+
+        assertThat(recovered.status()).isEqualTo(ApprovalExecutionGuard.ExecutionStatus.CLAIMED);
+        assertThat(recovered.claim().executionId()).isNotEqualTo(first.claim().executionId());
+        assertThatThrownBy(() -> guard.complete(
+                first.claim(),
+                Map.of("status", "STALE_WORKER_RESULT")
+        )).isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("completion was not accepted");
+        guard.complete(recovered.claim(), Map.of("status", "SUCCESS"));
+        assertThat(guard.claim(String.valueOf(APPROVAL_ID), digest, payload, caller).status())
+                .isEqualTo(ApprovalExecutionGuard.ExecutionStatus.REPLAY);
+    }
+
+    private Object executeAsRequester(ExecuteRefundTool refundTool, ObjectNode arguments) {
+        RbacContext.set(requester());
+        try {
+            return refundTool.execute(arguments.deepCopy());
+        } finally {
+            RbacContext.clear();
+        }
+    }
+
+    private RbacContext requester() {
+        return RbacContext.builder()
+                .userId(1001L)
+                .role("admin")
+                .merchantId(42L)
+                .build();
     }
 
     private static String filesystemLocation(String relativePath) {

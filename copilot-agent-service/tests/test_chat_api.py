@@ -12,10 +12,13 @@ FastAPI TestClient 说明：
   对于 SSE 端点，TestClient.post() 会收集完整响应体。
 """
 import json
-import pytest
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+import pytest
 from starlette.testclient import TestClient
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -521,6 +524,71 @@ class TestResumeEndpoint:
         assert captured["resume_input"]["pending_action"]["approval_id"] == "1001"
         assert captured["resume_input"]["pending_action"]["payload"]["order_id"] == payload.order_id
         assert captured["resume_input"]["pending_action"]["approval_digest"] == approval.payload_digest
+
+    def test_concurrent_resume_only_one_request_enters_agent_graph(self):
+        approval, _, checkpoint_values = make_resume_binding()
+        both_loaded = threading.Barrier(2)
+        approval_lock = threading.Lock()
+        approval_claimed = False
+        stream_calls = 0
+
+        async def load_same_pending_approval(_approval_id):
+            both_loaded.wait(timeout=5)
+            return approval
+
+        async def approve_once(_approval_id, _approver_id):
+            nonlocal approval_claimed
+            with approval_lock:
+                if approval_claimed:
+                    return False
+                approval_claimed = True
+                return True
+
+        async def fake_stream(_resume_input, config=None, version=None):
+            nonlocal stream_calls
+            with approval_lock:
+                stream_calls += 1
+            yield {
+                "event": "on_chain_end",
+                "name": "resume",
+                "data": {
+                    "output": {
+                        "final_answer": "退款已执行",
+                        "stop_reason": "completed",
+                    }
+                },
+            }
+
+        runtime = AsyncMock()
+        runtime.get_latest_waiting_run_by_thread.return_value = None
+
+        with patch(
+            "api.chat.hitl_service.get_approval", side_effect=load_same_pending_approval
+        ), patch(
+            "api.chat.hitl_service.approve", side_effect=approve_once
+        ), patch(
+            "api.chat.agent_graph.aget_state",
+            AsyncMock(return_value=SimpleNamespace(values=checkpoint_values)),
+        ), patch(
+            "api.chat.agent_graph.astream_events", fake_stream
+        ), patch(
+            "api.chat.runtime_store", runtime
+        ):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                responses = list(
+                    executor.map(
+                        lambda _: client.post(
+                            "/chat/resume",
+                            json={"approval_id": "1001", "approved": True},
+                            headers={"X-User-Id": "9", "X-User-Role": "cs"},
+                        ),
+                        range(2),
+                    )
+                )
+
+        assert sorted(response.status_code for response in responses) == [200, 400]
+        assert stream_calls == 1
+        assert sum("hitl_resumed" in response.text for response in responses) == 1
 
     def test_resume_rejects_unbound_approval_without_starting_graph(self):
         approval, _, _ = make_resume_binding(checkpoint_id=None)
