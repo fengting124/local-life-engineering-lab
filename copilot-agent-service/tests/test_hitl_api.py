@@ -20,8 +20,14 @@ def make_approval(**overrides):
         "id": 1001,
         "session_id": 2001,
         "thread_id": "thread-1",
+        "checkpoint_id": "checkpoint-1",
         "action_type": "execute_refund",
         "action_payload": {"order_id": "O-1"},
+        "payload_version": 1,
+        "payload_digest": "a" * 64,
+        "merchant_id": None,
+        "requested_user_id": 1001,
+        "requested_role": "cs",
         "agent_reason": "订单异常，需要退款",
         "status": "PENDING",
         "approver_id": None,
@@ -124,6 +130,22 @@ def test_approve_rejects_non_pending_record_without_mutating():
         )
 
     assert resp.status_code == 400
+    approve_mock.assert_not_awaited()
+
+
+def test_approve_rejects_unbound_record_without_mutating():
+    approval = make_approval(checkpoint_id=None)
+
+    with patch("api.hitl.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+         patch("api.hitl.hitl_service.approve", AsyncMock(return_value=True)) as approve_mock:
+        resp = client.post(
+            "/hitl/1001/approve",
+            json={"comment": "不能批准未绑定审批"},
+            headers={"X-User-Id": "9", "X-User-Role": "cs"},
+        )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "unbound_approval"
     approve_mock.assert_not_awaited()
 
 

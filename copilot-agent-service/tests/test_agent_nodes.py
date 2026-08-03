@@ -457,7 +457,11 @@ class TestToolNode:
         state = make_state(
             [ai_with_tool_call("execute_refund", args)],
             user_role="cs",
-            pending_action={"action_type": "execute_refund", "approval_id": "APPROVAL_1"},
+            pending_action={
+                "action_type": "execute_refund",
+                "approval_id": "APPROVAL_1",
+                "approval_digest": "a" * 64,
+            },
             route_task_type="refund_action",
             route_mode="controlled",
             route_required_tools=["query_order", "execute_refund"],
@@ -473,6 +477,7 @@ class TestToolNode:
         mock_mcp.call_tool.assert_awaited_once()
         _, kwargs = mock_mcp.call_tool.await_args
         assert kwargs["arguments"]["approval_id"] == "APPROVAL_1"
+        assert kwargs["arguments"]["approval_digest"] == "a" * 64
 
     @pytest.mark.asyncio
     async def test_high_risk_route_rejects_model_order_drift_before_mcp(

@@ -1,11 +1,19 @@
 from collections import deque
+from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
 from session import hitl as hitl_mod
-from session.hitl import HitlApproval, HitlBindingError, HitlService
+from session.hitl import (
+    HitlApproval,
+    HitlBindingError,
+    HitlResumeError,
+    HitlService,
+)
 from session.hitl_binding import ApprovalPayload, sign_payload
 
 
@@ -24,6 +32,47 @@ def _approval_payload() -> ApprovalPayload:
         requested_role="admin",
         reason="订单状态满足退款前置条件，等待人工审批",
     )
+
+
+def _bound_approval(payload=None, **overrides):
+    payload = payload or _approval_payload()
+    values = {
+        "id": 7001,
+        "session_id": 2001,
+        "thread_id": "thread-1",
+        "checkpoint_id": "checkpoint-1",
+        "action_type": payload.tool_name,
+        "action_payload": payload.canonical_dict(),
+        "agent_reason": payload.reason,
+        "status": "APPROVED",
+        "payload_version": payload.payload_version,
+        "payload_digest": sign_payload(payload, TEST_SECRET),
+        "merchant_id": int(payload.merchant_id) if payload.merchant_id else None,
+        "requested_user_id": int(payload.requested_user_id),
+        "requested_role": payload.requested_role,
+        "expire_at": datetime.now() + timedelta(hours=1),
+        "execution_result": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _checkpoint_values(payload=None, **overrides):
+    payload = payload or _approval_payload()
+    values = {
+        "user_id": int(payload.requested_user_id),
+        "user_role": payload.requested_role,
+        "merchant_id": int(payload.merchant_id) if payload.merchant_id else None,
+        "pending_hitl": True,
+        "pending_action": {
+            "approval_id": 7001,
+            "action_type": payload.tool_name,
+            "payload_digest": sign_payload(payload, TEST_SECRET),
+            "approval_payload": payload.canonical_dict(),
+        },
+    }
+    values.update(overrides)
+    return values
 
 
 class _FakeExecuteResult:
@@ -261,6 +310,108 @@ async def test_bind_checkpoint_rejects_missing_or_changed_tuple(changed):
             thread_id="thread-1",
             checkpoint_id="checkpoint-1",
             payload_digest=digest,
+        )
+
+
+def test_validate_resume_returns_only_verified_canonical_payload():
+    payload = _approval_payload()
+
+    validated = HitlService().validate_resume(
+        _bound_approval(payload),
+        _checkpoint_values(payload),
+    )
+
+    assert validated == payload
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        (lambda values: values["pending_action"].update(approval_id=7002), "approval_mismatch"),
+        (lambda values: values["pending_action"].update(action_type="issue_compensation_coupon"), "payload_mismatch"),
+        (lambda values: values["pending_action"]["approval_payload"].update(order_id="202606100004"), "payload_mismatch"),
+        (lambda values: values["pending_action"]["approval_payload"].update(amount_minor=2001), "payload_mismatch"),
+        (lambda values: values["pending_action"]["approval_payload"].update(target_user_id="9001"), "payload_mismatch"),
+        (lambda values: values["pending_action"]["approval_payload"].update(reason="changed"), "payload_mismatch"),
+        (lambda values: values["pending_action"].update(payload_digest="b" * 64), "digest_mismatch"),
+        (lambda values: values.update(user_id=1002), "identity_mismatch"),
+        (lambda values: values.update(user_role="cs"), "identity_mismatch"),
+        (lambda values: values.update(merchant_id=43), "identity_mismatch"),
+    ],
+)
+def test_validate_resume_rejects_checkpoint_tampering(
+    monkeypatch, mutation, expected_code
+):
+    values = deepcopy(_checkpoint_values())
+    mutation(values)
+    audit_log = MagicMock()
+    monkeypatch.setattr(hitl_mod.log, "warning", audit_log)
+
+    with pytest.raises(HitlResumeError) as error:
+        HitlService().validate_resume(_bound_approval(), values)
+
+    assert error.value.code == expected_code
+    audit_log.assert_called_once_with(
+        "hitl_resume_validation_failed",
+        approval_id=7001,
+        reason=expected_code,
+    )
+
+
+@pytest.mark.parametrize(
+    ("approval_overrides", "expected_code"),
+    [
+        ({"checkpoint_id": None}, "unbound_approval"),
+        ({"payload_digest": None}, "unsigned_approval"),
+        ({"expire_at": datetime.now() - timedelta(seconds=1)}, "expired_approval"),
+        ({"status": "REJECTED"}, "invalid_status"),
+        ({"status": "EXECUTING"}, "invalid_status"),
+    ],
+)
+def test_validate_resume_rejects_invalid_lifecycle(approval_overrides, expected_code):
+    with pytest.raises(HitlResumeError) as error:
+        HitlService().validate_resume(
+            _bound_approval(**approval_overrides),
+            _checkpoint_values(),
+        )
+
+    assert error.value.code == expected_code
+
+
+def test_validate_resume_rechecks_current_tool_role_policy():
+    payload = ApprovalPayload(
+        **{
+            **_approval_payload().canonical_dict(),
+            "requested_role": "merchant",
+        }
+    )
+
+    with pytest.raises(HitlResumeError) as error:
+        HitlService().validate_resume(
+            _bound_approval(payload),
+            _checkpoint_values(payload),
+        )
+
+    assert error.value.code == "permission_denied"
+
+
+@pytest.mark.parametrize(
+    "approval_overrides",
+    [
+        {"action_type": "issue_compensation_coupon"},
+        {"action_payload": {**_approval_payload().canonical_dict(), "amount_minor": 2001}},
+        {"payload_version": 2},
+        {"payload_digest": "b" * 64},
+        {"requested_user_id": 1002},
+        {"requested_role": "cs"},
+        {"merchant_id": 43},
+    ],
+)
+def test_validate_resume_rejects_database_binding_tampering(approval_overrides):
+    with pytest.raises(HitlResumeError):
+        HitlService().validate_resume(
+            _bound_approval(**approval_overrides),
+            _checkpoint_values(),
         )
 
 

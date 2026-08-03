@@ -309,30 +309,30 @@ feat(hitl): bind approvals to persisted checkpoints
 - `/chat/resume` passes `checkpoint_id` in LangGraph config and never rebuilds business arguments from unverified JSON.
 - Tool execution receives `approval_id` and `approval_digest` only after validation.
 
-- [ ] **Step 1: Add failing exact-checkpoint tests**
+- [x] **Step 1: Add failing exact-checkpoint tests**
 
 Mock two checkpoints under one thread. The older checkpoint is bound to the
 approval and the latest contains a changed amount. Assert resume loads the older
 exact ID and rejects a missing bound checkpoint instead of using the latest.
 
-- [ ] **Step 2: Add failing tamper and identity tests**
+- [x] **Step 2: Add failing tamper and identity tests**
 
 Parameterize changes to order, amount, target user, action, reason, payload
 digest, original user, original role, and merchant. Each must return a stable
 4xx reason code, write a security audit, avoid `agent_graph.astream_events`, and
 produce zero MCP calls.
 
-- [ ] **Step 3: Add failing lifecycle tests**
+- [x] **Step 3: Add failing lifecycle tests**
 
 Cover unbound legacy approval, expired, rejected, already executing, and already
 executed states. `EXECUTED` returns the stored sanitized result without graph
 restart; all other invalid states fail closed.
 
-- [ ] **Step 4: Run tests and confirm RED**
+- [x] **Step 4: Run tests and confirm RED**
 
 Run only the named resume/HITL API tests to keep the red signal focused.
 
-- [ ] **Step 5: Implement exact-state validation**
+- [x] **Step 5: Implement exact-state validation**
 
 Build config as:
 
@@ -349,13 +349,13 @@ Read the state snapshot, recompute the payload HMAC, compare all identity fields
 and re-run `is_tool_allowed_for_role`. Use the original requester identity from
 the bound state for MCP; the approver stays audit-only.
 
-- [ ] **Step 6: Keep approve/reject CAS semantics**
+- [x] **Step 6: Keep approve/reject CAS semantics**
 
 Approval is allowed only for `PENDING`, unexpired, bound, signed records. Add
 merchant scope to the resume header validation without allowing a client to
 override the stored merchant.
 
-- [ ] **Step 7: Run the entire focused Python HITL baseline and commit**
+- [x] **Step 7: Run the entire focused Python HITL baseline and commit**
 
 ```bash
 DEBUG=false PYTHONPATH=copilot-agent-service python -m pytest -q \
@@ -372,6 +372,16 @@ Commit title:
 ```text
 fix(hitl): validate bound checkpoint before resume
 ```
+
+**Verification evidence (2026-08-03):**
+
+- RED: `HitlResumeError` and exact-checkpoint validation were absent.
+- Focused HITL/API/checkpoint regression: `184 passed`.
+- Complete Agent test suite: `646 passed`.
+- Tampered payloads write a stable security audit reason and produce zero
+  approval transitions or graph/tool execution.
+- Resume config includes the exact persisted `thread_id + checkpoint_id` and
+  restores the original requester identity rather than the approver identity.
 
 ---
 

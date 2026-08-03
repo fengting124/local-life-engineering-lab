@@ -14,6 +14,7 @@ HITL 是 LocalLife Copilot 企业级 Agent 的核心安全机制：
 import hashlib
 import structlog
 from datetime import datetime, timedelta
+from typing import NoReturn
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,11 +29,26 @@ from sqlalchemy import BigInteger, Integer, String, Text, JSON, DateTime, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from session.models import Base
 from config.settings import settings
-from session.hitl_binding import ApprovalPayload, sign_payload
+from session.hitl_binding import (
+    ApprovalPayload,
+    ApprovalPayloadError,
+    sign_payload,
+    verify_payload_digest,
+)
+from agent.tool_router import is_tool_allowed_for_role
 
 
 class HitlBindingError(RuntimeError):
     """Raised when an approval cannot be bound to one exact checkpoint."""
+
+
+class HitlResumeError(RuntimeError):
+    """Stable fail-closed reason for approval resume validation."""
+
+    def __init__(self, code: str, status_code: int = 409):
+        super().__init__(code)
+        self.code = code
+        self.status_code = status_code
 
 
 class HitlApproval(Base):
@@ -189,6 +205,91 @@ class HitlService:
             return
         raise HitlBindingError("approval checkpoint binding mismatch")
 
+    def validate_resume(
+        self,
+        approval: HitlApproval,
+        checkpoint_values: dict | None,
+    ) -> ApprovalPayload:
+        """Verify the stored approval against one exact checkpoint snapshot."""
+
+        def reject(code: str) -> NoReturn:
+            log.warning(
+                "hitl_resume_validation_failed",
+                approval_id=getattr(approval, "id", None),
+                reason=code,
+            )
+            raise HitlResumeError(code)
+
+        if not getattr(approval, "checkpoint_id", None):
+            reject("unbound_approval")
+        stored_digest = getattr(approval, "payload_digest", None)
+        if not isinstance(stored_digest, str) or len(stored_digest) != 64:
+            reject("unsigned_approval")
+        if getattr(approval, "status", None) not in {"PENDING", "APPROVED"}:
+            reject("invalid_status")
+        expire_at = getattr(approval, "expire_at", None)
+        if not isinstance(expire_at, datetime) or expire_at < datetime.now():
+            reject("expired_approval")
+        if not isinstance(checkpoint_values, dict):
+            reject("checkpoint_missing")
+
+        pending_action = checkpoint_values.get("pending_action")
+        if not checkpoint_values.get("pending_hitl") or not isinstance(
+            pending_action, dict
+        ):
+            reject("checkpoint_mismatch")
+        if pending_action.get("approval_id") != getattr(approval, "id", None):
+            reject("approval_mismatch")
+
+        payload_data = pending_action.get("approval_payload")
+        if not isinstance(payload_data, dict):
+            reject("payload_mismatch")
+        try:
+            payload = ApprovalPayload(**payload_data)
+        except (ApprovalPayloadError, TypeError):
+            reject("payload_mismatch")
+
+        if (
+            pending_action.get("action_type") != payload.tool_name
+            or getattr(approval, "action_type", None) != payload.tool_name
+            or getattr(approval, "payload_version", None) != payload.payload_version
+            or getattr(approval, "action_payload", None) != payload.canonical_dict()
+        ):
+            reject("payload_mismatch")
+        if (
+            pending_action.get("payload_digest") != stored_digest
+            or not verify_payload_digest(
+                payload,
+                stored_digest,
+                settings.hitl_payload_signing_secret,
+            )
+        ):
+            reject("digest_mismatch")
+
+        expected_merchant = payload.merchant_id or ""
+        stored_merchant = (
+            ""
+            if getattr(approval, "merchant_id", None) is None
+            else str(approval.merchant_id)
+        )
+        checkpoint_merchant = checkpoint_values.get("merchant_id")
+        checkpoint_merchant = (
+            "" if checkpoint_merchant is None else str(checkpoint_merchant)
+        )
+        if (
+            str(getattr(approval, "requested_user_id", None))
+            != payload.requested_user_id
+            or getattr(approval, "requested_role", None) != payload.requested_role
+            or stored_merchant != expected_merchant
+            or str(checkpoint_values.get("user_id")) != payload.requested_user_id
+            or checkpoint_values.get("user_role") != payload.requested_role
+            or checkpoint_merchant != expected_merchant
+        ):
+            reject("identity_mismatch")
+        if not is_tool_allowed_for_role(payload.tool_name, payload.requested_role):
+            reject("permission_denied")
+        return payload
+
     async def approve(
         self,
         approval_id: int,
@@ -211,6 +312,9 @@ class HitlService:
                     HitlApproval.id == approval_id,
                     HitlApproval.status == "PENDING",
                     HitlApproval.expire_at >= now,
+                    HitlApproval.checkpoint_id.is_not(None),
+                    HitlApproval.payload_digest.is_not(None),
+                    HitlApproval.payload_version == 1,
                 )
                 .values(
                     status="APPROVED",
@@ -294,7 +398,7 @@ class HitlService:
                 .where(HitlApproval.status == "PENDING")
             )
             if merchant_id is not None:
-                stmt = stmt.where(HitlApproval.action_payload["merchant_id"].as_integer() == merchant_id)
+                stmt = stmt.where(HitlApproval.merchant_id == merchant_id)
             stmt = stmt.order_by(HitlApproval.created_at.asc()).limit(limit)
             result = await db.execute(stmt)
             return list(result.scalars().all())

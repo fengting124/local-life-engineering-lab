@@ -28,7 +28,7 @@ from agent.graph import agent_graph
 from agent.state import AgentState
 from api.header_utils import parse_optional_merchant_id_header, parse_user_id_header
 from config.settings import settings
-from session.hitl import hitl_service
+from session.hitl import HitlResumeError, hitl_service
 from session.manager import AsyncSessionLocal, session_manager
 from session.models import AgentSession
 from session.runtime import runtime_store
@@ -765,6 +765,7 @@ async def resume(
     request: ResumeRequest,
     x_user_id:   str = Header(..., alias="X-User-Id"),
     x_user_role: str = Header(..., alias="X-User-Role"),
+    x_merchant_id: str | None = Header(None, alias="X-Merchant-Id"),
 ):
     """
     HITL 审批通过后恢复挂起的 Agent。
@@ -779,20 +780,22 @@ async def resume(
     LangGraph 恢复原理：
       LangGraph 的 checkpointer 在每个节点结束后保存状态快照。
       hitl_node 结束时快照已保存（pending_hitl=True，包含 pending_action）。
-      调用 graph.ainvoke(None, config={"configurable": {"thread_id": ...}})
-      LangGraph 从最新快照恢复，继续执行 hitl_node → END 之后的逻辑。
-      这里我们需要额外注入 approval_id 到状态，工具调用时需要它做凭证。
+      服务端使用审批记录中的 thread_id + checkpoint_id 加载精确快照，
+      通过载荷签名、原始身份和当前工具权限复核后再恢复。
     """
     approver_id = parse_user_id_header(x_user_id)
+    approver_merchant_id = parse_optional_merchant_id_header(x_merchant_id)
     if x_user_role not in ("cs", "admin"):
         raise HTTPException(status_code=403, detail="无权恢复审批任务")
 
     approval = await hitl_service.get_approval(int(request.approval_id))
     if not approval:
         raise HTTPException(status_code=404, detail="审批记录不存在")
-    expected_terminal_status = "APPROVED" if request.approved else "REJECTED"
-    if approval.status not in ("PENDING", expected_terminal_status):
-        raise HTTPException(status_code=400, detail=f"审批记录状态为 {approval.status}，无法恢复")
+    if (
+        approver_merchant_id is not None
+        and getattr(approval, "merchant_id", None) != approver_merchant_id
+    ):
+        raise HTTPException(status_code=404, detail="审批记录不存在")
 
     resolved_thread_id = approval.thread_id
     if request.thread_id and request.thread_id != resolved_thread_id:
@@ -804,6 +807,65 @@ async def resume(
             approver_id=approver_id,
         )
         raise HTTPException(status_code=400, detail="thread_id 与审批记录不匹配")
+
+    if request.approved and approval.status == "EXECUTED":
+        async def replay_stream():
+            payload = {
+                "content": json.dumps(
+                    approval.execution_result or {},
+                    ensure_ascii=False,
+                ),
+                "stop_reason": "hitl_result_replayed",
+                "thread_id": resolved_thread_id,
+            }
+            yield _sse("final_answer", payload)
+
+        return StreamingResponse(
+            replay_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    expected_terminal_status = "APPROVED" if request.approved else "REJECTED"
+    if approval.status not in ("PENDING", expected_terminal_status):
+        raise HTTPException(status_code=400, detail=f"审批记录状态为 {approval.status}，无法恢复")
+
+    validated_payload = None
+    config = None
+    if request.approved:
+        if not getattr(approval, "checkpoint_id", None):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "unbound_approval", "message": "审批尚未绑定恢复点"},
+            )
+        config = {
+            "configurable": {
+                "thread_id": resolved_thread_id,
+                "checkpoint_id": approval.checkpoint_id,
+            }
+        }
+        try:
+            snapshot = await agent_graph.aget_state(config)
+            checkpoint_values = getattr(snapshot, "values", None)
+            validated_payload = hitl_service.validate_resume(
+                approval,
+                checkpoint_values,
+            )
+        except HitlResumeError as error:
+            raise HTTPException(
+                status_code=error.status_code,
+                detail={"code": error.code, "message": "审批恢复校验失败"},
+            )
+        except Exception as error:
+            log.warning(
+                "hitl_checkpoint_load_failed",
+                approval_id=approval.id,
+                error_type=type(error).__name__,
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "checkpoint_missing", "message": "审批恢复点不可用"},
+            )
 
     latest_runtime_run = await _safe_get_latest_runtime_run(resolved_thread_id)
     latest_status = getattr(latest_runtime_run, "status", None)
@@ -869,18 +931,42 @@ async def resume(
             raise HTTPException(status_code=400, detail="审批操作失败，请重试")
 
     # ---- Step 3：恢复 LangGraph Agent ----
-    # 向 Agent state 注入审批结果，Agent 继续执行时可以从 state 获取 approval_id
-    config = {"configurable": {"thread_id": resolved_thread_id}}
+    # 仅使用通过签名和身份校验的规范化载荷，不读取客户端或未验证 JSON。
+    if validated_payload is None or config is None:
+        raise HTTPException(status_code=409, detail="审批恢复状态不完整")
+    if validated_payload.tool_name == "execute_refund":
+        execution_payload = {
+            "order_id": validated_payload.order_id,
+            "amount": validated_payload.amount_minor,
+            "reason": validated_payload.reason,
+        }
+    else:
+        execution_payload = {
+            "user_id": validated_payload.target_user_id,
+            "order_id": validated_payload.order_id,
+            "compensation_amount": validated_payload.amount_minor,
+            "reason": validated_payload.reason,
+        }
 
     # LangGraph resume：传入 None 输入（继续执行被 interrupt 挂起的节点）
     # pending_action 中注入 approval_id（工具调用时作为凭证传入）
     resume_input = {
         "pending_hitl":  False,      # 解除挂起
+        "user_id": int(validated_payload.requested_user_id),
+        "user_role": validated_payload.requested_role,
+        "merchant_id": (
+            int(validated_payload.merchant_id)
+            if validated_payload.merchant_id
+            else None
+        ),
         "pending_action": {
-            "action_type": approval.action_type,
-            "payload": approval.action_payload or {},
-            "reason": approval.agent_reason,
+            "action_type": validated_payload.tool_name,
+            "payload": execution_payload,
+            "reason": validated_payload.reason,
             "approval_id": str(request.approval_id),
+            "approval_digest": approval.payload_digest,
+            "payload_digest": approval.payload_digest,
+            "approval_payload": validated_payload.canonical_dict(),
         },
     }
 

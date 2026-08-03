@@ -896,7 +896,14 @@ async def tool_node(state: AgentState) -> dict:
         if tool_name not in HITL_TOOLS:
             continue
         approval_id = pending_action.get("approval_id")
-        if not approval_id or pending_action.get("action_type") != tool_name:
+        approval_digest = pending_action.get("approval_digest")
+        if (
+            not approval_id
+            or not isinstance(approval_digest, str)
+            or len(approval_digest) != 64
+            or any(char not in "0123456789abcdefABCDEF" for char in approval_digest)
+            or pending_action.get("action_type") != tool_name
+        ):
             log.warning(
                 "hitl_required_before_tool",
                 tool=tool_name,
@@ -915,7 +922,11 @@ async def tool_node(state: AgentState) -> dict:
                 "stop_reason": "pending_approval",
             }
         # ponytail: copy only when needed; avoid mutating LangChain's original tool_call args.
-        tool_call["args"] = {**tool_call.get("args", {}), "approval_id": str(approval_id)}
+        tool_call["args"] = {
+            **tool_call.get("args", {}),
+            "approval_id": str(approval_id),
+            "approval_digest": approval_digest,
+        }
 
     mcp = McpClient(
         user_id=state["user_id"],
