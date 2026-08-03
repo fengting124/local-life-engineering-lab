@@ -399,26 +399,26 @@ fix(hitl): validate bound checkpoint before resume
 - Produces `void complete(ExecutionClaim claim, Object result)`.
 - Produces replay decisions containing the stored result and no callable execution path.
 
-- [ ] **Step 1: Write failing unit tests for all validation fields**
+- [x] **Step 1: Write failing unit tests for all validation fields**
 
 Use an in-memory mocked mapper. Exact approval succeeds; changed tool, order,
 amount, target user, reason, role, user, merchant, digest, expiry, or checkpoint
 readiness is denied before CAS.
 
-- [ ] **Step 2: Write a failing Testcontainers migration test**
+- [x] **Step 2: Write a failing Testcontainers migration test**
 
 Run V101-V104 against MySQL 8.4, insert one `APPROVED` record, and assert V104
 columns/indexes exist. Execute two concurrent claims and assert exactly one
 conditional update returns 1.
 
-- [ ] **Step 3: Run Java tests and confirm RED**
+- [x] **Step 3: Run Java tests and confirm RED**
 
 ```bash
 mvn -B -pl local-life-copilot \
   -Dtest=ApprovalExecutionGuardTest,HitlApprovalContractIntegrationTest test
 ```
 
-- [ ] **Step 4: Implement mapper CAS methods**
+- [x] **Step 4: Implement mapper CAS methods**
 
 Required guarded operations:
 
@@ -433,25 +433,36 @@ WHERE id=#{id} AND status='APPROVED'
 Lease recovery additionally requires `status='EXECUTING'` and
 `execution_lease_until < NOW()`. Completion requires the same `execution_id`.
 
-- [ ] **Step 5: Implement the guard**
+- [x] **Step 5: Implement the guard**
 
 Validate all fields and HMAC before CAS. Generate execution IDs server-side.
 Return one of `CLAIMED`, `IN_PROGRESS`, or `REPLAY`. Never return the raw signing
 secret or full payload in an exception.
 
-- [ ] **Step 6: Test lease recovery and result replay**
+- [x] **Step 6: Test lease recovery and result replay**
 
 Assert a live lease rejects a second claim, an expired lease permits one
 same-digest recovery, a different digest never recovers, and `EXECUTED` returns
 the stored result.
 
-- [ ] **Step 7: Run unit/integration tests and commit**
+- [x] **Step 7: Run unit/integration tests and commit**
 
 Commit title:
 
 ```text
 feat(copilot): atomically consume HITL approvals
 ```
+
+**Verification evidence (2026-08-03):**
+
+- RED: focused compilation failed before the approval record, mapper, and
+  execution guard existed.
+- Guard unit and MySQL 8.4 Testcontainers contract suite: `17 passed`.
+- Two concurrent claims produced one guarded update with row count `1`, one
+  lost-race update with row count `0`, and exactly one persisted execution ID.
+- Full clean Copilot module regression: `118 passed`.
+- V104 was applied with all `17` Server and Copilot migrations on an empty
+  MySQL schema; the status/lease and digest indexes were verified.
 
 ---
 
