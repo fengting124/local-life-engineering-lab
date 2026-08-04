@@ -1,0 +1,87 @@
+{
+  "format_version": 1,
+  "producer": {
+    "langgraph": "0.2.45",
+    "langgraph-checkpoint": "2.1.2",
+    "langchain-core": "0.3.63"
+  },
+  "sanitization": "Synthetic identifiers only; no live user, order, token, secret, connection string, or payload digest.",
+  "records": [
+    {
+      "name": "ordinary_conversation",
+      "checkpoint_id": "fixture-checkpoint-0001",
+      "parent_checkpoint_id": null,
+      "expected_next_node": "agent",
+      "state_json": "{\"v\": 1, \"ts\": \"2026-08-05T00:00:00+00:00\", \"id\": \"fixture-checkpoint-0001\", \"channel_values\": {\"messages\": [{\"lc\": 1, \"type\": \"constructor\", \"id\": [\"langchain\", \"schema\", \"messages\", \"HumanMessage\"], \"kwargs\": {\"content\": \"查询脱敏测试订单 FIXTURE-ORDER-001\", \"type\": \"human\"}}]}, \"channel_versions\": {\"messages\": 1}, \"versions_seen\": {}, \"pending_sends\": []}",
+      "metadata_json": "{\"source\":\"fixture\",\"step\":0,\"writes\":{}}"
+    },
+    {
+      "name": "tool_call",
+      "checkpoint_id": "fixture-checkpoint-0002",
+      "parent_checkpoint_id": "fixture-checkpoint-0001",
+      "expected_next_node": "evidence_gate",
+      "state_json": "{\"v\": 1, \"ts\": \"2026-08-05T00:00:01+00:00\", \"id\": \"fixture-checkpoint-0002\", \"channel_values\": {\"messages\": [{\"lc\": 1, \"type\": \"constructor\", \"id\": [\"langchain\", \"schema\", \"messages\", \"HumanMessage\"], \"kwargs\": {\"content\": \"查询脱敏测试订单 FIXTURE-ORDER-001\", \"type\": \"human\"}}, {\"lc\": 1, \"type\": \"constructor\", \"id\": [\"langchain\", \"schema\", \"messages\", \"AIMessage\"], \"kwargs\": {\"content\": \"\", \"type\": \"ai\", \"tool_calls\": [{\"name\": \"query_order\", \"args\": {\"order_no\": \"FIXTURE-ORDER-001\"}, \"id\": \"fixture-call-001\", \"type\": \"tool_call\"}], \"invalid_tool_calls\": []}}, {\"lc\": 1, \"type\": \"constructor\", \"id\": [\"langchain\", \"schema\", \"messages\", \"ToolMessage\"], \"kwargs\": {\"content\": \"{\\\"status\\\":\\\"PAID\\\",\\\"order_no\\\":\\\"FIXTURE-ORDER-001\\\"}\", \"type\": \"tool\", \"tool_call_id\": \"fixture-call-001\", \"status\": \"success\"}}]}, \"channel_versions\": {\"messages\": 2}, \"versions_seen\": {\"agent\": {\"messages\": 1}}, \"pending_sends\": []}",
+      "metadata_json": "{\"source\":\"fixture\",\"step\":1,\"writes\":{}}"
+    },
+    {
+      "name": "pending_approval",
+      "checkpoint_id": "fixture-checkpoint-0003",
+      "parent_checkpoint_id": "fixture-checkpoint-0002",
+      "expected_next_node": "__interrupt__",
+      "state_json": "{\"v\": 1, \"ts\": \"2026-08-05T00:00:02+00:00\", \"id\": \"fixture-checkpoint-0003\", \"channel_values\": {\"pending_hitl\": true, \"pending_action\": {\"approval_id\": 9001, \"action_type\": \"execute_refund\", \"payload_digest\": \"REDACTED-FIXTURE-DIGEST\", \"approval_payload\": {\"order_id\": \"FIXTURE-ORDER-001\", \"amount_minor\": 2000, \"reason\": \"fixture-only\", \"target_user_id\": \"FIXTURE-USER-001\", \"requested_user_id\": \"FIXTURE-ADMIN-001\", \"requested_role\": \"admin\", \"requested_merchant_id\": null}}}, \"channel_versions\": {\"pending_hitl\": 1, \"pending_action\": 1}, \"versions_seen\": {\"hitl\": {\"messages\": 2}}, \"pending_sends\": []}",
+      "metadata_json": "{\"source\":\"fixture\",\"step\":2,\"writes\":{}}"
+    },
+    {
+      "name": "executed_replay",
+      "checkpoint_id": "fixture-checkpoint-0004",
+      "parent_checkpoint_id": "fixture-checkpoint-0003",
+      "expected_next_node": "__end__",
+      "state_json": "{\"v\": 1, \"ts\": \"2026-08-05T00:00:03+00:00\", \"id\": \"fixture-checkpoint-0004\", \"channel_values\": {\"pending_hitl\": false, \"approval_status\": \"EXECUTED\", \"high_risk_execution_result\": {\"approval_id\": 9001, \"status\": \"EXECUTED\", \"replayed\": true}}, \"channel_versions\": {\"approval_status\": 1}, \"versions_seen\": {\"resume\": {\"pending_action\": 1}}, \"pending_sends\": []}",
+      "metadata_json": "{\"source\":\"fixture\",\"step\":3,\"writes\":{}}"
+    }
+  ],
+  "resume_probes": [
+    {
+      "checkpoint_id": "1f190299-0310-68d6-bfff-c39b6998554c",
+      "parent_checkpoint_id": null,
+      "state_json": "{\"v\": 2, \"ts\": \"2026-08-04T17:26:01.238743+00:00\", \"id\": \"1f190299-0310-68d6-bfff-c39b6998554c\", \"channel_versions\": {\"__start__\": \"00000000000000000000000000000001.0.15421699681009993\"}, \"versions_seen\": {\"__input__\": {}}, \"pending_sends\": [], \"updated_channels\": null, \"channel_values\": {\"__start__\": {\"events\": [\"start\"]}}}",
+      "metadata_json": "{\"source\":\"input\",\"writes\":{\"__start__\":{\"events\":[\"start\"]}},\"thread_id\":\"fixture-resume-thread\",\"step\":-1,\"parents\":{}}",
+      "expected_next_nodes": ["__start__"],
+      "expected_events": []
+    },
+    {
+      "checkpoint_id": "1f190299-0312-6a15-8000-639c3039690c",
+      "parent_checkpoint_id": "1f190299-0310-68d6-bfff-c39b6998554c",
+      "state_json": "{\"v\": 2, \"ts\": \"2026-08-04T17:26:01.239594+00:00\", \"id\": \"1f190299-0312-6a15-8000-639c3039690c\", \"channel_versions\": {\"__start__\": \"00000000000000000000000000000002.0.341739005298185\", \"events\": \"00000000000000000000000000000002.0.47459773726688537\", \"start:first\": \"00000000000000000000000000000002.0.19792014084460474\"}, \"versions_seen\": {\"__input__\": {}, \"__start__\": {\"__start__\": \"00000000000000000000000000000001.0.15421699681009993\"}}, \"pending_sends\": [], \"updated_channels\": null, \"channel_values\": {\"events\": [\"start\"], \"start:first\": \"__start__\"}}",
+      "metadata_json": "{\"source\":\"loop\",\"writes\":null,\"thread_id\":\"fixture-resume-thread\",\"step\":0,\"parents\":{}}",
+      "expected_next_nodes": ["first"],
+      "expected_events": ["start"]
+    },
+    {
+      "checkpoint_id": "1f190299-0314-6d80-8001-a9c5b9552b21",
+      "parent_checkpoint_id": "1f190299-0312-6a15-8000-639c3039690c",
+      "state_json": "{\"v\": 2, \"ts\": \"2026-08-04T17:26:01.240493+00:00\", \"id\": \"1f190299-0314-6d80-8001-a9c5b9552b21\", \"channel_versions\": {\"__start__\": \"00000000000000000000000000000002.0.341739005298185\", \"events\": \"00000000000000000000000000000003.0.3099978212793093\", \"start:first\": \"00000000000000000000000000000003.0.6720327607699422\", \"first\": \"00000000000000000000000000000003.0.6275700947959431\"}, \"versions_seen\": {\"__input__\": {}, \"__start__\": {\"__start__\": \"00000000000000000000000000000001.0.15421699681009993\"}, \"first\": {\"start:first\": \"00000000000000000000000000000002.0.19792014084460474\"}}, \"pending_sends\": [], \"updated_channels\": null, \"channel_values\": {\"events\": [\"start\", \"first\"], \"first\": \"first\"}}",
+      "metadata_json": "{\"source\":\"loop\",\"writes\":{\"first\":{\"events\":[\"first\"]}},\"thread_id\":\"fixture-resume-thread\",\"step\":1,\"parents\":{}}",
+      "expected_next_nodes": ["second"],
+      "expected_events": ["start", "first"]
+    },
+    {
+      "checkpoint_id": "1f190299-0317-60a5-8002-db9ae70fb20c",
+      "parent_checkpoint_id": "1f190299-0314-6d80-8001-a9c5b9552b21",
+      "state_json": "{\"v\": 2, \"ts\": \"2026-08-04T17:26:01.241379+00:00\", \"id\": \"1f190299-0317-60a5-8002-db9ae70fb20c\", \"channel_versions\": {\"__start__\": \"00000000000000000000000000000002.0.341739005298185\", \"events\": \"00000000000000000000000000000004.0.22778416241888266\", \"start:first\": \"00000000000000000000000000000003.0.6720327607699422\", \"first\": \"00000000000000000000000000000004.0.18125622760118854\", \"second\": \"00000000000000000000000000000004.0.6517085957436394\"}, \"versions_seen\": {\"__input__\": {}, \"__start__\": {\"__start__\": \"00000000000000000000000000000001.0.15421699681009993\"}, \"first\": {\"start:first\": \"00000000000000000000000000000002.0.19792014084460474\"}, \"second\": {\"first\": \"00000000000000000000000000000003.0.6275700947959431\"}}, \"pending_sends\": [], \"updated_channels\": null, \"channel_values\": {\"events\": [\"start\", \"first\", \"second\"], \"second\": \"second\"}}",
+      "metadata_json": "{\"source\":\"loop\",\"writes\":{\"second\":{\"events\":[\"second\"]}},\"thread_id\":\"fixture-resume-thread\",\"step\":2,\"parents\":{}}",
+      "expected_next_nodes": [],
+      "expected_events": ["start", "first", "second"]
+    }
+  ],
+  "pending_writes": [
+    {
+      "checkpoint_id": "fixture-checkpoint-0002",
+      "task_id": "fixture-task-001",
+      "task_path": "graph:tools",
+      "write_index": 0,
+      "channel": "messages",
+      "value_json": "{\"lc\": 1, \"type\": \"constructor\", \"id\": [\"langchain\", \"schema\", \"messages\", \"ToolMessage\"], \"kwargs\": {\"content\": \"fixture pending write\", \"type\": \"tool\", \"tool_call_id\": \"fixture-call-001\", \"status\": \"success\"}}"
+    }
+  ]
+}
