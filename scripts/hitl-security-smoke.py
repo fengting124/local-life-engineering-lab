@@ -892,6 +892,23 @@ asyncio.run(main())
             thread_id=thread,
             payload=payload,
         )
+        stale_execution_id = f"stale-{self.run_token[-16:]}"
+        self.sql(
+            "UPDATE hitl_approval SET status = 'EXECUTING', "
+            f"execution_id = {sql_literal(stale_execution_id)}, "
+            "executing_at = UTC_TIMESTAMP() - INTERVAL 3 MINUTE, "
+            "execution_lease_until = UTC_TIMESTAMP() - INTERVAL 1 SECOND "
+            f"WHERE id = {approval_id} AND status = 'APPROVED';"
+        )
+        stale_state = self.scalar(
+            "SELECT CONCAT(status, ':', execution_id, ':', "
+            "IF(execution_lease_until < UTC_TIMESTAMP(), 'expired', 'active')) "
+            f"FROM hitl_approval WHERE id = {approval_id};"
+        )
+        if stale_state != f"EXECUTING:{stale_execution_id}:expired":
+            raise SmokeFailure(
+                f"failed to prepare expired execution lease: {stale_state}"
+            )
         _, first_result, _ = self.http_json(
             "POST",
             f"{self.server_url}/internal/orders/{order_no}/refund",
@@ -910,7 +927,9 @@ asyncio.run(main())
         )
         if response.get("error"):
             raise SmokeFailure(f"timeout retry returned MCP error: {response['error']}")
-        self.assert_approval_executed(approval_id)
+        recovered_execution_id = self.assert_approval_executed(approval_id)
+        if recovered_execution_id == stale_execution_id:
+            raise SmokeFailure("expired execution lease was not replaced")
         ledger = self.ledger_count(approval_id)
         if ledger != 1:
             raise SmokeFailure(f"timeout retry produced {ledger} ledger rows")
@@ -919,6 +938,8 @@ asyncio.run(main())
             "session_id": session,
             "thread_id": thread,
             "server_committed_before_retry": bool(first_result),
+            "lease_recovered": True,
+            "stale_execution_replaced": True,
             "copilot_retry_completed": True,
             "ledger_count": ledger,
         }

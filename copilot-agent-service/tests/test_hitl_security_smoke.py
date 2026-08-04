@@ -82,3 +82,11 @@ def test_tamper_smoke_mutates_a_real_langgraph_checkpoint():
     assert "checkpointer.serde.dumps(tampered)" in source
     assert "UPDATE langgraph_checkpoint" in source
     assert "empty_checkpoint" not in source
+
+
+def test_ambiguous_outcome_smoke_recovers_an_expired_execution_lease():
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "status = 'EXECUTING'" in source
+    assert "execution_lease_until = UTC_TIMESTAMP() - INTERVAL 1 SECOND" in source
+    assert '"lease_recovered": True' in source
