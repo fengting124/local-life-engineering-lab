@@ -326,7 +326,8 @@ class TestToolNode:
         }
         second = await nodes.tool_node(proposed)
 
-        assert second["pending_hitl"] is True
+        assert second.get("pending_hitl") is not True
+        assert route_after_tool({**proposed, **second}) == "hitl_node"
         mock_mcp.call_tool.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -442,9 +443,10 @@ class TestToolNode:
 
         result = await nodes.tool_node(state)
 
-        assert result["pending_hitl"] is True
+        assert result.get("pending_hitl") is not True
         assert result["pending_action"]["action_type"] == "execute_refund"
         assert result["pending_action"]["payload"] == args
+        assert route_after_tool({**state, **result}) == "hitl_node"
         mock_mcp.call_tool.assert_not_awaited()
 
     @pytest.mark.asyncio

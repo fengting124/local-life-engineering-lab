@@ -120,7 +120,11 @@ def route_after_tool(state: AgentState) -> str:
     """工具节点之后：策略、HITL 和证据状态决定下一步。"""
     if state.get("policy_denied_tool") or state.get("tool_budget_exhausted"):
         return "final_node"
-    if state.get("pending_hitl"):
+    pending_action = state.get("pending_action") or {}
+    if state.get("pending_hitl") or (
+        pending_action.get("action_type") in nodes.HITL_TOOLS
+        and not pending_action.get("approval_id")
+    ):
         return "hitl_node"
     if state.get("evidence_stop_reason"):
         return "final_node"

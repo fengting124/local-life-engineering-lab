@@ -913,7 +913,10 @@ async def tool_node(state: AgentState) -> dict:
             return {
                 **budget_state,
                 "messages": [],
-                "pending_hitl": True,
+                # The next hitl_node creates and binds the approval. Keeping this
+                # intermediate checkpoint unpaused avoids persisting an unbound
+                # pending HITL state.
+                "pending_hitl": False,
                 "pending_action": {
                     "action_type": tool_name,
                     "payload": tool_call.get("args", {}),
