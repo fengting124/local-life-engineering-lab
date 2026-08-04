@@ -3,6 +3,7 @@ package com.personalprojections.locallife.copilot.audit;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.slf4j.MDC;
 
 import java.util.Map;
 
@@ -66,6 +67,38 @@ class ToolAuditServiceTest {
         ToolAuditLog log = captureInsertedLog();
         assertThat(log.getToolInput()).isEqualTo("{\"a\":1}");
         assertThat(log.getToolOutput()).isEqualTo("{\"b\":\"c\"}");
+    }
+
+    @Test
+    void recordSuccess_capturesRequestTraceId() {
+        MDC.put("traceId", "trace-audit-unit");
+        try {
+            service.recordSuccess(1L, "thread-1", "tool_x", Map.of(), Map.of(), 10);
+        } finally {
+            MDC.remove("traceId");
+        }
+
+        assertThat(captureInsertedLog().getTraceId()).isEqualTo("trace-audit-unit");
+    }
+
+    @Test
+    void recordSuccess_redactsApprovalDigestButKeepsOperationalFields() throws Exception {
+        service.recordSuccess(
+                1L,
+                "thread-1",
+                "execute_refund",
+                Map.of(
+                        "order_id", "ORDER-1",
+                        "approval_digest", "sensitive-digest",
+                        "nested", Map.of("internal_key", "sensitive-key")),
+                Map.of("status", "ok"),
+                10);
+
+        var stored = objectMapper.readTree(captureInsertedLog().getToolInput());
+        assertThat(stored.path("order_id").asText()).isEqualTo("ORDER-1");
+        assertThat(stored.path("approval_digest").asText()).isEqualTo("[REDACTED]");
+        assertThat(stored.path("nested").path("internal_key").asText()).isEqualTo("[REDACTED]");
+        assertThat(stored.toString()).doesNotContain("sensitive-digest", "sensitive-key");
     }
 
     @Test

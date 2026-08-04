@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.slf4j.MDC;
 
 import java.time.Duration;
 import java.util.Map;
@@ -84,6 +85,7 @@ class ToolAuditServiceIntegrationTest {
     private static final int TEST_DURATION_MS = 42;
     private static final long TEST_USER_ID = 88888L;
     private static final String TEST_ROLE = "admin";
+    private static final String TEST_TRACE_ID = "trace-audit-async-integration";
 
     /** 每条用例独有的 tool_name——既用来在轮询时精确定位"自己写的那一行"，也用于 {@link #cleanup()} 精确清理，互不干扰。 */
     private String uniqueToolName;
@@ -98,6 +100,7 @@ class ToolAuditServiceIntegrationTest {
         // @Transactional 起不到的清理，照搬 AuthJourneyIntegrationTest 手动清 Redis 的思路
         toolAuditMapper.delete(new LambdaQueryWrapper<ToolAuditLog>().eq(ToolAuditLog::getToolName, uniqueToolName));
         RbacContext.clear();
+        MDC.clear();
     }
 
     @Test
@@ -106,6 +109,7 @@ class ToolAuditServiceIntegrationTest {
 
         // ---- Arrange：在调用线程——也就是这条测试方法自己的线程——上正确设置好身份上下文 ----
         RbacContext.set(RbacContext.builder().userId(TEST_USER_ID).role(TEST_ROLE).build());
+        MDC.put("traceId", TEST_TRACE_ID);
         RbacContext sanityCheck = RbacContext.get();
         assertThat(sanityCheck)
                 .as("健全性检查：上下文确实已经挂在了*这条线程*上——"
@@ -143,6 +147,9 @@ class ToolAuditServiceIntegrationTest {
             assertThat(row.getUserRole())
                     .as("同上——TaskDecorator 保证 userRole 正确传播到执行线程，不能是 null")
                     .isEqualTo(TEST_ROLE);
+            assertThat(row.getTraceId())
+                    .as("请求 traceId 必须跨 @Async 边界写入工具审计，才能关联 Agent、MCP 与 Server")
+                    .isEqualTo(TEST_TRACE_ID);
 
             // 其余字段确认完整落地
             assertThat(row.getSessionId()).isEqualTo(TEST_SESSION_ID);
