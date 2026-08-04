@@ -2,10 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-- Status: Active
+- Status: Complete; Draft PR #30 open
 - Type: Plan
 - Owners: Project maintainers
-- Last verified: 2026-08-01
+- Last verified: 2026-08-04
 - Source of truth: `docs/superpowers/specs/2026-08-01-agent-hitl-binding-recovery-design.md`
 
 **Goal:** Bind each approved refund or compensation action to one immutable payload and exact checkpoint, then consume it safely once across retries, concurrency, timeouts, and restarts.
@@ -778,9 +778,12 @@ Commit title:
 docs(security): record HITL recovery guarantees
 ```
 
-- [ ] **Step 7: Push and create a Draft PR to `main`**
+- [x] **Step 7: Push and create a Draft PR to `main`**
 
 The PR body must list commits, migration impact, red-green evidence, Docker
 evidence, security invariants, known limits, and rollback considerations. Keep
 it Draft until all required CI is green and an independent review reports zero
 blocking findings. Do not merge without explicit user confirmation.
+
+Branch `fix/agent-hitl-binding-recovery` was pushed and opened as Draft PR
+[#30](https://github.com/fengting124/local-life-engineering-lab/pull/30).
