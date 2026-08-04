@@ -1,6 +1,7 @@
 import json
 import inspect
 from collections import Counter
+from importlib.metadata import version
 from unittest.mock import AsyncMock
 from urllib.parse import quote_plus
 
@@ -164,7 +165,7 @@ async def test_compiled_graph_get_state_delegates_to_custom_aget_tuple():
 
 
 @pytest.mark.asyncio
-async def test_json_checkpoint_tamper_reconstructs_only_harmless_marker(
+async def test_ghsa_wwqv_legacy_json_checkpoint_tamper_reconstructs_marker(
     checkpoint_db,
 ):
     saver = AsyncMySQLCheckpointer()
@@ -199,7 +200,9 @@ async def test_json_checkpoint_tamper_reconstructs_only_harmless_marker(
 
 
 @pytest.mark.asyncio
-async def test_msgpack_state_does_not_reach_typed_deserializer(checkpoint_db):
+async def test_ghsa_g48c_msgpack_state_does_not_reach_typed_deserializer(
+    checkpoint_db,
+):
     saver = AsyncMySQLCheckpointer()
     tracker = TrackingSerializer()
     saver.serde = tracker
@@ -229,7 +232,7 @@ async def test_msgpack_state_does_not_reach_typed_deserializer(checkpoint_db):
     assert tracker.loads_typed_calls == 0
 
 
-def test_dependency_loads_typed_reconstructs_only_harmless_marker():
+def test_ghsa_g48c_dependency_typed_load_reconstructs_harmless_marker():
     marker = JsonPlusSerializer().loads_typed(
         ("msgpack", _harmless_msgpack_marker("typed-dependency-marker"))
     )
@@ -237,7 +240,22 @@ def test_dependency_loads_typed_reconstructs_only_harmless_marker():
     assert marker == Counter(["typed-dependency-marker"])
 
 
-def test_fixed_serializer_strict_mode_blocks_unregistered_msgpack_marker():
+def test_ghsa_wwqv_dependency_status_matches_checkpoint_major_version():
+    marker = JsonPlusSerializer().loads_typed(
+        (
+            "json",
+            json.dumps(_harmless_constructor_marker("json-advisory-marker")).encode(),
+        )
+    )
+    checkpoint_major = int(version("langgraph-checkpoint").split(".", 1)[0])
+
+    if checkpoint_major < 3:
+        assert marker == Counter(["json-advisory-marker"])
+    else:
+        assert not isinstance(marker, Counter)
+
+
+def test_ghsa_g48c_fixed_serializer_blocks_unregistered_msgpack_marker():
     parameters = inspect.signature(JsonPlusSerializer).parameters
     if "allowed_msgpack_modules" not in parameters:
         pytest.skip("strict msgpack allowlist is unavailable in the affected version")
@@ -250,7 +268,9 @@ def test_fixed_serializer_strict_mode_blocks_unregistered_msgpack_marker():
 
 
 @pytest.mark.asyncio
-async def test_pending_writes_use_plain_json_deserialization(checkpoint_db):
+async def test_ghsa_wwqv_pending_writes_use_legacy_json_deserialization(
+    checkpoint_db,
+):
     saver = AsyncMySQLCheckpointer()
     tracker = TrackingSerializer()
     saver.serde = tracker
