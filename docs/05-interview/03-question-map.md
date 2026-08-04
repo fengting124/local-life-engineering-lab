@@ -1005,19 +1005,19 @@
 
 标准答案：HITL 是 Human-in-the-loop，人参与关键决策，常用于高风险或不可逆操作。
 
-项目中的具体实现：`execute_refund`、`issue_compensation_coupon` 这类 L4 工具标记 `xRequiresHitl`；`hitl_node` 创建审批，`/chat/resume` 审批通过后继续。
+项目中的具体实现：`execute_refund`、`issue_compensation_coupon` 这类 L4 工具标记 `xRequiresHitl`；`hitl_node` 创建带 HMAC 摘要的审批，Checkpointer 绑定精确快照，`/chat/resume` 验证载荷和身份后继续。
 
-涉及类名和方法名：`ExecuteRefundTool.getDefinition()`、`hitl_node()`、`api/chat.py resume_chat()`、`session/hitl.py`。
+涉及类名和方法名：`ExecuteRefundTool.getDefinition()`、`hitl_node()`、`api/chat.py resume()`、`HitlService.validate_resume()`、`ApprovalExecutionGuard.claim()`。
 
 为什么这样设计：退款和补偿券有资金风险，不能让 LLM 直接执行。
 
 可能被追问什么：审批通过后如何保证状态没丢？
 
-项目当前实现：审批和业务执行跨服务，Java 主服务用 `side_effect_ledger` 记录 `operation_type + approval_id`，重复恢复同一审批时直接返回第一次成功结果。
+项目当前实现：审批载荷、精确 Checkpoint 和 MCP 参数用同一 HMAC 合同绑定；Copilot 以数据库 CAS 获取执行租约；Java 主服务用 `side_effect_ledger` 记录 `operation_type + approval_id`，重复恢复同一审批时重放第一次成功结果。退款会真实更新订单，补偿券仍是演示业务桩。
 
 后续优化方案：接入 `agent_run/agent_event` 后，把 `run_id/trace_id/operator_id` 也写入账本，并把外部支付渠道返回码纳入对账。
 
-面试回答模板：高风险工具必须 HITL。模型只提出调用意图，系统暂停并发审批事件，审批通过后带 `approval_id` 恢复执行；Java 主服务再用 `side_effect_ledger` 做最终幂等和结果追踪。
+面试回答模板：高风险工具必须 HITL。模型只提出调用意图，系统把订单、金额、用户、商家和角色签名后绑定到精确 Checkpoint；恢复时 Agent 和 Java MCP 都重新校验，MCP 用 CAS 租约防并发执行，主服务再用 `side_effect_ledger` 处理网络超时后的幂等与结果重放。
 
 ### 56. Prompt Engineering 如何落到项目里？
 

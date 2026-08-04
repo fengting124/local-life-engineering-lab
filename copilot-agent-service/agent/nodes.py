@@ -1376,8 +1376,8 @@ async def hitl_node(state: AgentState) -> dict:
     Checkpoint 说明：
     LangGraph 在每个节点执行后自动写 checkpoint（由 checkpointer 配置）。
     hitl_node 执行完毕 → checkpoint 写入 → thread 挂起。
-    恢复时：agent_graph.ainvoke(resume_input, config={"configurable": {"thread_id": ...}})
-    LangGraph 从最新 checkpoint 恢复，Agent 继续执行。
+    恢复时：/chat/resume 从审批记录读取 thread_id + checkpoint_id，
+    LangGraph 只从该审批绑定的精确 checkpoint 恢复。
     """
     pending      = state.get("pending_action") or {}
     action_type  = pending.get("action_type", "unknown")

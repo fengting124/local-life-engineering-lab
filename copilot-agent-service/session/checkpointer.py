@@ -65,12 +65,12 @@ class AsyncMySQLCheckpointer(BaseCheckpointSaver):
     serde: SerializerProtocol = JsonPlusSerializer()
 
     # =========================================================
-    # 读：获取最新 checkpoint
+    # 读：按配置获取精确或最新 checkpoint
     # =========================================================
 
     async def aget_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
         """
-        获取最新 checkpoint 快照。
+        获取配置指定的精确 checkpoint；未提供 checkpoint_id 时获取最新快照。
 
         LangGraph 在每次节点执行前调用此方法恢复状态。
         查询逻辑：

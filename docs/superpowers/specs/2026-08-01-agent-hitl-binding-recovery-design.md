@@ -1,9 +1,9 @@
 # Agent HITL Immutable Binding and Safe Recovery Design
 
-- Status: Approved for planning
+- Status: Implemented
 - Type: Security design
 - Owners: Project maintainers
-- Last verified: 2026-08-01
+- Last verified: 2026-08-04
 - Source of truth: `copilot-agent-service/session/`, `copilot-agent-service/api/chat.py`, high-risk MCP tools, and `hitl_approval`
 - Baseline: `main@da4a9f4e8699bc189880ddbc7fe6c3f96bcd5741`
 - Branch: `fix/agent-hitl-binding-recovery`
@@ -366,7 +366,9 @@ Expected areas:
 - Expired, rejected, unbound, tampered, replayed, and unauthorized approvals
   produce zero high-risk side effects.
 - Two concurrent resumes produce at most one execution claim.
-- Timeout and checkpoint failure recovery produce exactly one refund or coupon.
+- Timeout and checkpoint failure recovery produce one ledger-backed Server result;
+  refund updates the order once, while the pre-existing compensation business
+  stub is verified only through MCP, approval state, and the unique ledger.
 - Approval, audit, runtime, and side-effect ledger records are traceable.
 - Existing Permission and HITL controls do not regress.
 - Focused Python and Java tests, full module suites, mutation gates, Docs CI, and

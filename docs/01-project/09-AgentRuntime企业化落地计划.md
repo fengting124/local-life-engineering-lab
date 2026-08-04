@@ -173,8 +173,8 @@ RC 验收入口见 [v0.1.0-rc 验收报告](../release/v0.1.0-rc验收报告.md)
 
 ### B.3 具体动作
 
-1. 从当前“手工挂起 + END”迁到 LangGraph 官方 `interrupt()`/`Command(resume=...)` 模式。
-2. `approval_id` 绑定真实 `interrupt_id`、`checkpoint_id`、`thread_id`，恢复时只允许服务端反查。
+1. 从当前“手工挂起 + END”迁到 LangGraph 官方 `interrupt()`/`Command(resume=...)` 模式。（仍待独立兼容升级）
+2. `approval_id` 已绑定真实 `checkpoint_id + thread_id`，恢复只允许服务端反查并校验 HMAC；`interrupt_id` 随官方 interrupt 迁移再补。
 3. 实现 `agent_run` 和 `agent_event` 两张表（当前分支已完成最小闭环：建表、Store、`/chat` SSE 事件落库、单元测试、重复 resume 终态短路）：
    - `agent_run` 管状态：`SUBMITTED/RUNNING/WAITING_APPROVAL/COMPLETED/FAILED/CANCELED/EXPIRED`
    - `agent_event` 管事件流：tool call、interrupt、resume、error、final answer
@@ -184,10 +184,7 @@ RC 验收入口见 [v0.1.0-rc 验收报告](../release/v0.1.0-rc验收报告.md)
 
 ### B.4 测试与验收
 
-1. 新增恢复测试：
-   - 审批前服务重启后可恢复。
-   - 审批通过后重复调用 resume 不会重复执行。
-   - 客户端伪造 `thread_id` 无法恢复他人任务。
+1. 恢复测试已覆盖审批前服务重启、重复 resume、客户端伪造 `thread_id`、真实 Checkpoint 篡改、并发执行租约和模糊网络结果；官方 interrupt 迁移后仍需重新执行同一合同。
 2. 集成测试至少覆盖：
    - `interrupt -> approval -> resume`
    - `disconnect -> reconnect -> event replay`
@@ -232,9 +229,9 @@ RC 验收入口见 [v0.1.0-rc 验收报告](../release/v0.1.0-rc验收报告.md)
    - `request_payload`
    - `status`
    - `result_snapshot`
-2. 退款、补券执行前先查账本，再决定是否继续（当前已用 `approval_id` 作为幂等键）。
+2. 退款和补偿调用执行前先查账本，再决定是否继续（当前已用 `approval_id` 作为幂等键）。退款会真实更新订单；补偿券仍是业务桩，尚未创建真实用户券。
 3. Java 内部执行接口支持幂等键，而不是只传 `approval_id`（后续可显式增加 `idempotencyKey` 字段，当前兼容用 `approval_id`）。
-4. 审计日志与 trace、run、approval 串起来（`run_id/trace_id` 待 `agent_run/agent_event` 落地后补齐）。
+4. 工具审计已通过异步 MDC 传播关联 `trace_id`，Agent 运行事件已有 `run_id/trace_id`；账本仍缺少显式 `run_id/trace_id` 字段。
 
 ### C.4 测试与验收
 
@@ -242,7 +239,7 @@ RC 验收入口见 [v0.1.0-rc 验收报告](../release/v0.1.0-rc验收报告.md)
 2. 工具超时后人工重试，最终最多执行一次副作用。
 3. 对账可以从日志或账本反推出“这笔退款为什么发生、是否成功、是否重复尝试过”。
 
-完成标志：资金类和补偿类动作具备企业级最小可托底能力。
+完成标志：退款具备审批绑定、执行租约和账本去重的最小托底能力；补偿券必须完成真实券落库、通知和事务测试后才能达到同等结论。
 
 ## 阶段 D：把核心场景收敛成受控工作流
 

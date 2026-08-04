@@ -457,9 +457,10 @@ def is_tool_concurrency_safe(tool_name: str) -> bool:
 ```
 Step 1: Agent 决定调用 execute_refund
         ↓
-Step 2: hitl_node 写 hitl_approval（PENDING）到 MySQL
+Step 2: hitl_node 写规范化载荷和 HMAC 摘要到 hitl_approval（PENDING）
         ↓
-Step 3: LangGraph 执行 hitl_node → END → thread 状态保存在 MySQL Checkpoint
+Step 3: LangGraph 将完整状态写入 MySQL Checkpoint
+        Checkpointer 在同一事务中把审批绑定到精确 checkpoint_id
         ↓
 Step 4: SSE 推送 hitl_request 事件给前端
         event: hitl_request
@@ -468,13 +469,14 @@ Step 4: SSE 推送 hitl_request 事件给前端
 Step 5: 运营在审批工作台看到申请，点「通过」
         POST /hitl/{id}/approve
         ↓
-Step 6: 前端拿到 thread_id，调用恢复接口
-        POST /chat/resume {"thread_id":"xxx","approval_id":"yyy","approved":true}
+Step 6: 前端用 approval_id 调用恢复接口
+        POST /chat/resume {"approval_id":"yyy","approved":true}
         ↓
-Step 7: Agent Service 从 MySQL Checkpoint 恢复 thread（从挂起点继续）
-        LangGraph 继续执行，调用 execute_refund
+Step 7: Agent Service 从审批记录读取 thread_id + checkpoint_id
+        验证 Checkpoint 载荷、身份、商家、角色、权限和 HMAC 后恢复
         ↓
-Step 8: ExecuteRefundTool → LocalLifeInternalClient → LocalLife Server
+Step 8: Copilot ApprovalExecutionGuard 再验证并 CAS 获取执行租约
+        ExecuteRefundTool → LocalLifeInternalClient → LocalLife Server
         POST /internal/orders/{orderNo}/refund
         ↓
 Step 9: SSE 继续推送，最终 final_answer
@@ -506,7 +508,9 @@ WHERE id = ? AND status = 'PENDING'
 
 服务端以 `rowcount` 判断是否抢到这次状态迁移。并发场景下，approve 和 reject 即使同时到达，也只有第一个能把 `PENDING` 改成终态；后到请求会因为 `rowcount=0` 返回失败，不会覆盖已经审批过的结果。这类写法在面试里可以类比库存扣减、订单支付、退款状态机里的 CAS/乐观并发控制。
 
-`/chat/resume` 还有第二层幂等保护：恢复前会读取同一 `thread_id` 最新的 `agent_run`。如果这个 run 已经是 `COMPLETED` 或 `CANCELED`，说明审批恢复流程已经处理过，接口只返回“已处理”，不会再次启动 LangGraph，也不会重复追加 `tool_call/final_answer` 事件。真正的资金/补券副作用仍由 Java 主服务的 `side_effect_ledger` 做最终兜底。
+`/chat/resume` 不采用“取 thread 最新 Checkpoint”的模糊恢复。它以审批记录中的 `thread_id + checkpoint_id` 读取唯一快照，并把审批表载荷与快照里的 `pending_action` 逐字段比对。恢复前还会读取同一 thread 最近的 `agent_run`；如果 run 已经是 `COMPLETED` 或 `CANCELED`，接口只返回“已处理”。真正的执行权由 Copilot 的 `APPROVED -> EXECUTING` 条件更新和两分钟租约控制，资金/补券副作用再由 Java 主服务的 `side_effect_ledger` 兜底。
+
+这里要区分三层语义：审批 CAS 只保证状态迁移只有一个赢家；执行租约保证同一时刻最多一个调用者持有执行权；Server 唯一账本处理“业务已提交但网络响应丢失”，使当前退款和补券达到业务效果恰好一次。它不等于所有分布式事件、日志和 SSE 都是全局 exactly-once。
 
 断线回放入口：
 
@@ -536,10 +540,16 @@ class AsyncMySQLCheckpointer(BaseCheckpointSaver):
         await db.execute("INSERT INTO langgraph_checkpoint_write ...")
 
     async def aget_tuple(self, config):
-        # 恢复时从数据库读取最新快照和 pending writes
-        row = await db.execute("SELECT ... WHERE thread_id = ?")
+        # HITL 恢复传入 thread_id + checkpoint_id，读取精确快照和 pending writes
+        row = await db.execute(
+            "SELECT ... WHERE thread_id = ? AND checkpoint_id = ?"
+        )
         return CheckpointTuple(checkpoint=self.serde.loads(row.state), pending_writes=..., ...)
 ```
+
+完整的运维查询、异常矩阵、密钥轮换和事故清单见
+[HITL 审批与安全恢复](../security/HITL审批与安全恢复.md)。当前图仍是自定义
+`hitl_node -> END` 恢复方式，尚未迁移到 LangGraph 官方 `interrupt()/Command(resume=...)`。
 
 ---
 
@@ -1007,17 +1017,23 @@ data: {
 | --- | --- | --- |
 | Agent 层 | ReAct 只做诊断和生成 pending action | 模型不能直接改资金状态。 |
 | HITL 层 | `hitl_approval`、审批工作台、`/chat/resume` | 人类确认高风险动作，留下审批记录。 |
-| MCP 层 | 工具 schema、RBAC、审计、approval_id 必填 | 防止越权调用和无审批调用。 |
+| MCP 层 | RBAC、`approval_id + approval_digest`、完整载荷复核、CAS 执行租约、审计 | 防止越权、审批参数漂移和并发重复执行。 |
 | Java 主服务层 | 支付/退款状态机、`side_effect_ledger`、订单状态校验 | 最终业务事实由后端保证，Agent 只是调用方。 |
 
 如果面试官追问“审批通过后服务重启怎么办”，回答：
 
 - LangGraph thread 状态存 MySQL Checkpoint，不用内存保存。
-- 审批通过后通过 `thread_id + approval_id` 恢复，从挂起点继续执行。
+- 审批记录绑定精确 `thread_id + checkpoint_id`；`approval_id` 只用于定位审批，不能替代恢复点或载荷证明。
 - 审批表状态迁移用条件更新，`PENDING -> APPROVED/REJECTED` 只有一个请求能成功，避免运营重复点击或 approve/reject 并发覆盖。
-- `/chat/resume` 对已完成/已取消 run 做短路，避免重复恢复 Agent 图；Java 账本再兜底资金类副作用。
+- `/chat/resume` 逐字段验证审批载荷、Checkpoint、HMAC、发起身份、商家和当前权限；Copilot 再用 CAS 获取带超时的执行租约。
 - Java 主服务用 `side_effect_ledger` 以 `operation_type + approval_id` 做幂等；同一审批重复恢复时直接返回第一次成功结果，不再次退款/发券。
-- 如果 MySQL Checkpoint 不可用，当前开发环境会 fallback 到 `MemorySaver`，但生产必须把 MySQL Checkpoint 作为强依赖，否则不能承诺长时间挂起恢复。
+- 当前图构建失败时仍保留开发用 `MemorySaver` fallback；生产必须监控 `checkpointer_type` 并把 MySQL Checkpoint 作为强依赖，否则不能承诺长时间挂起恢复。
+
+常见追问：
+
+- **HMAC 为什么优于普通 SHA-256？** 普通哈希没有密钥，篡改者可重算；HMAC 证明摘要由持有共享密钥的服务生成。
+- **为什么不用 `synchronized`？** 应用锁不跨进程；数据库条件更新才能在多副本中选出唯一执行者。
+- **超时是不是失败？** 不是。超时是结果未知，必须先查执行租约和 Server 账本，再决定重放结果或恢复执行。
 
 对应代码：
 

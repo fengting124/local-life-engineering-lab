@@ -718,20 +718,20 @@ test(docker): verify HITL recovery security in Lite
 - Documentation distinguishes implemented guarantees from remaining ingress/IAM risks.
 - No model-quality improvement is claimed and no 24x2 result is changed.
 
-- [ ] **Step 1: Write the operator document**
+- [x] **Step 1: Write the operator document**
 
 Include status machine, payload fields, exact checkpoint flow, CAS SQL,
 timeout/restart recovery, audit queries, alert conditions, secret rotation, and a
 production incident checklist.
 
-- [ ] **Step 2: Synchronize architecture/tutorial facts**
+- [x] **Step 2: Synchronize architecture/tutorial facts**
 
 Replace outdated claims that `checkpoint_id` equals `thread_id` or that
 `approval_id` alone is sufficient. Add code references and interview questions
 about HMAC versus SHA-256, CAS versus application locks, at-most-once claims
 versus exactly-once business effects, and ambiguous network outcomes.
 
-- [ ] **Step 3: Run full deterministic quality gates**
+- [x] **Step 3: Run full deterministic quality gates**
 
 ```bash
 DEBUG=false PYTHONPATH=copilot-agent-service python -m pytest -q copilot-agent-service/tests
@@ -743,20 +743,34 @@ git diff --check
 
 Run the existing Agent and Java mutation gates without lowering thresholds.
 
-- [ ] **Step 4: Perform an independent security diff review**
+- [x] **Step 4: Perform an independent security diff review**
 
 Review migration compatibility, canonical vector equality, constant-time digest
 comparison, exact checkpoint selection, every status transition, CAS row counts,
 lease recovery, result sanitization, log redaction, and absence of permission or
 budget changes. Record blocking findings with file and line references.
 
-- [ ] **Step 5: Update design and plan status**
+- [x] **Step 5: Update design and plan status**
 
 Mark the design Implemented only when deterministic tests, Docker smoke, and
 review all pass. Record actual counts and unresolved risks; do not write planned
 claims as completed facts.
 
-- [ ] **Step 6: Commit final documentation**
+Final evidence on 2026-08-04: Agent `655 passed`; Copilot `134 tests`;
+Server `183` unit tests plus `5` integration tests with JaCoCo; Agent mutation
+`826/1180` killed with `other=0`; Server PIT `87/136` killed; Docker Lite HITL
+security smoke `7/7 PASS`. The final independent diff review reported
+`BLOCKING FINDINGS=0` after UTC expiry, atomic expiration, expired-lease smoke,
+and audit error-text redaction fixes.
+
+Residual risks remain explicit: production clocks require NTP synchronization;
+the lease-recovery smoke injects the expired execution state through SQL instead
+of a real network partition; text-pattern redaction cannot recognize every
+unlabelled credential; ingress identity, audit fail-open behavior, key rotation,
+official LangGraph interrupt migration, and real compensation issuance remain
+separate work.
+
+- [x] **Step 6: Commit final documentation**
 
 Commit title:
 

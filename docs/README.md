@@ -3,7 +3,7 @@
 - Status: Active
 - Type: Overview
 - Owners: Project maintainers
-- Last verified: 2026-07-12
+- Last verified: 2026-08-04
 - Source of truth: `docs/文档规范.md`
 
 本文档中心按文档类型和目录职责组织。第一次阅读项目时，从 [LocalLife 学习路线](./00-学习路线.md) 开始；维护文档时，先阅读 [文档规范](./文档规范.md) 和 [文档清单](./文档清单.md)。
@@ -36,6 +36,7 @@
 - [WSL 本地开发指南](./02-environment/WSL本地开发指南.md)
 - [Swagger 在线接口文档](./04-notes/Swagger在线接口文档.md)
 - [企业级日志系统](./04-notes/企业级日志系统.md)
+- [HITL 审批与安全恢复](./security/HITL审批与安全恢复.md)
 
 ### Reference
 
@@ -79,6 +80,7 @@ docs/
 ├── 04-notes/         深度教程和技术解释
 ├── 05-interview/     面试题库、演示脚本和表达材料
 ├── release/          阶段版本验收报告和发布证据入口
+├── security/         安全机制、运维排障和事故处置
 ├── adr/              架构决策
 ├── templates/        文档模板
 └── archive/          已替代或历史文档
