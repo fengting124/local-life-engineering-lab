@@ -1,6 +1,6 @@
 # LangGraph 安全公告评估实施计划
 
-- Status: Active
+- Status: Complete
 - Type: Plan
 - Owners: Project maintainers
 - Last verified: 2026-08-05
@@ -68,15 +68,17 @@
 - [x] 确认 `langgraph==1.2.10` 是 2026-07-28 发布的真实 PyPI 版本，保留候选 C。
 - [x] 将 msgpack 路径归属 GHSA-g48c，将旧 JSON 路径归属独立的 GHSA-wwqv。
 - [x] 将后续升级门槛拆分为 `langgraph>=1.0.10` 与 `langgraph-checkpoint>=3.0.0`。
-- [ ] 运行新 head 的完整验证，推送并等待 Docs/Agent CI。
-- [ ] 完成独立复审，仅在 `BLOCKING FINDINGS=0` 后建议后续 Ready 流程。
+- [x] 运行新 head 的完整验证，推送并等待 Docs/Agent CI：两项均成功。
+- [x] 完成独立复审：`BLOCKING FINDINGS=0`，PR 保持 Draft 等待合并决策。
 
 ## Handoff
 
 - Draft PR：#31 `security(agent): assess LangGraph checkpoint advisory reachability`。
 - 基线：`main@2ee8e88cb375ef82abb5f32db54bb6cf67872892`。
-- 分支创建 PR 时相对 `origin/main` 为 `ahead 2 / behind 0`。
-- GitHub Docs 和 Agent `test-and-mutation` 门禁已由 Draft PR 触发。
+- 收口复审 head：`cde7e044f9d3f4b73205f6c1723a7fb8b906e351`；相对 `origin/main` 为 `ahead 5 / behind 0`。
+- GitHub Docs 和 Agent `test-and-mutation` 门禁均成功。
+- PR 为 Draft、mergeable/clean，评论、Review 和未解决 thread 均为 0。
+- 最终复审：`BLOCKING FINDINGS=0`。
 - 后续升级必须新建实施分支，不在本评估 PR 修改生产依赖。
 
 ## 停止条件
