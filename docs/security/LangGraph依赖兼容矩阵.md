@@ -6,22 +6,25 @@
 - Last verified: 2026-08-05
 - Source of truth: PyPI metadata, `pip --dry-run --report`, isolated virtual environments, Agent tests
 
-本文记录 GHSA-g48c-2wqr-h844 第一阶段使用的版本解析和兼容性证据。所有候选环境都位于系统临时目录，没有修改生产 `requirements*.txt`。
+本文记录 GHSA-g48c-2wqr-h844 和 GHSA-wwqv-p2pp-99h5 第一阶段使用的版本解析和兼容性证据。所有候选环境都位于系统临时目录，没有修改生产 `requirements*.txt`。
 
 ## 版本来源
 
-执行时查询 [PyPI langgraph](https://pypi.org/project/langgraph/)、[PyPI langgraph-checkpoint](https://pypi.org/project/langgraph-checkpoint/) 和 [GitHub Advisory](https://github.com/advisories/GHSA-g48c-2wqr-h844)：
+执行时查询 [PyPI langgraph](https://pypi.org/project/langgraph/)、[PyPI langgraph-checkpoint](https://pypi.org/project/langgraph-checkpoint/)、[GHSA-g48c](https://github.com/advisories/GHSA-g48c-2wqr-h844) 和 [GHSA-wwqv](https://github.com/advisories/GHSA-wwqv-p2pp-99h5)：
 
 - 当前版本：`langgraph==0.2.45`。
-- 公告最低修复版本：`langgraph==1.0.10`。
-- 2026-08-05 最新稳定版：`langgraph==1.2.10`。
+- GHSA-g48c 最低修复版本：`langgraph==1.0.10`。
+- GHSA-wwqv 修复版本：`langgraph-checkpoint==3.0.0`。
+- 2026-08-05 PyPI JSON 最新稳定版：`langgraph==1.2.10`，wheel 上传于 2026-07-28 且可下载。
 - 两个候选都解析到 `langgraph-checkpoint==4.1.1`。
+- 官方元数据的脱敏记录保存在 `docs/security/evidence/langgraph-official-release-advisory.txt`。
 
 ## 汇总
 
 | 维度 | A：0.2.45 | B：1.0.10 | C：1.2.10 |
 | --- | --- | --- | --- |
-| 公告状态 | 受影响 | 最低修复 | 最新稳定 |
+| GHSA-g48c | 受影响 | 已修复 | 已修复 |
+| GHSA-wwqv | 受影响 | 已修复（Checkpoint 4.1.1） | 已修复（Checkpoint 4.1.1） |
 | Python 要求 | 当前 3.10 可用 | 3.10 可用 | `>=3.10` |
 | 原项目 pins 直接解析 | PASS | FAIL | FAIL |
 | 协调升级后 `pip check` | 不适用 | PASS | PASS |
@@ -103,6 +106,8 @@ AttributeError: 'JsonPlusSerializer' object has no attribute 'dumps'
 
 B、C 的现有测试结果相同：`654 passed, 4 failed`。四个失败全部来自 `tests/test_checkpointer.py` 对旧 serializer API 的真实使用，HITL 绑定、Router、Guardrail 和其余 Agent 测试没有额外失败。模型服务测试未纳入候选环境，因为临时环境没有安装独立模型进程使用的 `torch`；当前环境的正式门禁会单独运行。
 
+2026-08-05 收口复核在全新隔离虚拟环境重跑候选 C：`pip --dry-run --report`、真实安装、`pip check`、wheel 下载、模块导入和图编译均通过；历史 fixture 为 `4 passed`，候选 Agent 测试仍为 `654 passed, 4 failed`。首次测试收集受宿主 `DEBUG=release` 干扰，明确使用测试布尔值 `DEBUG=false` 后得到上述有效结果；该前置配置错误未计入兼容失败。
+
 ## RAG 联动
 
 当前 `langchain-milvus==0.1.6` 要求 `langchain-core<0.4`，与 LangGraph 1.x 的依赖树冲突。协调解析必须升级到 `langchain-milvus==0.4.0`，并连带 `pymilvus==3.0.1` 和 `milvus-lite==3.1.1`。
@@ -124,7 +129,7 @@ B、C 的现有测试结果相同：`654 passed, 4 failed`。四个失败全部�
 
 ## 选择
 
-选择 `langgraph==1.2.10` 作为后续升级目标。原因是 B 和 C 的迁移范围相同，C 是执行时最新稳定版，并且没有理由在完成一次跨主版本迁移后停留在最低修复版本。
+选择 `langgraph==1.2.10` 作为后续升级目标，并将 `langgraph-checkpoint>=3.0.0` 作为独立安全门槛；当前解析组合为 `langgraph-checkpoint==4.1.1`。原因是 B 和 C 的迁移范围相同，C 是执行时 PyPI 最新稳定版，并且没有理由在完成一次跨主版本迁移后停留在最低修复版本。
 
 选择不等于本分支升级。后续实现必须单独设计 typed 存储格式、strict allowlist、历史数据迁移和 Milvus 联动验证。
 

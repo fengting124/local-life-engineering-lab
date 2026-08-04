@@ -22,11 +22,13 @@
 
 | 结论 | 含义 |
 | --- | --- |
-| `dependency_affected` | 已安装依赖中的公告 API 能否重建未注册对象。 |
-| `advisory_msgpack_path_reachable` | 生产 Checkpointer 是否把数据库字节交给 `loads_typed(("msgpack", ...))`。 |
-| `current_production_path_reachable` | 具备 Checkpoint 表写权限的主体，能否让生产恢复路径执行不安全对象重建。 |
+| `ghsa_g48c_dependency_affected` | 已安装 LangGraph 的 msgpack typed API 能否重建未注册对象。 |
+| `ghsa_g48c_msgpack_path_reachable` | 生产 Checkpointer 是否把数据库字节交给 `loads_typed(("msgpack", ...))`。 |
+| `ghsa_wwqv_dependency_affected` | 已安装 Checkpoint serializer 是否属于旧 JSON 公告受影响范围。 |
+| `ghsa_wwqv_json_path_reachable` | 具备 Checkpoint 表写权限的主体，能否让生产 JSON 恢复路径执行对象重建。 |
+| `unauthenticated_http_reachability` | 未认证外部请求是否能控制持久化 Checkpoint 字节。 |
 
-不能用“当前存储列是 JSON”推导整个生产路径安全。旧版 `JsonPlusSerializer.loads()` 自身也会根据持久化 JSON 中的模块名和类名动态导入并构造对象。
+不能用“当前存储列是 JSON”推导整个生产路径安全。旧版 `JsonPlusSerializer.loads()` 自身也会根据持久化 JSON 中的模块名和类名动态导入并构造对象；该路径对应独立的 GHSA-wwqv-p2pp-99h5，不是 GHSA-g48c 的未命名变体。
 
 ## 调用链
 
@@ -56,11 +58,12 @@ GET /chat/resume
 测试覆盖以下路径：
 
 1. 编译图的 `aget_state` 确实委托给自定义 saver 的 `aget_tuple`。
-2. 修改隔离 MySQL 中的普通 JSON Checkpoint 后，生产 `_row_to_tuple` 能重建无害 `Counter` 标记。
-3. 向 `state` 写入 msgpack 字节时，生产路径以 JSON 解码错误停止，`loads_typed` 调用计数保持零。
-4. 直接调用受影响依赖的 `loads_typed`，证明依赖层公告路径存在。
-5. 单独修改 pending writes，证明其与完整 Checkpoint 一样走普通 JSON `loads`。
-6. 在修复候选版本中启用 strict allowlist，证明未注册 msgpack 类型被阻止。
+2. 修改隔离 MySQL 中的普通 JSON Checkpoint 后，生产 `_row_to_tuple` 能重建无害 `Counter` 标记，对应 GHSA-wwqv。
+3. 向 `state` 写入 msgpack 字节时，生产路径以 JSON 解码错误停止，`loads_typed` 调用计数保持零，对应 GHSA-g48c 生产可达性。
+4. 直接调用受影响依赖的 `loads_typed`，证明 GHSA-g48c 依赖层公告路径存在。
+5. 单独修改 pending writes，证明其与完整 Checkpoint 一样走普通 JSON `loads`，对应 GHSA-wwqv。
+6. 对同一无害旧 JSON constructor 标记，验证 Checkpoint 2.x 会重建对象，3.x/4.x 不再重建。
+7. 在修复候选版本中启用 strict allowlist，证明未注册 msgpack 类型被阻止。
 
 ## 历史数据设计
 

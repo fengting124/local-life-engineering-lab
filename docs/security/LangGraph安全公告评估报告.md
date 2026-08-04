@@ -4,26 +4,32 @@
 - Type: Reference
 - Owners: Project maintainers
 - Last verified: 2026-08-05
-- Source of truth: GHSA-g48c-2wqr-h844, installed dependency source, Testcontainers MySQL tests, compatibility matrix
+- Source of truth: GHSA-g48c-2wqr-h844, GHSA-wwqv-p2pp-99h5, installed dependency source, Testcontainers MySQL tests, compatibility matrix
 
 ## 结论
 
 ```text
-dependency affected: YES
-advisory msgpack production path reachable: NO
-current production path reachable: YES, conditional on checkpoint-table write access
+GHSA-g48c dependency affected: YES
+GHSA-g48c msgpack production path reachable: NO
+GHSA-wwqv dependency affected: YES
+GHSA-wwqv legacy JSON production path reachable: YES, conditional on checkpoint-table write access
 unauthenticated HTTP-to-checkpoint exploitability: UNPROVEN
 selected upgrade target: langgraph==1.2.10
+resolved checkpoint target: langgraph-checkpoint==4.1.1
 historical checkpoint strategy: migrate
 ```
 
-[GHSA-g48c-2wqr-h844](https://github.com/advisories/GHSA-g48c-2wqr-h844) 将 `langgraph<=1.0.9` 标记为受影响，首个修复版本为 `1.0.10`。项目当前使用 `0.2.45`，依赖层结论明确为受影响。
+[GHSA-g48c-2wqr-h844](https://github.com/advisories/GHSA-g48c-2wqr-h844) 将 `langgraph<=1.0.9` 标记为受影响，首个修复版本为 `1.0.10`。项目当前使用 `0.2.45`，因此 msgpack 公告的依赖层结论为受影响。
 
-生产自定义 MySQL saver 不使用公告描述的 msgpack typed 读取路径；向 `state` 写入 msgpack 后会在 JSON 解码阶段失败，`loads_typed` 调用数为零。但这不等于生产安全：当前 2.1.2 的普通 JSON `loads()` 也会按持久化的模块名和类名动态导入并构造对象。隔离 MySQL 中篡改一条 Checkpoint 后，真实 `aget_tuple()` 已重建无害 `Counter` 标记。
+生产自定义 MySQL saver 不使用 GHSA-g48c 描述的 msgpack typed 读取路径；向 `state` 写入 msgpack 后会在 JSON 解码阶段失败，`loads_typed` 调用数为零。
+
+[GHSA-wwqv-p2pp-99h5](https://github.com/advisories/GHSA-wwqv-p2pp-99h5) 是独立的旧 JSON 模式公告，影响 `langgraph-checkpoint<3.0`，官方公告正文指定修复版本为 `3.0.0`。项目当前使用 `langgraph-checkpoint==2.1.2`，且普通 JSON `loads()` 会按持久化的模块名和类名动态导入并构造对象。隔离 MySQL 中篡改一条 Checkpoint 后，真实 `aget_tuple()` 已重建无害 `Counter` 标记。
 
 因此最准确的风险描述是：
 
-> 公告的 msgpack 分支没有接入当前自定义表，但具有 Checkpoint 表写权限的主体仍能通过旧 JSON serializer 到达同类不安全对象重建。
+> GHSA-g48c 的 msgpack 生产路径不可达；GHSA-wwqv 的旧 JSON 生产路径在主体能控制持久化 Checkpoint 的前提下可达。两者不是同一公告的两种叫法。
+
+PyPI JSON API 与可下载 wheel 确认 `langgraph==1.2.10` 于 2026-07-28 发布，为本次执行时最新稳定版。原始脱敏元数据见 `docs/security/evidence/langgraph-official-release-advisory.txt`。
 
 ## 环境
 
@@ -37,8 +43,8 @@ historical checkpoint strategy: migrate
 
 | 门禁 | 命令口径 | 结果 |
 | --- | --- | --- |
-| 当前 Agent 全量测试与覆盖率 | `pytest -q --cov --cov-fail-under=45` | `664 passed, 1 skipped`，覆盖率 `76.42%` |
-| Checkpointer/HITL/安全定向 | `pytest` 指定 Checkpointer、HITL 和 `tests/security` | `98 passed, 1 skipped` |
+| 当前 Agent 全量测试与覆盖率 | `pytest -q --cov --cov-fail-under=45` | `665 passed, 1 skipped`，覆盖率 `76.42%` |
+| Checkpointer/HITL/安全定向 | `pytest` 指定 Checkpointer、HITL 和 `tests/security` | 最终收口子集 `67 passed, 1 skipped` |
 | Testcontainers MySQL | 全量和定向测试内执行 | JSON、msgpack、typed、pending writes 路径均按预期 |
 | 候选 1.0.10 | 协调依赖、排除独立模型进程和当前漏洞复现文件 | `654 passed, 4 failed`，四项均为旧 saver API |
 | 候选 1.2.10 | 同上 | `654 passed, 4 failed`，四项均为旧 saver API |
@@ -48,6 +54,8 @@ historical checkpoint strategy: migrate
 | 文档和 whitespace | `python3 scripts/check_docs.py`、`git diff --check` | PASS |
 
 当前版本 strict msgpack 测试为一项预期 skip，因为 2.1.2 不提供 allowlist 参数；两个修复候选均实际执行并通过该测试。
+
+收口阶段对 1.2.10 又创建了全新隔离虚拟环境，实际下载 wheel 并重跑 resolver、安装、导入、图编译、首次 Checkpoint 写入、历史 fixture 和 Agent 候选测试。结果与原报告一致，因此 `654/4` 数字可归属于真实存在的 `langgraph==1.2.10`。
 
 Docker smoke 首次调用在进入业务场景前失败，因为 worktree 不包含被 Git 忽略的环境文件，现有 `infra/.env` 也未声明 `HITL_PAYLOAD_SIGNING_SECRET`。第二次从正在运行的 Agent 容器直接传递既有值给测试进程后 `7/7 PASS`，过程没有输出或写入密钥。这个前置失败记录为本地配置漂移，不作为业务失败隐藏。
 
@@ -80,11 +88,12 @@ Docker smoke 首次调用在进入业务场景前失败，因为 worktree 不包
 | 场景 | 结果 | 解释 |
 | --- | --- | --- |
 | `CompiledGraph.aget_state` 委托 | PASS | 真实调用 `aget_tuple(config)`。 |
-| 普通 JSON Checkpoint 篡改 | REACHABLE | 生产 `_row_to_tuple` 重建无害 `Counter`。 |
-| msgpack 写入 `state` | NOT REACHABLE | `JSONDecodeError`，typed 调用为 0。 |
-| 直接 `loads_typed(msgpack)` | AFFECTED | 当前依赖重建无害 `Counter`。 |
-| Pending writes JSON 篡改 | REACHABLE | 生产 pending write 读取重建无害 `Counter`。 |
-| 修复版 strict msgpack | BLOCKED | 未注册类型不再构造为 `Counter`。 |
+| GHSA-wwqv：普通 JSON Checkpoint 篡改 | REACHABLE | 生产 `_row_to_tuple` 重建无害 `Counter`。 |
+| GHSA-g48c：msgpack 写入 `state` | NOT REACHABLE | `JSONDecodeError`，typed 调用为 0。 |
+| GHSA-g48c：直接 `loads_typed(msgpack)` | AFFECTED | 当前依赖重建无害 `Counter`。 |
+| GHSA-wwqv：Pending writes JSON 篡改 | REACHABLE | 生产 pending write 读取重建无害 `Counter`。 |
+| GHSA-wwqv：Checkpoint 4.1.1 JSON 策略 | BLOCKED | 同一无害 constructor 保持为普通数据，不重建 `Counter`。 |
+| GHSA-g48c：修复版 strict msgpack | BLOCKED | 未注册类型不再构造为 `Counter`。 |
 
 测试不执行 shell、不读取环境变量、不访问网络。唯一外部资源是 Testcontainers 创建的临时 MySQL 8.4。Docker Desktop 当前无法暴露 Ryuk 的 8080 端口，因此本机命令显式设置 `TESTCONTAINERS_RYUK_DISABLED=true`；测试容器仍由上下文管理器退出清理，CI 保持 Testcontainers 默认行为。
 
@@ -162,7 +171,7 @@ Docker smoke 首次调用在进入业务场景前失败，因为 worktree 不包
 
 ### P0：后续升级 PR
 
-- 目标 `langgraph==1.2.10`。
+- 目标 `langgraph==1.2.10`，同时确保 `langgraph-checkpoint>=3.0.0`；当前解析目标为 `4.1.1`。
 - 迁移自定义 saver 到 typed API，并显式启用 strict msgpack。
 - 对 JSON 类型使用最小安全 allowlist。
 - 完成历史数据迁移和 Milvus 3.x 兼容验证。

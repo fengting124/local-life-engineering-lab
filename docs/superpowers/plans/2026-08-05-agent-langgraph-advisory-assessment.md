@@ -50,8 +50,8 @@
 
 ## Task 7：完整门禁
 
-- [x] 运行当前 Agent 全量测试与覆盖率门禁：`664 passed, 1 skipped`，`76.42%`。
-- [x] 运行 Checkpointer/HITL 定向测试和 Testcontainers 安全测试：`98 passed, 1 skipped`。
+- [x] 运行当前 Agent 全量测试与覆盖率门禁：最终收口 `665 passed, 1 skipped`，`76.42%`。
+- [x] 运行 Checkpointer/HITL 定向测试和 Testcontainers 安全测试：最终收口子集 `67 passed, 1 skipped`。
 - [x] 运行 Docker Lite 安全烟雾测试：`7/7 PASS`，隔离数据已清理。
 - [x] 运行文档检查和 `git diff --check`。
 
@@ -61,6 +61,15 @@
 - [x] 按评估测试和评估文档拆分详细提交。
 - [x] 推送 `security/agent-langgraph-advisory-assessment`。
 - [x] 创建 Draft PR #31 到 `main`，保持 Draft，不转 Ready、不合并。
+
+## Task 9：安全归因收口
+
+- [x] 通过 PyPI JSON、`pip index` 和可下载 wheel 复核执行时最新版本。
+- [x] 确认 `langgraph==1.2.10` 是 2026-07-28 发布的真实 PyPI 版本，保留候选 C。
+- [x] 将 msgpack 路径归属 GHSA-g48c，将旧 JSON 路径归属独立的 GHSA-wwqv。
+- [x] 将后续升级门槛拆分为 `langgraph>=1.0.10` 与 `langgraph-checkpoint>=3.0.0`。
+- [ ] 运行新 head 的完整验证，推送并等待 Docs/Agent CI。
+- [ ] 完成独立复审，仅在 `BLOCKING FINDINGS=0` 后建议后续 Ready 流程。
 
 ## Handoff
 
