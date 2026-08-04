@@ -3,7 +3,14 @@ package com.personalprojections.locallife.copilot.tool.impl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.personalprojections.locallife.copilot.client.LocalLifeInternalClient;
+import com.personalprojections.locallife.copilot.hitl.ApprovalExecutionGuard;
+import com.personalprojections.locallife.copilot.hitl.ApprovalPayload;
+import com.personalprojections.locallife.copilot.rbac.RbacContext;
 import com.personalprojections.locallife.copilot.tool.McpTool.ToolParameterException;
+import com.personalprojections.locallife.copilot.tool.McpTool.ToolBusinessException;
+import com.personalprojections.locallife.copilot.tool.McpTool.ToolPermissionException;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -13,8 +20,11 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -26,20 +36,47 @@ import static org.mockito.Mockito.when;
  * ——这正是 {@code McpControllerTest} 里 {@code buildContentResult} 的
  * 「JSON 序列化包装」分支在真实工具上的唯一输入来源，两层测试在这里精确衔接、不重复。
  *
- * <h2>为什么不在这里测 RBAC / HITL</h2>
- * <p>{@code execute()} 本身不读取 {@link com.personalprojections.locallife.copilot.rbac.RbacContext}——
- * 角色放行（{@code xAllowedRoles=[cs,admin]}）由 {@code McpController} 在调用前完成校验
- * （见 {@code McpControllerTest} 的 RBAC 用例），HITL 拦截则是 Python Agent Service
- * 看到 {@code xRequiresHitl=true} 后的编排行为，都不属于这个工具自身的职责范围。
+ * <h2>HITL 执行边界</h2>
+ * <p>{@code McpController} 仍负责角色粗粒度放行；本工具还会把业务参数和当前
+ * {@link RbacContext} 组成不可变审批载荷，由 {@link ApprovalExecutionGuard} 在调用
+ * Server 前完成签名、身份、状态和原子消费校验。
  */
 class ExecuteRefundToolTest {
 
+    private static final String APPROVAL_DIGEST = "a".repeat(64);
+
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final LocalLifeInternalClient internalClient = mock(LocalLifeInternalClient.class);
-    private final ExecuteRefundTool tool = new ExecuteRefundTool(objectMapper, internalClient);
+    private final ApprovalExecutionGuard guard = mock(ApprovalExecutionGuard.class);
+    private final ApprovalExecutionGuard.ExecutionClaim claim =
+            new ApprovalExecutionGuard.ExecutionClaim(1001L, "execution-1", APPROVAL_DIGEST);
+    private final ExecuteRefundTool tool = new ExecuteRefundTool(objectMapper, internalClient, guard);
+
+    @BeforeEach
+    void setUp() {
+        RbacContext.set(RbacContext.builder()
+                .userId(30001L)
+                .role("cs")
+                .merchantId(42L)
+                .build());
+        when(guard.claim(anyString(), anyString(), any(ApprovalPayload.class), any(RbacContext.class)))
+                .thenReturn(new ApprovalExecutionGuard.ExecutionDecision(
+                        ApprovalExecutionGuard.ExecutionStatus.CLAIMED,
+                        claim,
+                        null,
+                        null
+                ));
+    }
+
+    @AfterEach
+    void tearDown() {
+        RbacContext.clear();
+    }
 
     private JsonNode args(String json) throws Exception {
-        return objectMapper.readTree(json);
+        var parsed = (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(json);
+        parsed.put("approval_digest", APPROVAL_DIGEST);
+        return parsed;
     }
 
     // =====================================================================
@@ -55,6 +92,7 @@ class ExecuteRefundToolTest {
                 "order_id", "1234567890123456789",
                 "amount", 2990,
                 "approval_id", "APPROVAL_001",
+                "approval_digest", APPROVAL_DIGEST,
                 "reason", "券库存不足");
         java.util.Map<String, Object> partial = new java.util.HashMap<>(complete);
         partial.remove(missingKey);
@@ -144,6 +182,23 @@ class ExecuteRefundToolTest {
                 .as("execute() 直接 return internalClient 的结果——同一个 Map 实例，不做二次包装或字段过滤")
                 .isSameAs(refundResult);
         verify(internalClient).refund(eq("1234567890123456789"), eq(2990), eq("APPROVAL_001"), eq("券库存不足"));
+        verify(guard).claim(
+                eq("APPROVAL_001"),
+                eq(APPROVAL_DIGEST),
+                eq(new ApprovalPayload(
+                        1,
+                        "execute_refund",
+                        "1234567890123456789",
+                        2990,
+                        "",
+                        "42",
+                        "30001",
+                        "cs",
+                        "券库存不足"
+                )),
+                any(RbacContext.class)
+        );
+        verify(guard).complete(claim, refundResult);
         verify(internalClient, never()).compensateCoupon(
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
@@ -161,5 +216,132 @@ class ExecuteRefundToolTest {
                         + "\"approval_id\":\" APPROVAL_001 \",\"reason\":\" 协商一致 \"}"));
 
         verify(internalClient).refund(eq("1234567890123456789"), eq(2990), eq("APPROVAL_001"), eq("协商一致"));
+    }
+
+    @Test
+    void execute_missingApprovalDigest_failsBeforeGuardAndInternalClient() throws Exception {
+        JsonNode arguments = objectMapper.readTree(
+                "{\"order_id\":\"1234567890123456789\",\"amount\":2990,"
+                        + "\"approval_id\":\"APPROVAL_001\",\"reason\":\"协商一致\"}"
+        );
+
+        assertThatThrownBy(() -> tool.execute(arguments))
+                .isInstanceOf(ToolParameterException.class)
+                .hasMessage("approval_digest 不能为空");
+
+        verifyNoInteractions(internalClient);
+        verify(guard, never()).claim(anyString(), anyString(), any(), any());
+    }
+
+    @Test
+    void execute_deniedApprovalNeverCallsInternalClient() throws Exception {
+        when(guard.claim(anyString(), anyString(), any(), any()))
+                .thenThrow(mock(ApprovalExecutionGuard.ApprovalExecutionDeniedException.class));
+
+        assertThatThrownBy(() -> tool.execute(args(
+                "{\"order_id\":\"1234567890123456789\",\"amount\":2990,"
+                        + "\"approval_id\":\"APPROVAL_001\",\"reason\":\"协商一致\"}"
+        ))).isInstanceOf(ToolPermissionException.class);
+
+        verifyNoInteractions(internalClient);
+    }
+
+    @Test
+    void execute_inProgressApprovalNeverCallsInternalClient() throws Exception {
+        when(guard.claim(anyString(), anyString(), any(), any()))
+                .thenReturn(new ApprovalExecutionGuard.ExecutionDecision(
+                        ApprovalExecutionGuard.ExecutionStatus.IN_PROGRESS,
+                        null,
+                        null,
+                        "approval_execution_in_progress"
+                ));
+
+        assertThatThrownBy(() -> tool.execute(args(
+                "{\"order_id\":\"1234567890123456789\",\"amount\":2990,"
+                        + "\"approval_id\":\"APPROVAL_001\",\"reason\":\"协商一致\"}"
+        ))).isInstanceOf(ToolBusinessException.class);
+
+        verifyNoInteractions(internalClient);
+    }
+
+    @Test
+    void execute_replayReturnsStoredResultWithoutCallingInternalClient() throws Exception {
+        Map<String, Object> stored = Map.of("refund_status", "SUCCESS", "refund_id", "REFUND_1");
+        when(guard.claim(anyString(), anyString(), any(), any()))
+                .thenReturn(new ApprovalExecutionGuard.ExecutionDecision(
+                        ApprovalExecutionGuard.ExecutionStatus.REPLAY,
+                        null,
+                        stored,
+                        null
+                ));
+
+        Object result = tool.execute(args(
+                "{\"order_id\":\"1234567890123456789\",\"amount\":2990,"
+                        + "\"approval_id\":\"APPROVAL_001\",\"reason\":\"协商一致\"}"
+        ));
+
+        assertThat(result).isSameAs(stored);
+        verifyNoInteractions(internalClient);
+        verify(guard, never()).complete(any(), any());
+    }
+
+    @Test
+    void execute_missingCallerIdentityFailsBeforeClaimAndInternalClient() throws Exception {
+        RbacContext.clear();
+
+        assertThatThrownBy(() -> tool.execute(args(
+                "{\"order_id\":\"1234567890123456789\",\"amount\":2990,"
+                        + "\"approval_id\":\"APPROVAL_001\",\"reason\":\"协商一致\"}"
+        ))).isInstanceOf(ToolPermissionException.class)
+                .hasMessage("调用者身份缺失");
+
+        verify(guard, never()).claim(anyString(), anyString(), any(), any());
+        verifyNoInteractions(internalClient);
+    }
+
+    @Test
+    void execute_transportTimeoutLeavesClaimIncompleteAndRetryCanFinish() throws Exception {
+        ApprovalExecutionGuard.ExecutionClaim recoveredClaim =
+                new ApprovalExecutionGuard.ExecutionClaim(1001L, "execution-2", APPROVAL_DIGEST);
+        when(guard.claim(anyString(), anyString(), any(), any()))
+                .thenReturn(
+                        new ApprovalExecutionGuard.ExecutionDecision(
+                                ApprovalExecutionGuard.ExecutionStatus.CLAIMED,
+                                claim,
+                                null,
+                                null
+                        ),
+                        new ApprovalExecutionGuard.ExecutionDecision(
+                                ApprovalExecutionGuard.ExecutionStatus.CLAIMED,
+                                recoveredClaim,
+                                null,
+                                null
+                        )
+                );
+        Map<String, Object> committedResult = Map.of(
+                "refund_status", "SUCCESS",
+                "refund_id", "REFUND_FIRST"
+        );
+        when(internalClient.refund(
+                "1234567890123456789", 2990, "APPROVAL_001", "协商一致"
+        )).thenThrow(new RuntimeException("simulated timeout after Server commit"))
+                .thenReturn(committedResult);
+        JsonNode arguments = args(
+                "{\"order_id\":\"1234567890123456789\",\"amount\":2990,"
+                        + "\"approval_id\":\"APPROVAL_001\",\"reason\":\"协商一致\"}"
+        );
+
+        assertThatThrownBy(() -> tool.execute(arguments.deepCopy()))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("simulated timeout");
+        verify(guard, never()).complete(eq(claim), any());
+
+        Object retried = tool.execute(arguments.deepCopy());
+
+        assertThat(retried).isSameAs(committedResult);
+        verify(internalClient, times(2)).refund(
+                "1234567890123456789", 2990, "APPROVAL_001", "协商一致"
+        );
+        verify(guard).complete(recoveredClaim, committedResult);
     }
 }

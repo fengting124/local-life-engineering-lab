@@ -15,7 +15,7 @@ import java.time.LocalDateTime;
  *
  * <p>每次 MCP 工具调用都记录一条审计日志，三个核心用途：
  * <ol>
- *   <li>问题排查：入参 + 出参完整保存，方便复盘工具执行过程</li>
+ *   <li>问题排查：入参 + 出参经凭证字段脱敏后保存，方便安全复盘工具执行过程</li>
  *   <li>Evals 数据：工具调用序列是评测「工具调用准确率」的原始数据</li>
  *   <li>告警监控：按 tool_name + created_at 统计错误率，发现异常工具</li>
  * </ol>
@@ -37,7 +37,7 @@ public class ToolAuditLog {
     /** 工具名称（如 query_order / execute_refund） */
     private String toolName;
 
-    /** 工具入参（JSON 字符串，完整保存，方便复盘） */
+    /** 工具入参（JSON 字符串，凭证字段脱敏后保存） */
     private String toolInput;
 
     /** 工具出参（JSON 字符串，成功时为结果，失败时为错误） */

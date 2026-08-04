@@ -64,6 +64,7 @@ class CopilotCouponSchemaContractIntegrationTest {
         registry.add("spring.datasource.username", MYSQL::getUsername);
         registry.add("spring.datasource.password", MYSQL::getPassword);
         registry.add("spring.flyway.enabled", () -> "true");
+        registry.add("hitl.payload-signing.secret", () -> "test-only-hitl-key");
         registry.add("spring.flyway.locations", () -> String.join(",",
                 filesystemLocation("local-life-server/src/main/resources/db/migration"),
                 filesystemLocation("local-life-copilot/src/main/resources/db/migration")));

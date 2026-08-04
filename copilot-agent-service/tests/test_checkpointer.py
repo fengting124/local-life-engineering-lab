@@ -5,12 +5,14 @@ import pytest
 
 from session import checkpointer as ckpt_mod
 from session.checkpointer import AsyncMySQLCheckpointer
+from session.hitl import HitlBindingError
 
 
 class FakeSession:
     def __init__(self):
         self.executed = []
         self.commits = 0
+        self.rollbacks = 0
 
     async def __aenter__(self):
         return self
@@ -23,6 +25,74 @@ class FakeSession:
 
     async def commit(self):
         self.commits += 1
+
+    async def rollback(self):
+        self.rollbacks += 1
+
+
+def _hitl_checkpoint(approval_id=1001, digest="a" * 64):
+    return {
+        "id": "checkpoint-hitl-1",
+        "channel_values": {
+            "pending_hitl": True,
+            "pending_action": {
+                "approval_id": approval_id,
+                "payload_digest": digest,
+            },
+        },
+        "channel_versions": {},
+        "versions_seen": {},
+    }
+
+
+@pytest.mark.asyncio
+async def test_aput_binds_pending_approval_in_checkpoint_transaction(monkeypatch):
+    fake_session = FakeSession()
+    binding = AsyncMock()
+    monkeypatch.setattr(ckpt_mod, "AsyncSessionLocal", lambda: fake_session)
+    monkeypatch.setattr(ckpt_mod.hitl_service, "bind_checkpoint", binding)
+    saver = AsyncMySQLCheckpointer()
+
+    result = await saver.aput(
+        {"configurable": {"thread_id": "thread-1"}},
+        _hitl_checkpoint(),
+        {"step": "hitl"},
+        {},
+    )
+
+    assert fake_session.commits == 1
+    assert fake_session.rollbacks == 0
+    assert len(fake_session.executed) == 1
+    binding.assert_awaited_once_with(
+        fake_session,
+        approval_id=1001,
+        thread_id="thread-1",
+        checkpoint_id="checkpoint-hitl-1",
+        payload_digest="a" * 64,
+    )
+    assert result["configurable"]["checkpoint_id"] == "checkpoint-hitl-1"
+
+
+@pytest.mark.asyncio
+async def test_aput_rolls_back_checkpoint_when_approval_binding_fails(monkeypatch):
+    fake_session = FakeSession()
+    monkeypatch.setattr(ckpt_mod, "AsyncSessionLocal", lambda: fake_session)
+    monkeypatch.setattr(
+        ckpt_mod.hitl_service,
+        "bind_checkpoint",
+        AsyncMock(side_effect=HitlBindingError("checkpoint binding mismatch")),
+    )
+
+    with pytest.raises(HitlBindingError, match="mismatch"):
+        await AsyncMySQLCheckpointer().aput(
+            {"configurable": {"thread_id": "thread-1"}},
+            _hitl_checkpoint(),
+            {"step": "hitl"},
+            {},
+        )
+
+    assert fake_session.commits == 0
+    assert fake_session.rollbacks == 1
 
 
 @pytest.mark.asyncio
@@ -60,18 +130,20 @@ async def test_aput_writes_persists_each_pending_write(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_aget_tuple_returns_deserialized_pending_writes(monkeypatch):
+async def test_recreated_checkpointer_reads_exact_checkpoint_with_pending_writes(
+    monkeypatch,
+):
     fake_session = FakeSession()
     monkeypatch.setattr(ckpt_mod, "AsyncSessionLocal", lambda: fake_session)
 
-    saver = AsyncMySQLCheckpointer()
+    original_saver = AsyncMySQLCheckpointer()
     checkpoint = {
         "id": "checkpoint-1",
         "channel_values": {},
         "channel_versions": {},
         "versions_seen": {},
     }
-    serialized_state = saver.serde.dumps(checkpoint)
+    serialized_state = original_saver.serde.dumps(checkpoint)
     row = {
         "thread_id": "thread-1",
         "checkpoint_id": "checkpoint-1",
@@ -81,15 +153,23 @@ async def test_aget_tuple_returns_deserialized_pending_writes(monkeypatch):
         else serialized_state,
         "metadata": json.dumps({"step": "hitl"}),
     }
-    pending_payload = saver.serde.dumps({"content": "恢复前未合并的输出"})
+    pending_payload = original_saver.serde.dumps(
+        {"content": "恢复前未合并的输出"}
+    )
     encoded_pending_payload = (
         pending_payload.decode("utf-8")
         if isinstance(pending_payload, bytes)
         else pending_payload
     )
 
-    saver._fetch_one = AsyncMock(return_value=row)
-    saver._fetch_pending_writes = AsyncMock(
+    # Simulate an Agent process restart: recovery uses a fresh saver instance,
+    # not any in-memory state from the instance that serialized the checkpoint.
+    restarted_saver = AsyncMySQLCheckpointer()
+    restarted_saver._fetch_one = AsyncMock(return_value=row)
+    restarted_saver._fetch_latest = AsyncMock(
+        side_effect=AssertionError("bound HITL recovery must not read latest")
+    )
+    restarted_saver._fetch_pending_writes = AsyncMock(
         return_value=[
             {
                 "task_id": "task-1",
@@ -99,7 +179,7 @@ async def test_aget_tuple_returns_deserialized_pending_writes(monkeypatch):
         ]
     )
 
-    result = await saver.aget_tuple(
+    result = await restarted_saver.aget_tuple(
         {
             "configurable": {
                 "thread_id": "thread-1",
@@ -112,6 +192,10 @@ async def test_aget_tuple_returns_deserialized_pending_writes(monkeypatch):
     assert result.pending_writes == [
         ("task-1", "messages", {"content": "恢复前未合并的输出"})
     ]
-    saver._fetch_pending_writes.assert_awaited_once_with(
+    restarted_saver._fetch_one.assert_awaited_once_with(
+        fake_session, "thread-1", "checkpoint-1"
+    )
+    restarted_saver._fetch_latest.assert_not_awaited()
+    restarted_saver._fetch_pending_writes.assert_awaited_once_with(
         fake_session, "thread-1", "checkpoint-1"
     )

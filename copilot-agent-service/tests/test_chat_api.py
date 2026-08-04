@@ -12,8 +12,13 @@ FastAPI TestClient 说明：
   对于 SSE 端点，TestClient.post() 会收集完整响应体。
 """
 import json
-import pytest
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+import pytest
 from starlette.testclient import TestClient
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -28,6 +33,63 @@ from api.chat import (
     _assert_session_owned_by_user,
     router as chat_router,
 )
+from session.hitl_binding import ApprovalPayload, sign_payload
+
+
+TEST_HITL_SECRET = "test-only-hitl-key"
+
+
+def make_resume_binding(
+    *,
+    approval_id=1001,
+    thread_id="thread-from-db",
+    checkpoint_id="checkpoint-bound",
+    order_id="O-1",
+    status="PENDING",
+    execution_result=None,
+):
+    payload = ApprovalPayload(
+        payload_version=1,
+        tool_name="execute_refund",
+        order_id=order_id,
+        amount_minor=100,
+        target_user_id="",
+        merchant_id="42",
+        requested_user_id="1",
+        requested_role="cs",
+        reason="用户要求退款",
+    )
+    digest = sign_payload(payload, TEST_HITL_SECRET)
+    approval = SimpleNamespace(
+        id=approval_id,
+        session_id=2001,
+        status=status,
+        thread_id=thread_id,
+        checkpoint_id=checkpoint_id,
+        action_type=payload.tool_name,
+        action_payload=payload.canonical_dict(),
+        agent_reason="订单异常，需要退款",
+        payload_version=1,
+        payload_digest=digest,
+        merchant_id=42,
+        requested_user_id=1,
+        requested_role="cs",
+        expire_at=datetime.now() + timedelta(hours=1),
+        execution_result=execution_result,
+    )
+    checkpoint_values = {
+        "user_id": 1,
+        "user_role": "cs",
+        "merchant_id": 42,
+        "pending_hitl": True,
+        "pending_action": {
+            "approval_id": approval_id,
+            "action_type": payload.tool_name,
+            "payload_digest": digest,
+            "approval_payload": payload.canonical_dict(),
+        },
+    }
+    return approval, payload, checkpoint_values
 
 
 # =========================================================
@@ -409,18 +471,7 @@ class TestResumeEndpoint:
         assert resp.status_code == 403
 
     def test_resume_uses_thread_from_approval_and_preserves_action_type(self):
-        approval = type(
-            "Approval",
-            (),
-            {
-                "id": 1001,
-                "status": "PENDING",
-                "thread_id": "thread-from-db",
-                "action_type": "execute_refund",
-                "action_payload": {"order_id": "O-1", "amount": 100, "reason": "用户要求退款"},
-                "agent_reason": "订单异常，需要退款",
-            },
-        )()
+        approval, payload, checkpoint_values = make_resume_binding()
 
         captured = {}
 
@@ -443,6 +494,10 @@ class TestResumeEndpoint:
 
         with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
              patch("api.chat.hitl_service.approve", AsyncMock(return_value=True)), \
+             patch(
+                 "api.chat.agent_graph.aget_state",
+                 AsyncMock(return_value=SimpleNamespace(values=checkpoint_values)),
+             ) as get_state_mock, \
              patch("api.chat.agent_graph.astream_events", fake_stream), \
              patch("api.chat.runtime_store", runtime):
             resp = client.post(
@@ -454,24 +509,179 @@ class TestResumeEndpoint:
         assert resp.status_code == 200
         body = resp.text
         assert "thread-from-db" in body
-        assert captured["config"] == {"configurable": {"thread_id": "thread-from-db"}}
+        expected_config = {
+            "configurable": {
+                "thread_id": "thread-from-db",
+                "checkpoint_id": "checkpoint-bound",
+            }
+        }
+        assert captured["config"] == expected_config
+        get_state_mock.assert_awaited_once_with(expected_config)
+        assert captured["resume_input"]["user_id"] == 1
+        assert captured["resume_input"]["user_role"] == "cs"
+        assert captured["resume_input"]["merchant_id"] == 42
         assert captured["resume_input"]["pending_action"]["action_type"] == "execute_refund"
         assert captured["resume_input"]["pending_action"]["approval_id"] == "1001"
-        assert captured["resume_input"]["pending_action"]["payload"]["order_id"] == "O-1"
+        assert captured["resume_input"]["pending_action"]["payload"]["order_id"] == payload.order_id
+        assert captured["resume_input"]["pending_action"]["approval_digest"] == approval.payload_digest
+
+    def test_concurrent_resume_only_one_request_enters_agent_graph(self):
+        approval, _, checkpoint_values = make_resume_binding()
+        both_loaded = threading.Barrier(2)
+        approval_lock = threading.Lock()
+        approval_claimed = False
+        stream_calls = 0
+
+        async def load_same_pending_approval(_approval_id):
+            both_loaded.wait(timeout=5)
+            return approval
+
+        async def approve_once(_approval_id, _approver_id):
+            nonlocal approval_claimed
+            with approval_lock:
+                if approval_claimed:
+                    return False
+                approval_claimed = True
+                return True
+
+        async def fake_stream(_resume_input, config=None, version=None):
+            nonlocal stream_calls
+            with approval_lock:
+                stream_calls += 1
+            yield {
+                "event": "on_chain_end",
+                "name": "resume",
+                "data": {
+                    "output": {
+                        "final_answer": "退款已执行",
+                        "stop_reason": "completed",
+                    }
+                },
+            }
+
+        runtime = AsyncMock()
+        runtime.get_latest_waiting_run_by_thread.return_value = None
+
+        with patch(
+            "api.chat.hitl_service.get_approval", side_effect=load_same_pending_approval
+        ), patch(
+            "api.chat.hitl_service.approve", side_effect=approve_once
+        ), patch(
+            "api.chat.agent_graph.aget_state",
+            AsyncMock(return_value=SimpleNamespace(values=checkpoint_values)),
+        ), patch(
+            "api.chat.agent_graph.astream_events", fake_stream
+        ), patch(
+            "api.chat.runtime_store", runtime
+        ):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                responses = list(
+                    executor.map(
+                        lambda _: client.post(
+                            "/chat/resume",
+                            json={"approval_id": "1001", "approved": True},
+                            headers={"X-User-Id": "9", "X-User-Role": "cs"},
+                        ),
+                        range(2),
+                    )
+                )
+
+        assert sorted(response.status_code for response in responses) == [200, 400]
+        assert stream_calls == 1
+        assert sum("hitl_resumed" in response.text for response in responses) == 1
+
+    def test_resume_rejects_unbound_approval_without_starting_graph(self):
+        approval, _, _ = make_resume_binding(checkpoint_id=None)
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.agent_graph.aget_state", AsyncMock()) as get_state_mock, \
+             patch("api.chat.agent_graph.astream_events", AsyncMock()) as stream_mock:
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1001", "approved": True},
+                headers={"X-User-Id": "9", "X-User-Role": "cs"},
+            )
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "unbound_approval"
+        get_state_mock.assert_not_awaited()
+        stream_mock.assert_not_awaited()
+
+    def test_resume_rejects_missing_bound_checkpoint_without_approving(self):
+        approval, _, _ = make_resume_binding()
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch(
+                 "api.chat.agent_graph.aget_state",
+                 AsyncMock(side_effect=LookupError("missing checkpoint")),
+             ), \
+             patch("api.chat.hitl_service.approve", AsyncMock()) as approve_mock, \
+             patch("api.chat.agent_graph.astream_events", AsyncMock()) as stream_mock:
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1001", "approved": True},
+                headers={"X-User-Id": "9", "X-User-Role": "cs"},
+            )
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "checkpoint_missing"
+        approve_mock.assert_not_awaited()
+        stream_mock.assert_not_awaited()
+
+    def test_resume_rejects_tampered_payload_before_approval_or_graph(self):
+        approval, _, checkpoint_values = make_resume_binding()
+        checkpoint_values["pending_action"]["approval_payload"][
+            "amount_minor"
+        ] = 101
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch(
+                 "api.chat.agent_graph.aget_state",
+                 AsyncMock(return_value=SimpleNamespace(values=checkpoint_values)),
+             ), \
+             patch("api.chat.hitl_service.approve", AsyncMock()) as approve_mock, \
+             patch("api.chat.agent_graph.astream_events", AsyncMock()) as stream_mock:
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1001", "approved": True},
+                headers={"X-User-Id": "9", "X-User-Role": "cs"},
+            )
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "payload_mismatch"
+        approve_mock.assert_not_awaited()
+        stream_mock.assert_not_awaited()
+
+    def test_resume_replays_executed_result_without_restarting_graph(self):
+        approval, _, _ = make_resume_binding(
+            status="EXECUTED",
+            execution_result={"status": "SUCCESS", "refund_id": "R-1"},
+        )
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.agent_graph.aget_state", AsyncMock()) as get_state_mock, \
+             patch("api.chat.agent_graph.astream_events", AsyncMock()) as stream_mock:
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1001", "approved": True},
+                headers={"X-User-Id": "9", "X-User-Role": "cs"},
+            )
+
+        assert resp.status_code == 200
+        data_line = next(
+            line for line in resp.text.splitlines() if line.startswith("data: ")
+        )
+        replay = json.loads(json.loads(data_line[6:])["content"])
+        assert replay == {"status": "SUCCESS", "refund_id": "R-1"}
+        get_state_mock.assert_not_awaited()
+        stream_mock.assert_not_awaited()
 
     def test_resume_records_events_on_waiting_runtime_run(self):
-        approval = type(
-            "Approval",
-            (),
-            {
-                "id": 1006,
-                "status": "PENDING",
-                "thread_id": "thread-waiting",
-                "action_type": "execute_refund",
-                "action_payload": {"order_id": "O-6"},
-                "agent_reason": "需要退款",
-            },
-        )()
+        approval, _, checkpoint_values = make_resume_binding(
+            approval_id=1006,
+            thread_id="thread-waiting",
+            order_id="O-6",
+        )
         runtime = AsyncMock()
         runtime.get_latest_waiting_run_by_thread.return_value = type(
             "Run",
@@ -499,6 +709,10 @@ class TestResumeEndpoint:
 
         with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
              patch("api.chat.hitl_service.approve", AsyncMock(return_value=True)), \
+             patch(
+                 "api.chat.agent_graph.aget_state",
+                 AsyncMock(return_value=SimpleNamespace(values=checkpoint_values)),
+             ), \
              patch("api.chat.agent_graph.astream_events", fake_stream), \
              patch("api.chat.runtime_store", runtime):
             resp = client.post(
@@ -541,6 +755,24 @@ class TestResumeEndpoint:
         assert "thread_id" in resp.json()["detail"]
         approve_mock.assert_not_awaited()
 
+    def test_resume_rejects_approver_merchant_scope_mismatch(self):
+        approval, _, _ = make_resume_binding()
+
+        with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
+             patch("api.chat.agent_graph.aget_state", AsyncMock()) as get_state_mock:
+            resp = client.post(
+                "/chat/resume",
+                json={"approval_id": "1001", "approved": True},
+                headers={
+                    "X-User-Id": "9",
+                    "X-User-Role": "cs",
+                    "X-Merchant-Id": "43",
+                },
+            )
+
+        assert resp.status_code == 404
+        get_state_mock.assert_not_awaited()
+
     def test_resume_reject_path_uses_thread_from_approval(self):
         approval = type(
             "Approval",
@@ -571,18 +803,12 @@ class TestResumeEndpoint:
         assert "thread-reject" in resp.text
 
     def test_resume_accepts_already_approved_record_from_hitl_workbench(self):
-        approval = type(
-            "Approval",
-            (),
-            {
-                "id": 1003,
-                "status": "APPROVED",
-                "thread_id": "thread-approved",
-                "action_type": "execute_refund",
-                "action_payload": {"order_id": "O-3"},
-                "agent_reason": "工作台已审批通过",
-            },
-        )()
+        approval, _, checkpoint_values = make_resume_binding(
+            approval_id=1003,
+            thread_id="thread-approved",
+            order_id="O-3",
+            status="APPROVED",
+        )
 
         captured = {}
 
@@ -599,6 +825,10 @@ class TestResumeEndpoint:
 
         with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
              patch("api.chat.hitl_service.approve", AsyncMock(return_value=False)) as approve_mock, \
+             patch(
+                 "api.chat.agent_graph.aget_state",
+                 AsyncMock(return_value=SimpleNamespace(values=checkpoint_values)),
+             ), \
              patch("api.chat.agent_graph.astream_events", fake_stream), \
              patch("api.chat.runtime_store", runtime):
             resp = client.post(
@@ -608,23 +838,22 @@ class TestResumeEndpoint:
             )
 
         assert resp.status_code == 200
-        assert captured["config"] == {"configurable": {"thread_id": "thread-approved"}}
+        assert captured["config"] == {
+            "configurable": {
+                "thread_id": "thread-approved",
+                "checkpoint_id": "checkpoint-bound",
+            }
+        }
         approve_mock.assert_not_awaited()
 
     def test_resume_completed_runtime_run_does_not_restart_agent(self):
-        approval = type(
-            "Approval",
-            (),
-            {
-                "id": 1007,
-                "status": "APPROVED",
-                "thread_id": "thread-completed",
-                "action_type": "execute_refund",
-                "action_payload": {"order_id": "O-7"},
-                "agent_reason": "已经审批并执行",
-                "session_id": 2007,
-            },
-        )()
+        approval, _, checkpoint_values = make_resume_binding(
+            approval_id=1007,
+            thread_id="thread-completed",
+            order_id="O-7",
+            status="APPROVED",
+        )
+        approval.session_id = 2007
         runtime = AsyncMock()
         runtime.get_latest_run_by_thread.return_value = type(
             "Run",
@@ -644,6 +873,10 @@ class TestResumeEndpoint:
 
         with patch("api.chat.hitl_service.get_approval", AsyncMock(return_value=approval)), \
              patch("api.chat.hitl_service.approve", AsyncMock(return_value=False)) as approve_mock, \
+             patch(
+                 "api.chat.agent_graph.aget_state",
+                 AsyncMock(return_value=SimpleNamespace(values=checkpoint_values)),
+             ), \
              patch("api.chat.agent_graph.astream_events", should_not_stream), \
              patch("api.chat.runtime_store", runtime):
             resp = client.post(

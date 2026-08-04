@@ -18,6 +18,7 @@ from agent import nodes
 from agent.graph import route_after_tool
 from agent.tool_router import order_target_hash
 from mcp.mcp_client import McpToolError
+from session.hitl_binding import sign_payload
 
 
 def make_state(messages, **over) -> dict:
@@ -111,11 +112,77 @@ class TestHitlNode:
             },
         )
 
-        await nodes.hitl_node(state)
+        result = await nodes.hitl_node(state)
 
         _, kwargs = mock_service.create_approval.await_args
-        assert kwargs["action_payload"]["merchant_id"] == 42
-        assert kwargs["action_payload"]["order_id"] == "O-1"
+        payload = kwargs["approval_payload"]
+        assert payload.merchant_id == "42"
+        assert payload.order_id == "O-1"
+        assert payload.amount_minor == 100
+        assert payload.requested_user_id == "1"
+        assert payload.requested_role == "cs"
+        assert result["pending_action"]["approval_id"] == 1001
+        assert result["pending_action"]["payload_digest"] == sign_payload(
+            payload,
+            nodes.settings.hitl_payload_signing_secret,
+        )
+        assert result["pending_action"]["approval_payload"] == payload.canonical_dict()
+        state["pending_action"]["payload"]["order_id"] = "tampered-after-call"
+        assert result["pending_action"]["approval_payload"]["order_id"] == "O-1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("approval_result", [None, 0])
+    async def test_approval_without_id_fails_closed(self, monkeypatch, approval_result):
+        import session.hitl as hitl_module
+
+        mock_service = MagicMock()
+        mock_service.create_approval = AsyncMock(return_value=approval_result)
+        monkeypatch.setattr(hitl_module, "hitl_service", mock_service)
+
+        result = await nodes.hitl_node(make_state(
+            [HumanMessage(content="帮用户退款")],
+            user_role="cs",
+            pending_action={
+                "action_type": "execute_refund",
+                "payload": {"order_id": "O-1", "amount": 100, "reason": "退款"},
+                "reason": "订单异常，需要退款",
+            },
+        ))
+
+        assert result["pending_hitl"] is False
+        assert result["pending_action"] is None
+        assert result["evidence_stop_reason"] == "internal_error"
+        assert result["stop_reason"] == "internal_error"
+        assert "审批服务暂时不可用" in result["final_answer"]
+
+    @pytest.mark.asyncio
+    async def test_approval_persistence_error_fails_closed(self, monkeypatch, capsys):
+        import session.hitl as hitl_module
+
+        mock_service = MagicMock()
+        mock_service.create_approval = AsyncMock(
+            side_effect=RuntimeError("SECRET_APPROVAL_PAYLOAD")
+        )
+        monkeypatch.setattr(hitl_module, "hitl_service", mock_service)
+
+        result = await nodes.hitl_node(make_state(
+            [HumanMessage(content="帮用户退款")],
+            user_role="cs",
+            pending_action={
+                "action_type": "execute_refund",
+                "payload": {"order_id": "O-1", "amount": 100, "reason": "退款"},
+                "reason": "订单异常，需要退款",
+            },
+        ))
+
+        assert result == {
+            "pending_hitl": False,
+            "pending_action": None,
+            "evidence_stop_reason": "internal_error",
+            "stop_reason": "internal_error",
+            "final_answer": "审批服务暂时不可用，本次高风险操作未提交。",
+        }
+        assert "SECRET_APPROVAL_PAYLOAD" not in capsys.readouterr().out
 
 
 # =========================================================
@@ -259,7 +326,8 @@ class TestToolNode:
         }
         second = await nodes.tool_node(proposed)
 
-        assert second["pending_hitl"] is True
+        assert second.get("pending_hitl") is not True
+        assert route_after_tool({**proposed, **second}) == "hitl_node"
         mock_mcp.call_tool.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -375,22 +443,35 @@ class TestToolNode:
 
         result = await nodes.tool_node(state)
 
-        assert result["pending_hitl"] is True
+        assert result.get("pending_hitl") is not True
         assert result["pending_action"]["action_type"] == "execute_refund"
         assert result["pending_action"]["payload"] == args
+        assert route_after_tool({**state, **result}) == "hitl_node"
         mock_mcp.call_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_high_risk_tool_with_approval_executes_mcp(self, monkeypatch):
+    async def test_high_risk_tool_with_approval_overrides_model_supplied_credentials(
+        self, monkeypatch
+    ):
         mock_mcp = MagicMock()
         mock_mcp.call_tool = AsyncMock(return_value="退款成功")
         monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
 
-        args = {"order_id": "123", "amount": 100, "reason": "用户要求退款"}
+        args = {
+            "order_id": "123",
+            "amount": 100,
+            "reason": "用户要求退款",
+            "approval_id": "MODEL_CONTROLLED_ID",
+            "approval_digest": "b" * 64,
+        }
         state = make_state(
             [ai_with_tool_call("execute_refund", args)],
             user_role="cs",
-            pending_action={"action_type": "execute_refund", "approval_id": "APPROVAL_1"},
+            pending_action={
+                "action_type": "execute_refund",
+                "approval_id": "APPROVAL_1",
+                "approval_digest": "a" * 64,
+            },
             route_task_type="refund_action",
             route_mode="controlled",
             route_required_tools=["query_order", "execute_refund"],
@@ -406,6 +487,7 @@ class TestToolNode:
         mock_mcp.call_tool.assert_awaited_once()
         _, kwargs = mock_mcp.call_tool.await_args
         assert kwargs["arguments"]["approval_id"] == "APPROVAL_1"
+        assert kwargs["arguments"]["approval_digest"] == "a" * 64
 
     @pytest.mark.asyncio
     async def test_high_risk_route_rejects_model_order_drift_before_mcp(

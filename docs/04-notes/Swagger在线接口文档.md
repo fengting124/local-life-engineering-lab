@@ -109,7 +109,7 @@ X-Merchant-Id: 880000100001
 
 1. `POST /chat` 在传入已有 `session_id` 时，会校验该会话必须属于当前 `X-User-Id`。
 2. `POST /chat/resume` 需要 `X-User-Role` 为 `cs` 或 `admin`。
-3. `POST /chat/resume` 的 `thread_id` 只是可选辅助字段；服务端会以 `approval_id` 查到的审批记录作为最终恢复线程。
+3. `POST /chat/resume` 的 `thread_id` 只是可选辅助字段；服务端以 `approval_id` 反查审批绑定的 `thread_id + checkpoint_id`，并在审批状态变化前验证快照载荷、HMAC、发起身份、商家和当前权限。
 4. 审批工作台接口 `/hitl/pending`、`/hitl/{id}`、`/hitl/{id}/approve`、`/hitl/{id}/reject` 都需要 `X-User-Id` 和 `X-User-Role=cs/admin`。
 5. 审批工作台接口可选传 `X-Merchant-Id`；传入后只返回或操作 `action_payload.merchant_id` 匹配的审批记录，不匹配按不存在处理。
 6. `/chat/resume` 支持审批记录已经是 `APPROVED/REJECTED` 的情况，适配“工作台先审批，再恢复 Agent”的前端流程。

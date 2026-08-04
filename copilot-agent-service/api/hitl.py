@@ -48,13 +48,32 @@ def _ensure_approval_in_merchant_scope(approval, merchant_id: int | None) -> Non
     """Hide approval records outside the caller's optional merchant scope."""
     if merchant_id is None:
         return
-    payload = approval.action_payload or {}
-    try:
-        approval_merchant_id = int(payload.get("merchant_id"))
-    except (TypeError, ValueError):
-        approval_merchant_id = None
+    approval_merchant_id = getattr(approval, "merchant_id", None)
+    if approval_merchant_id is None:
+        payload = approval.action_payload or {}
+        try:
+            approval_merchant_id = int(payload.get("merchant_id"))
+        except (TypeError, ValueError):
+            approval_merchant_id = None
     if approval_merchant_id != merchant_id:
         raise HTTPException(status_code=404, detail="审批记录不存在")
+
+
+def _ensure_approval_is_bound(approval) -> None:
+    """Reject legacy or partially persisted approvals before transition."""
+    if not getattr(approval, "checkpoint_id", None):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "unbound_approval", "message": "审批尚未绑定恢复点"},
+        )
+    if (
+        getattr(approval, "payload_version", None) != 1
+        or not getattr(approval, "payload_digest", None)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "unsigned_approval", "message": "审批缺少签名绑定"},
+        )
 
 
 class ApproveRequest(BaseModel):
@@ -162,6 +181,7 @@ async def approve(
     _ensure_approval_in_merchant_scope(approval, merchant_id)
     if approval.status != "PENDING":
         raise HTTPException(status_code=400, detail=f"审批记录状态为 {approval.status}，无法通过")
+    _ensure_approval_is_bound(approval)
 
     ok = await hitl_service.approve(approval_id, approver_id, body.comment)
     if not ok:

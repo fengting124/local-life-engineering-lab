@@ -3,7 +3,14 @@ package com.personalprojections.locallife.copilot.tool.impl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.personalprojections.locallife.copilot.client.LocalLifeInternalClient;
+import com.personalprojections.locallife.copilot.hitl.ApprovalExecutionGuard;
+import com.personalprojections.locallife.copilot.hitl.ApprovalPayload;
+import com.personalprojections.locallife.copilot.rbac.RbacContext;
 import com.personalprojections.locallife.copilot.tool.McpTool.ToolParameterException;
+import com.personalprojections.locallife.copilot.tool.McpTool.ToolBusinessException;
+import com.personalprojections.locallife.copilot.tool.McpTool.ToolPermissionException;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -12,8 +19,11 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -31,16 +41,43 @@ import static org.mockito.Mockito.when;
  * 三种边界依次摆出来，钉住修复后的行为：永远是结构化的 {@link ToolParameterException}，
  * 绝不是 {@link NullPointerException}。
  *
- * <h2>为什么不在这里测 RBAC / HITL</h2>
- * <p>与 {@code ExecuteRefundTool} 同理：{@code execute()} 不直接读取 RbacContext
- * （角色放行 {@code xAllowedRoles=[cs,admin]} 在 {@code McpController} 层完成），
- * HITL 拦截是 Python Agent Service 看到 {@code xRequiresHitl=true} 后的编排行为。
+ * <h2>HITL 执行边界</h2>
+ * <p>角色粗粒度放行由 {@code McpController} 完成；本工具仍会将订单、补偿金额、
+ * 目标用户和当前 {@link RbacContext} 交给 {@link ApprovalExecutionGuard} 做不可变
+ * 载荷校验与原子消费，守卫放行前不会调用 Server。
  */
 class IssueCompensationCouponToolTest {
 
+    private static final String APPROVAL_DIGEST = "a".repeat(64);
+
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final LocalLifeInternalClient internalClient = mock(LocalLifeInternalClient.class);
-    private final IssueCompensationCouponTool tool = new IssueCompensationCouponTool(objectMapper, internalClient);
+    private final ApprovalExecutionGuard guard = mock(ApprovalExecutionGuard.class);
+    private final ApprovalExecutionGuard.ExecutionClaim claim =
+            new ApprovalExecutionGuard.ExecutionClaim(1001L, "execution-1", APPROVAL_DIGEST);
+    private final IssueCompensationCouponTool tool =
+            new IssueCompensationCouponTool(objectMapper, internalClient, guard);
+
+    @BeforeEach
+    void setUp() {
+        RbacContext.set(RbacContext.builder()
+                .userId(30001L)
+                .role("cs")
+                .merchantId(42L)
+                .build());
+        when(guard.claim(anyString(), anyString(), any(ApprovalPayload.class), any(RbacContext.class)))
+                .thenReturn(new ApprovalExecutionGuard.ExecutionDecision(
+                        ApprovalExecutionGuard.ExecutionStatus.CLAIMED,
+                        claim,
+                        null,
+                        null
+                ));
+    }
+
+    @AfterEach
+    void tearDown() {
+        RbacContext.clear();
+    }
 
     private JsonNode args(String json) throws Exception {
         return objectMapper.readTree(json);
@@ -54,7 +91,8 @@ class IssueCompensationCouponToolTest {
     private String validArgsWithAmount(Object amountLiteral) {
         return "{\"user_id\":\"" + VALID_USER_ID + "\",\"order_id\":\"" + VALID_ORDER_ID + "\","
                 + "\"compensation_amount\":" + amountLiteral + ","
-                + "\"reason\":\"" + VALID_REASON + "\",\"approval_id\":\"" + VALID_APPROVAL_ID + "\"}";
+                + "\"reason\":\"" + VALID_REASON + "\",\"approval_id\":\"" + VALID_APPROVAL_ID + "\","
+                + "\"approval_digest\":\"" + APPROVAL_DIGEST + "\"}";
     }
 
     // =====================================================================
@@ -64,7 +102,8 @@ class IssueCompensationCouponToolTest {
     @Test
     void execute_missingCompensationAmount_throwsParameterException_insteadOfNullPointerException() throws Exception {
         String argsWithoutAmount = "{\"user_id\":\"" + VALID_USER_ID + "\",\"order_id\":\"" + VALID_ORDER_ID + "\","
-                + "\"reason\":\"" + VALID_REASON + "\",\"approval_id\":\"" + VALID_APPROVAL_ID + "\"}";
+                + "\"reason\":\"" + VALID_REASON + "\",\"approval_id\":\"" + VALID_APPROVAL_ID + "\","
+                + "\"approval_digest\":\"" + APPROVAL_DIGEST + "\"}";
 
         assertThatThrownBy(() -> tool.execute(args(argsWithoutAmount)))
                 .as("修复前：arguments.get(\"compensation_amount\") 返回 Java null（键缺失，不是 MissingNode），"
@@ -116,7 +155,8 @@ class IssueCompensationCouponToolTest {
                 "order_id", VALID_ORDER_ID,
                 "compensation_amount", 2000,
                 "reason", VALID_REASON,
-                "approval_id", VALID_APPROVAL_ID);
+                "approval_id", VALID_APPROVAL_ID,
+                "approval_digest", APPROVAL_DIGEST);
         java.util.Map<String, Object> partial = new java.util.HashMap<>(complete);
         partial.remove(missingKey);
 
@@ -146,6 +186,23 @@ class IssueCompensationCouponToolTest {
                 .isSameAs(compensateResult);
         verify(internalClient).compensateCoupon(
                 eq(VALID_ORDER_ID), eq(VALID_USER_ID), eq(2000), eq(VALID_APPROVAL_ID), eq(VALID_REASON));
+        verify(guard).claim(
+                eq(VALID_APPROVAL_ID),
+                eq(APPROVAL_DIGEST),
+                eq(new ApprovalPayload(
+                        1,
+                        "issue_compensation_coupon",
+                        VALID_ORDER_ID,
+                        2000,
+                        VALID_USER_ID,
+                        "42",
+                        "30001",
+                        "cs",
+                        VALID_REASON
+                )),
+                any(RbacContext.class)
+        );
+        verify(guard).complete(claim, compensateResult);
     }
 
     @Test
@@ -158,5 +215,78 @@ class IssueCompensationCouponToolTest {
         tool.execute(args(validArgsWithAmount(1)));
 
         verify(internalClient).compensateCoupon(eq(VALID_ORDER_ID), eq(VALID_USER_ID), eq(1), eq(VALID_APPROVAL_ID), eq(VALID_REASON));
+    }
+
+    @Test
+    void execute_missingApprovalDigest_failsBeforeGuardAndInternalClient() throws Exception {
+        JsonNode arguments = objectMapper.readTree(
+                "{\"user_id\":\"" + VALID_USER_ID + "\",\"order_id\":\"" + VALID_ORDER_ID + "\","
+                        + "\"compensation_amount\":2000,\"reason\":\"" + VALID_REASON + "\","
+                        + "\"approval_id\":\"" + VALID_APPROVAL_ID + "\"}"
+        );
+
+        assertThatThrownBy(() -> tool.execute(arguments))
+                .isInstanceOf(ToolParameterException.class)
+                .hasMessage("approval_digest 不能为空");
+
+        verifyNoInteractions(internalClient);
+        verify(guard, never()).claim(anyString(), anyString(), any(), any());
+    }
+
+    @Test
+    void execute_deniedApprovalNeverCallsInternalClient() throws Exception {
+        when(guard.claim(anyString(), anyString(), any(), any()))
+                .thenThrow(mock(ApprovalExecutionGuard.ApprovalExecutionDeniedException.class));
+
+        assertThatThrownBy(() -> tool.execute(args(validArgsWithAmount(2000))))
+                .isInstanceOf(ToolPermissionException.class);
+
+        verifyNoInteractions(internalClient);
+    }
+
+    @Test
+    void execute_inProgressApprovalNeverCallsInternalClient() throws Exception {
+        when(guard.claim(anyString(), anyString(), any(), any()))
+                .thenReturn(new ApprovalExecutionGuard.ExecutionDecision(
+                        ApprovalExecutionGuard.ExecutionStatus.IN_PROGRESS,
+                        null,
+                        null,
+                        "approval_execution_in_progress"
+                ));
+
+        assertThatThrownBy(() -> tool.execute(args(validArgsWithAmount(2000))))
+                .isInstanceOf(ToolBusinessException.class);
+
+        verifyNoInteractions(internalClient);
+    }
+
+    @Test
+    void execute_replayReturnsStoredResultWithoutCallingInternalClient() throws Exception {
+        Map<String, Object> stored = Map.of("status", "ISSUED", "couponId", "COUPON_1");
+        when(guard.claim(anyString(), anyString(), any(), any()))
+                .thenReturn(new ApprovalExecutionGuard.ExecutionDecision(
+                        ApprovalExecutionGuard.ExecutionStatus.REPLAY,
+                        null,
+                        stored,
+                        null
+                ));
+
+        Object result = tool.execute(args(validArgsWithAmount(2000)));
+
+        assertThat(result).isSameAs(stored);
+        verifyNoInteractions(internalClient);
+        verify(guard, never()).complete(any(), any());
+    }
+
+    @Test
+    void execute_missingCallerIdentityFailsBeforeClaimAndInternalClient() throws Exception {
+        RbacContext.clear();
+
+        assertThatThrownBy(() -> tool.execute(args(validArgsWithAmount(2000))))
+                .isInstanceOf(ToolPermissionException.class)
+                .hasMessage("调用者身份缺失");
+
+        verify(guard, never()).claim(anyString(), anyString(), any(), any());
+        verifyNoInteractions(internalClient);
     }
 }

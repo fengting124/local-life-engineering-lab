@@ -3,7 +3,7 @@
 - Status: Active
 - Type: Explanation
 - Owners: Project maintainers
-- Last verified: 2026-07-12
+- Last verified: 2026-08-04
 - Source of truth: `copilot-agent-service/agent`, `copilot-agent-service/api`, `copilot-agent-service/session`, `copilot-agent-service/rag`, `local-life-copilot/src/main/java`
 
 ## 1. 文档目标
@@ -20,8 +20,8 @@
 | LangGraph ReAct 主循环 | Active | `copilot-agent-service/agent/graph.py`、`agent/nodes.py` |
 | MCP Client 调 Java MCP Server | Active | `copilot-agent-service/mcp/mcp_client.py`、`local-life-copilot/.../McpController.java` |
 | Fast Path | Active | `copilot-agent-service/api/chat.py` |
-| HITL 审批记录 | Partial | `copilot-agent-service/session/hitl.py`、`api/hitl.py` |
-| Checkpoint 持久化 | Partial | `copilot-agent-service/session/checkpointer.py` 已持久化 checkpoint 与 pending writes；仍待真 MySQL 重启恢复 smoke 和官方 interrupt/resume 模式迁移 |
+| HITL 审批与执行绑定 | Active | 退款/补券载荷使用 HMAC 绑定审批、精确 Checkpoint 和 MCP 参数；Java 以 CAS 租约消费，Server 账本去重；见 [HITL 审批与安全恢复](../security/HITL审批与安全恢复.md) |
+| Checkpoint 持久化 | Active（自定义实现） | `session/checkpointer.py` 持久化完整 checkpoint 与 pending writes，并原子绑定审批；真实 MySQL 重启和篡改 smoke 已通过，仍待官方 interrupt/resume 迁移与 LangGraph 版本安全升级 |
 | RAG + Milvus | Partial | `copilot-agent-service/rag/`；Milvus 客户端不可用时返回空候选，知识库无真实候选则拒答；仍待真实故障 smoke 和告警联动 |
 | Guardrails | Active | `copilot-agent-service/guardrails/input_checker.py` |
 | 服务端短时内部 token | Planned | 当前代码仍使用 `X-User-*` 请求头链路 |
@@ -411,25 +411,25 @@ OR
 Agent 决定执行高风险动作
    |
    v
-生成 approval request
+规范化目标并生成 HMAC 保护的 approval request
    |
    v
-LangGraph interrupt
+hitl_node 生成 PENDING 审批
    |
    v
-Checkpoint 持久化
+Checkpoint 持久化并绑定精确 checkpoint_id
    |
    v
 运营或商家审批
    |
    v
-恢复 thread
+按审批记录恢复精确 thread_id + checkpoint_id
    |
    v
-执行工具
+Agent 与 Java MCP 双重校验后 CAS 获取执行租约
    |
    v
-记录审计日志
+Server 幂等账本生效，记录审计并保存脱敏结果
 ```
 
 ### 8.3 审批表
@@ -439,18 +439,32 @@ CREATE TABLE hitl_approval (
   id BIGINT PRIMARY KEY,
   session_id BIGINT NOT NULL,
   thread_id VARCHAR(64) NOT NULL,
-  checkpoint_id VARCHAR(64) NOT NULL,
+  checkpoint_id VARCHAR(64),
   action_type VARCHAR(50) NOT NULL,
-  action_payload JSON,
-  reason TEXT,
+  action_payload JSON NOT NULL,
+  payload_version INT,
+  payload_digest VARCHAR(64),
+  merchant_id BIGINT,
+  requested_user_id BIGINT,
+  requested_role VARCHAR(32),
+  agent_reason TEXT,
   status VARCHAR(20) DEFAULT 'PENDING',
   approver_id BIGINT,
   approver_comment TEXT,
   approved_at DATETIME,
+  execution_id VARCHAR(64),
+  execution_lease_until DATETIME,
+  execution_result JSON,
+  executed_at DATETIME,
   created_at DATETIME,
   INDEX idx_status_time (status, created_at)
 );
 ```
+
+这是便于理解的关键字段摘录，完整结构以 `V101__init_copilot_tables.sql` 和
+`V104__harden_hitl_approval.sql` 为准。记录创建时 `checkpoint_id` 必须为空；
+只有真实挂起快照提交成功后才在同一事务中绑定。审批载荷覆盖工具、订单、金额、
+目标用户、商家、发起人、角色和原因，恢复和 MCP 执行边界都会重新验签与比对。
 
 ## 9. 数据库设计
 
@@ -559,7 +573,7 @@ CREATE TABLE agent_event (
 );
 ```
 
-当前代码在 `/chat` Fast Path、LangGraph SSE 流和 `/chat/resume` 恢复流里同步写入 `session_started`、`agent_step`、`stream`、`tool_call`、`tool_result`、`hitl_request`、`final_answer`、`error` 等事件。审批恢复时会按 `thread_id` 找最近的 `WAITING_APPROVAL` run，从下一个 `sequence_index` 继续写事件；审批拒绝会把 run 标记为 `CANCELED`。`GET /chat/runs/{run_id}/events?after_sequence=N&limit=M` 可按游标回放当前用户自己的 run；静态 Chat UI 已在流式读取异常时按 `run_id + lastEventSequence` 做一次 best-effort 续拉。生产级还需要运营审计入口和官方 `interrupt()/Command(resume=...)` 恢复语义。
+当前代码在 `/chat` Fast Path、LangGraph SSE 流和 `/chat/resume` 恢复流里同步写入 `session_started`、`agent_step`、`stream`、`tool_call`、`tool_result`、`hitl_request`、`final_answer`、`error` 等事件。审批恢复点由审批记录中的 `thread_id + checkpoint_id` 唯一确定；运行时事件仍在该 thread 下寻找对应的 `WAITING_APPROVAL` run，并从下一个 `sequence_index` 继续写。审批拒绝会把 run 标记为 `CANCELED`。`GET /chat/runs/{run_id}/events?after_sequence=N&limit=M` 可按游标回放当前用户自己的 run；静态 Chat UI 已在流式读取异常时按 `run_id + lastEventSequence` 做一次 best-effort 续拉。生产级还需要运营审计入口和官方 `interrupt()/Command(resume=...)` 恢复语义。
 
 ### 9.6 工具调用审计表
 
@@ -710,7 +724,7 @@ Step 6
 - Python 侧工具可见性：`copilot-agent-service/agent/tool_router.py` 的 `TOOL_ROLE_MAP`。
 - Java MCP 执行边界：各 `McpTool#getDefinition().xAllowedRoles` + `McpController` RBAC。
 - 商家隔离：`QueryOrderTool` 使用 `RbacContext.merchantId` 校验订单所属商家，不信任模型传入的参数。
-- 高风险动作：`agent/nodes.py` 在调用 `execute_refund` / `issue_compensation_coupon` 前生成 `pending_action`，无审批不调用 MCP；Java 工具 schema 也要求 `approval_id`。
+- 高风险动作：`agent/nodes.py` 在调用 `execute_refund` / `issue_compensation_coupon` 前生成 `pending_action`，无审批不调用 MCP；Java 工具要求 `approval_id + approval_digest`，`ApprovalExecutionGuard` 还会比对完整载荷、当前身份、商家、过期时间和执行租约。
 
 工具调用前必须注入身份上下文：
 
@@ -759,7 +773,7 @@ Agent 不能自行生成或覆盖 `merchant_id`。服务端根据登录态注入
 | `duration_ms` | 耗时 |
 | `status` | 成功或失败 |
 
-`tool_audit_log` 是自建 Trace 表的第一阶段实现，先覆盖工具调用审计。后续如果需要记录 LLM 调用、RAG 检索和 HITL 事件，可扩展为 `agent_trace_log` 或增加独立明细表。
+`tool_audit_log` 是自建 Trace 表的第一阶段实现，先覆盖工具调用审计。异步执行器会传播并清理 RBAC 和 MDC，使工具审计可按 `trace_id` 关联 Agent run；摘要、签名、secret、token、authorization 等敏感字段会递归脱敏。当前审计写入仍是 fail-open：写库失败会告警，但不会回滚已完成的业务调用。后续如果需要记录 LLM 调用、RAG 检索和 HITL 事件，可扩展为 `agent_trace_log` 或增加独立明细表。
 
 ### 11.4 Guardrails
 

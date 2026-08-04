@@ -1,15 +1,21 @@
 package com.personalprojections.locallife.copilot.audit;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
 import com.personalprojections.locallife.copilot.rbac.RbacContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Locale;
+import java.util.regex.Pattern;
 
 /**
  * 工具调用审计服务。
@@ -28,6 +34,15 @@ import java.time.LocalDateTime;
 @Service
 @RequiredArgsConstructor
 public class ToolAuditService {
+
+    private static final List<String> SENSITIVE_FIELD_FRAGMENTS = List.of(
+            "digest", "signature", "secret", "password", "token",
+            "authorization", "cookie", "api_key", "internal_key", "private_key");
+    private static final Pattern SENSITIVE_TEXT_CREDENTIAL = Pattern.compile(
+            "(?i)\\b(digest|approval_digest|signature|secret|password|token|authorization|cookie|"
+                    + "api[_-]?key|internal[_-]?key|private[_-]?key)(\\s*[:=]\\s*)"
+                    + "(?:Bearer\\s+)?[^\\s,;]+"
+    );
 
     private final ToolAuditMapper toolAuditMapper;
     private final ObjectMapper objectMapper;
@@ -75,12 +90,13 @@ public class ToolAuditService {
             ToolAuditLog log = ToolAuditLog.builder()
                     .sessionId(sessionId)
                     .threadId(threadId)
+                    .traceId(MDC.get("traceId"))
                     .toolName(toolName)
                     .toolInput(toJson(input))
                     .toolOutput(toJson(output))
                     .durationMs(durationMs)
                     .status(status)
-                    .errorMsg(errorMsg)
+                    .errorMsg(redactSensitiveText(errorMsg))
                     .userId(ctx != null ? ctx.getUserId() : null)
                     .userRole(ctx != null ? ctx.getRole() : null)
                     .createdAt(LocalDateTime.now())
@@ -88,7 +104,8 @@ public class ToolAuditService {
             toolAuditMapper.insert(log);
         } catch (Exception e) {
             // 审计失败不影响业务主链路，仅 WARN 日志
-            log.warn("[ToolAudit] 审计日志写入失败: tool={}, error={}", toolName, e.getMessage());
+            log.warn("[ToolAudit] 审计日志写入失败: tool={}, error={}",
+                    toolName, redactSensitiveText(e.getMessage()));
         }
     }
 
@@ -98,12 +115,12 @@ public class ToolAuditService {
         }
         if (obj instanceof String raw && isValidJson(raw)) {
             // 已经是合法 JSON 文本（如工具直接透传上游返回的原始 JSON）——原样存，不重复编码
-            return raw;
+            return redactSensitiveFields(raw);
         }
         // 其余情况——含"长得像字符串、其实不是合法 JSON"的裸字符串——统一走正常序列化：
         // Jackson 会把 String 序列化成带引号转义的 JSON 字符串字面量，天然合法
         try {
-            return objectMapper.writeValueAsString(obj);
+            return redactSensitiveFields(objectMapper.writeValueAsString(obj));
         } catch (JsonProcessingException e) {
             // tool_input/tool_output 是 JSON NOT NULL 列：序列化失败时绝不能像旧实现那样
             // 直接 return obj.toString()——那同样不保证是合法 JSON，会在落库这一关报错。
@@ -111,6 +128,38 @@ public class ToolAuditService {
             log.warn("[ToolAudit] 序列化为 JSON 失败，退化为字符串字面量: type={}, error={}",
                     obj.getClass().getSimpleName(), e.getMessage());
             return TextNode.valueOf(String.valueOf(obj)).toString();
+        }
+    }
+
+    private String redactSensitiveFields(String json) {
+        try {
+            JsonNode root = objectMapper.readTree(json);
+            redactSensitiveFields(root);
+            return objectMapper.writeValueAsString(root);
+        } catch (JsonProcessingException e) {
+            return TextNode.valueOf(json).toString();
+        }
+    }
+
+    private String redactSensitiveText(String text) {
+        if (text == null || text.isBlank()) {
+            return text;
+        }
+        return SENSITIVE_TEXT_CREDENTIAL.matcher(text).replaceAll("$1$2[REDACTED]");
+    }
+
+    private void redactSensitiveFields(JsonNode node) {
+        if (node instanceof ObjectNode objectNode) {
+            objectNode.properties().forEach(entry -> {
+                String field = entry.getKey().toLowerCase(Locale.ROOT);
+                if (SENSITIVE_FIELD_FRAGMENTS.stream().anyMatch(field::contains)) {
+                    objectNode.put(entry.getKey(), "[REDACTED]");
+                } else {
+                    redactSensitiveFields(entry.getValue());
+                }
+            });
+        } else if (node.isArray()) {
+            node.forEach(this::redactSensitiveFields);
         }
     }
 

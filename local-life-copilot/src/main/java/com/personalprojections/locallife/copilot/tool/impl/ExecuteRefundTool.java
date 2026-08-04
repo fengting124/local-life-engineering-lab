@@ -3,7 +3,10 @@ package com.personalprojections.locallife.copilot.tool.impl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.personalprojections.locallife.copilot.hitl.ApprovalExecutionGuard;
+import com.personalprojections.locallife.copilot.hitl.ApprovalPayload;
 import com.personalprojections.locallife.copilot.mcp.dto.ToolDefinition;
+import com.personalprojections.locallife.copilot.rbac.RbacContext;
 import com.personalprojections.locallife.copilot.tool.McpTool;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -44,6 +47,7 @@ public class ExecuteRefundTool implements McpTool {
 
     private final ObjectMapper objectMapper;
     private final com.personalprojections.locallife.copilot.client.LocalLifeInternalClient internalClient;
+    private final ApprovalExecutionGuard approvalGuard;
 
     @Override
     public String getName() {
@@ -69,6 +73,11 @@ public class ExecuteRefundTool implements McpTool {
         approvalIdProp.put("description", "HITL 审批 ID，由审批通过后自动填入，不需要手动构造");
         properties.set("approval_id", approvalIdProp);
 
+        ObjectNode approvalDigestProp = objectMapper.createObjectNode();
+        approvalDigestProp.put("type", "string");
+        approvalDigestProp.put("description", "审批载荷签名，由系统在恢复审批时自动注入");
+        properties.set("approval_digest", approvalDigestProp);
+
         ObjectNode reasonProp = objectMapper.createObjectNode();
         reasonProp.put("type", "string");
         reasonProp.put("description", "退款原因（用于审计和用户通知）");
@@ -77,7 +86,9 @@ public class ExecuteRefundTool implements McpTool {
         ObjectNode inputSchema = objectMapper.createObjectNode();
         inputSchema.put("type", "object");
         inputSchema.set("properties", properties);
-        inputSchema.putArray("required").add("order_id").add("amount").add("approval_id").add("reason");
+        inputSchema.putArray("required")
+                .add("order_id").add("amount").add("approval_id")
+                .add("approval_digest").add("reason");
 
         return ToolDefinition.builder()
                 .name("execute_refund")
@@ -96,7 +107,32 @@ public class ExecuteRefundTool implements McpTool {
         String orderId    = extractString(arguments, "order_id");
         int amount        = extractInt(arguments, "amount");
         String approvalId = extractString(arguments, "approval_id");
+        String approvalDigest = extractString(arguments, "approval_digest");
         String reason     = extractString(arguments, "reason");
+        RbacContext caller = requireCaller();
+        ApprovalPayload payload = new ApprovalPayload(
+                ApprovalPayload.SUPPORTED_VERSION,
+                getName(),
+                orderId,
+                amount,
+                "",
+                optionalId(caller.getMerchantId()),
+                String.valueOf(caller.getUserId()),
+                caller.getRole(),
+                reason
+        );
+        ApprovalExecutionGuard.ExecutionDecision decision = claim(
+                approvalId,
+                approvalDigest,
+                payload,
+                caller
+        );
+        if (decision.isReplay()) {
+            return decision.result();
+        }
+        if (!decision.isClaimed()) {
+            throw new ToolBusinessException("审批对应的退款操作正在执行，请勿重复提交");
+        }
 
         log.info("[ExecuteRefundTool] 执行退款: orderId={}, amount={}分, approvalId={}, reason={}",
                 orderId, amount, approvalId, reason);
@@ -108,7 +144,33 @@ public class ExecuteRefundTool implements McpTool {
         // 3. 更新订单状态
         // 4. 返回退款单号
         java.util.Map<String, Object> result = internalClient.refund(orderId, amount, approvalId, reason);
+        approvalGuard.complete(decision.claim(), result);
         return result;
+    }
+
+    private ApprovalExecutionGuard.ExecutionDecision claim(
+            String approvalId,
+            String approvalDigest,
+            ApprovalPayload payload,
+            RbacContext caller
+    ) {
+        try {
+            return approvalGuard.claim(approvalId, approvalDigest, payload, caller);
+        } catch (ApprovalExecutionGuard.ApprovalExecutionDeniedException denied) {
+            throw new ToolPermissionException("HITL 审批凭证无效或不可执行");
+        }
+    }
+
+    private RbacContext requireCaller() {
+        RbacContext caller = RbacContext.get();
+        if (caller == null || caller.getUserId() == null || caller.getRole() == null) {
+            throw new ToolPermissionException("调用者身份缺失");
+        }
+        return caller;
+    }
+
+    private String optionalId(Long value) {
+        return value == null ? "" : String.valueOf(value);
     }
 
     private String extractString(JsonNode args, String key) {

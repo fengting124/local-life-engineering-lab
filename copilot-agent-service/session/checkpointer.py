@@ -40,6 +40,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langchain_core.runnables import RunnableConfig
 
 from session.manager import AsyncSessionLocal
+from session.hitl import HitlBindingError, hitl_service
 
 log = structlog.get_logger(__name__)
 
@@ -64,12 +65,12 @@ class AsyncMySQLCheckpointer(BaseCheckpointSaver):
     serde: SerializerProtocol = JsonPlusSerializer()
 
     # =========================================================
-    # 读：获取最新 checkpoint
+    # 读：按配置获取精确或最新 checkpoint
     # =========================================================
 
     async def aget_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
         """
-        获取最新 checkpoint 快照。
+        获取配置指定的精确 checkpoint；未提供 checkpoint_id 时获取最新快照。
 
         LangGraph 在每次节点执行前调用此方法恢复状态。
         查询逻辑：
@@ -131,25 +132,38 @@ class AsyncMySQLCheckpointer(BaseCheckpointSaver):
         serialized_state = self.serde.dumps(checkpoint)
 
         async with AsyncSessionLocal() as db:
-            await db.execute(
-                text("""
-                INSERT INTO langgraph_checkpoint
-                    (thread_id, checkpoint_id, parent_checkpoint_id, state, metadata, created_at)
-                VALUES
-                    (:thread_id, :checkpoint_id, :parent_id, :state, :metadata, NOW())
-                ON DUPLICATE KEY UPDATE
-                    state    = VALUES(state),
-                    metadata = VALUES(metadata)
-                """),
-                {
-                    "thread_id":     thread_id,
-                    "checkpoint_id": checkpoint_id,
-                    "parent_id":     parent_id,
-                    "state":         serialized_state.decode("utf-8") if isinstance(serialized_state, bytes) else serialized_state,
-                    "metadata":      json.dumps(metadata, default=str),
-                },
-            )
-            await db.commit()
+            try:
+                await db.execute(
+                    text("""
+                    INSERT INTO langgraph_checkpoint
+                        (thread_id, checkpoint_id, parent_checkpoint_id, state, metadata, created_at)
+                    VALUES
+                        (:thread_id, :checkpoint_id, :parent_id, :state, :metadata, NOW())
+                    ON DUPLICATE KEY UPDATE
+                        state    = VALUES(state),
+                        metadata = VALUES(metadata)
+                    """),
+                    {
+                        "thread_id":     thread_id,
+                        "checkpoint_id": checkpoint_id,
+                        "parent_id":     parent_id,
+                        "state":         serialized_state.decode("utf-8") if isinstance(serialized_state, bytes) else serialized_state,
+                        "metadata":      json.dumps(metadata, default=str),
+                    },
+                )
+                binding = self._pending_hitl_binding(checkpoint)
+                if binding is not None:
+                    await hitl_service.bind_checkpoint(
+                        db,
+                        approval_id=binding["approval_id"],
+                        thread_id=thread_id,
+                        checkpoint_id=checkpoint_id,
+                        payload_digest=binding["payload_digest"],
+                    )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
 
         log.debug(
             "checkpoint_saved",
@@ -159,6 +173,27 @@ class AsyncMySQLCheckpointer(BaseCheckpointSaver):
         )
 
         return {**config, "configurable": {**config["configurable"], "checkpoint_id": checkpoint_id}}
+
+    @staticmethod
+    def _pending_hitl_binding(checkpoint: Checkpoint) -> dict[str, Any] | None:
+        channel_values = checkpoint.get("channel_values") or {}
+        if not channel_values.get("pending_hitl"):
+            return None
+        pending_action = channel_values.get("pending_action") or {}
+        approval_id = pending_action.get("approval_id")
+        payload_digest = pending_action.get("payload_digest")
+        if (
+            isinstance(approval_id, bool)
+            or not isinstance(approval_id, int)
+            or approval_id <= 0
+            or not isinstance(payload_digest, str)
+            or len(payload_digest) != 64
+        ):
+            raise HitlBindingError("pending HITL checkpoint is missing approval binding")
+        return {
+            "approval_id": approval_id,
+            "payload_digest": payload_digest,
+        }
 
     async def aput_writes(
         self,
