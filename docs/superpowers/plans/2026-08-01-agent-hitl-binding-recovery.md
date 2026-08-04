@@ -620,13 +620,13 @@ test(hitl): cover replay concurrency and crash recovery
 - Both Agent and Copilot receive the same non-production smoke signing key from environment.
 - Smoke data uses unique IDs and cleans only its own approvals/checkpoints/runtime rows.
 
-- [ ] **Step 1: Add configuration tests before Compose edits**
+- [x] **Step 1: Add configuration tests before Compose edits**
 
 Assert settings reject an absent key and tests accept an explicitly injected
 non-production key. Validate `docker compose ... config` contains the same
 substituted value for Agent and Copilot without printing the value.
 
-- [ ] **Step 2: Wire the environment**
+- [x] **Step 2: Wire the environment**
 
 Use a required Compose substitution:
 
@@ -636,19 +636,19 @@ HITL_PAYLOAD_SIGNING_SECRET=${HITL_PAYLOAD_SIGNING_SECRET:?set in ignored infra/
 
 for Lite and development Compose. Do not store the value in tracked files.
 
-- [ ] **Step 3: Rebuild current source images**
+- [x] **Step 3: Rebuild current source images**
 
 ```bash
 docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.lite.yml \
   --profile app build locallife-copilot copilot-agent
 ```
 
-- [ ] **Step 4: Start required Lite services and verify migrations**
+- [x] **Step 4: Start required Lite services and verify migrations**
 
 Confirm V104 applied, both application containers are healthy, and no key value
 appears in logs.
 
-- [ ] **Step 5: Run isolated real scenarios**
+- [x] **Step 5: Run isolated real scenarios**
 
 The script must record:
 
@@ -661,19 +661,46 @@ The script must record:
 - one simulated timeout/retry with one business side effect;
 - approval/tool audit/runtime/ledger correlation IDs.
 
-- [ ] **Step 6: Save a sanitized report**
+- [x] **Step 6: Save a sanitized report**
 
 Write ignored raw evidence under `artifacts/security/hitl-<timestamp>/` and commit
 only aggregate evidence to the security document. Do not commit database dumps,
 keys, full payloads, or user data.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Commit title:
 
 ```text
 test(docker): verify HITL recovery security in Lite
 ```
+
+**Completed evidence (2026-08-04):**
+
+- Compose rejects an absent signing key and injects one runtime value into both
+  Agent and Copilot; tracked environment examples contain placeholders only.
+- Current-source `copilot-agent:latest` and `locallife-copilot:latest` images
+  rebuilt successfully. The Copilot build recovered from a Maven Central TLS
+  handshake failure on its existing second retry.
+- MySQL, Redis, Server, Copilot, and Agent were healthy; `copilot:V104` was
+  recorded with 12 contract columns, two indexes, and nullable checkpoint ID.
+- The ignored raw report `artifacts/security/hitl-20260804-195601/report.json`
+  recorded `PASS` for seven isolated scenarios: rejection, refund,
+  compensation, Agent restart replay, concurrent claim, tampered real
+  checkpoint, and ambiguous Server-commit/Copilot-retry.
+- Tampering a real serializer-produced checkpoint returned HTTP 409 with
+  `payload_mismatch`; approval remained `PENDING` with no execution or lease,
+  tool audit and side-effect ledger counts stayed zero, and the order remained
+  `PAID`.
+- Approved tool audit rows shared the runtime trace ID and stored
+  `approval_digest` as `[REDACTED]`; the signing key and protected tamper value
+  were absent from inspected logs.
+- The script's isolated session, approval, checkpoint, audit, ledger, and order
+  rows were all removed; existing volumes and containers were preserved.
+- Real graph probing found and fixed an intermediate unbound-HITL checkpoint
+  transition (`7276150`), and runtime audit review fixed async trace propagation
+  and credential redaction (`8c780c5`). Neither fix changes RBAC, tool budgets,
+  model prompts, or high-risk execution authorization.
 
 ---
 
