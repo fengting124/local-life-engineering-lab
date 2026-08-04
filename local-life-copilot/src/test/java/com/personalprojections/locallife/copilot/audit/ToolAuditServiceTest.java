@@ -102,6 +102,21 @@ class ToolAuditServiceTest {
     }
 
     @Test
+    void recordError_redactsCredentialsEmbeddedInErrorText() {
+        service.recordError(
+                1L,
+                "thread-1",
+                "execute_refund",
+                Map.of(),
+                "upstream failed: token=secret-token; approval_digest=abc123; Authorization: Bearer bearer-secret",
+                10);
+
+        assertThat(captureInsertedLog().getErrorMsg())
+                .contains("token=[REDACTED]", "approval_digest=[REDACTED]", "Authorization: [REDACTED]")
+                .doesNotContain("secret-token", "abc123", "bearer-secret");
+    }
+
+    @Test
     void recordSuccess_withRawValidJsonStringInput_storesAsIs_withoutDoubleEncoding() {
         service.recordSuccess(1L, "thread-1", "tool_x", "{\"already\":\"json\"}", Map.of(), 10);
 

@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 /**
  * 工具调用审计服务。
@@ -37,6 +38,11 @@ public class ToolAuditService {
     private static final List<String> SENSITIVE_FIELD_FRAGMENTS = List.of(
             "digest", "signature", "secret", "password", "token",
             "authorization", "cookie", "api_key", "internal_key", "private_key");
+    private static final Pattern SENSITIVE_TEXT_CREDENTIAL = Pattern.compile(
+            "(?i)\\b(digest|approval_digest|signature|secret|password|token|authorization|cookie|"
+                    + "api[_-]?key|internal[_-]?key|private[_-]?key)(\\s*[:=]\\s*)"
+                    + "(?:Bearer\\s+)?[^\\s,;]+"
+    );
 
     private final ToolAuditMapper toolAuditMapper;
     private final ObjectMapper objectMapper;
@@ -90,7 +96,7 @@ public class ToolAuditService {
                     .toolOutput(toJson(output))
                     .durationMs(durationMs)
                     .status(status)
-                    .errorMsg(errorMsg)
+                    .errorMsg(redactSensitiveText(errorMsg))
                     .userId(ctx != null ? ctx.getUserId() : null)
                     .userRole(ctx != null ? ctx.getRole() : null)
                     .createdAt(LocalDateTime.now())
@@ -98,7 +104,8 @@ public class ToolAuditService {
             toolAuditMapper.insert(log);
         } catch (Exception e) {
             // 审计失败不影响业务主链路，仅 WARN 日志
-            log.warn("[ToolAudit] 审计日志写入失败: tool={}, error={}", toolName, e.getMessage());
+            log.warn("[ToolAudit] 审计日志写入失败: tool={}, error={}",
+                    toolName, redactSensitiveText(e.getMessage()));
         }
     }
 
@@ -132,6 +139,13 @@ public class ToolAuditService {
         } catch (JsonProcessingException e) {
             return TextNode.valueOf(json).toString();
         }
+    }
+
+    private String redactSensitiveText(String text) {
+        if (text == null || text.isBlank()) {
+            return text;
+        }
+        return SENSITIVE_TEXT_CREDENTIAL.matcher(text).replaceAll("$1$2[REDACTED]");
     }
 
     private void redactSensitiveFields(JsonNode node) {
