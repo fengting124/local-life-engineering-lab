@@ -57,10 +57,18 @@
 
 ## Task 8：版本管理
 
-- [ ] 独立复审 diff 和敏感信息。
-- [ ] 按评估证据、测试和文档拆分详细提交。
-- [ ] 推送 `security/agent-langgraph-advisory-assessment`。
-- [ ] 创建 Draft PR 到 `main`，不转 Ready、不合并。
+- [x] 独立复审 diff 和敏感信息，未发现生产代码、生产 pin 或凭据变更。
+- [x] 按评估测试和评估文档拆分详细提交。
+- [x] 推送 `security/agent-langgraph-advisory-assessment`。
+- [x] 创建 Draft PR #31 到 `main`，保持 Draft，不转 Ready、不合并。
+
+## Handoff
+
+- Draft PR：#31 `security(agent): assess LangGraph checkpoint advisory reachability`。
+- 基线：`main@2ee8e88cb375ef82abb5f32db54bb6cf67872892`。
+- 分支创建 PR 时相对 `origin/main` 为 `ahead 2 / behind 0`。
+- GitHub Docs 和 Agent `test-and-mutation` 门禁已由 Draft PR 触发。
+- 后续升级必须新建实施分支，不在本评估 PR 修改生产依赖。
 
 ## 停止条件
 
