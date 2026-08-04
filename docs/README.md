@@ -37,6 +37,7 @@
 - [Swagger 在线接口文档](./04-notes/Swagger在线接口文档.md)
 - [企业级日志系统](./04-notes/企业级日志系统.md)
 - [HITL 审批与安全恢复](./security/HITL审批与安全恢复.md)
+- [LangGraph 安全公告评估报告](./security/LangGraph安全公告评估报告.md)
 
 ### Reference
 
@@ -46,6 +47,7 @@
 - [测试总览与结果汇总](./04-notes/测试总览与结果汇总.md)
 - [v0.1.0-rc 验收报告](./release/v0.1.0-rc验收报告.md)
 - [Git 版本管理与提交规范](./03-process/Git版本管理与提交规范.md)
+- [LangGraph 依赖兼容矩阵](./security/LangGraph依赖兼容矩阵.md)
 
 ### Explanation
 
