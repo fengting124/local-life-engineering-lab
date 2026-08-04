@@ -13,7 +13,7 @@ HITL 是 LocalLife Copilot 企业级 Agent 的核心安全机制：
 """
 import hashlib
 import structlog
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import NoReturn
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +21,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from session.manager import AsyncSessionLocal, _snowflake_id
 
 log = structlog.get_logger(__name__)
+
+
+def _utc_now() -> datetime:
+    """Return naive UTC for the MySQL DATETIME contract shared with Java."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 # =========================================================
 # hitl_approval SQLAlchemy 模型（内联，避免过多文件）
@@ -127,7 +132,7 @@ class HitlService:
         :return: 审批记录 ID（approval_id）
         """
         approval_id = _snowflake_id()
-        expire_at = datetime.now() + timedelta(hours=expire_hours)
+        expire_at = _utc_now() + timedelta(hours=expire_hours)
         action_payload = dict(approval_payload.canonical_dict())
         payload_digest = sign_payload(
             approval_payload,
@@ -189,7 +194,7 @@ class HitlService:
                 HitlApproval.checkpoint_id.is_(None),
                 HitlApproval.status == "PENDING",
             )
-            .values(checkpoint_id=checkpoint_id, updated_at=datetime.now())
+            .values(checkpoint_id=checkpoint_id, updated_at=_utc_now())
         )
         if transition.rowcount == 1:
             return
@@ -228,7 +233,7 @@ class HitlService:
         if getattr(approval, "status", None) not in {"PENDING", "APPROVED"}:
             reject("invalid_status")
         expire_at = getattr(approval, "expire_at", None)
-        if not isinstance(expire_at, datetime) or expire_at < datetime.now():
+        if not isinstance(expire_at, datetime) or expire_at < _utc_now():
             reject("expired_approval")
         if not isinstance(checkpoint_values, dict):
             reject("checkpoint_missing")
@@ -304,7 +309,7 @@ class HitlService:
         :param comment:     审批备注（可选）
         :return: True=更新成功，False=记录不存在或已不是 PENDING 状态
         """
-        now = datetime.now()
+        now = _utc_now()
         async with AsyncSessionLocal() as db:
             transition = await db.execute(
                 update(HitlApproval)
@@ -330,15 +335,23 @@ class HitlService:
                 return True
 
             await db.rollback()
+            expiration = await db.execute(
+                update(HitlApproval)
+                .where(
+                    HitlApproval.id == approval_id,
+                    HitlApproval.status == "PENDING",
+                    HitlApproval.expire_at < now,
+                )
+                .values(status="EXPIRED", updated_at=now)
+            )
+            if expiration.rowcount == 1:
+                log.warning("hitl_approve_expired", approval_id=approval_id)
+                await db.commit()
+                return False
+            await db.rollback()
             result = await db.get(HitlApproval, approval_id)
             if not result:
                 log.warning("hitl_approve_not_found", approval_id=approval_id)
-                return False
-            if result.status == "PENDING" and result.expire_at < now:
-                log.warning("hitl_approve_expired", approval_id=approval_id)
-                result.status = "EXPIRED"
-                result.updated_at = now
-                await db.commit()
                 return False
             log.warning("hitl_approve_invalid_status",
                         approval_id=approval_id, status=result.status)
@@ -356,7 +369,7 @@ class HitlService:
         拒绝后 Agent 不会继续执行高风险动作，
         会向用户说明拒绝原因并建议其他解决方案。
         """
-        now = datetime.now()
+        now = _utc_now()
         async with AsyncSessionLocal() as db:
             transition = await db.execute(
                 update(HitlApproval)

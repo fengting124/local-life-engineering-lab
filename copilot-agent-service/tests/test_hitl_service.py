@@ -1,6 +1,6 @@
 from collections import deque
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -18,6 +18,24 @@ from session.hitl_binding import ApprovalPayload, sign_payload
 
 
 TEST_SECRET = "test-only-hitl-key"
+
+
+def _test_utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def test_utc_now_uses_utc_and_returns_database_compatible_naive_value(monkeypatch):
+    class FakeDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return datetime(2026, 8, 4, 20, 0, 0)
+            assert tz is timezone.utc
+            return datetime(2026, 8, 4, 12, 0, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(hitl_mod, "datetime", FakeDateTime)
+
+    assert hitl_mod._utc_now() == datetime(2026, 8, 4, 12, 0, 0)
 
 
 def _approval_payload() -> ApprovalPayload:
@@ -50,7 +68,7 @@ def _bound_approval(payload=None, **overrides):
         "merchant_id": int(payload.merchant_id) if payload.merchant_id else None,
         "requested_user_id": int(payload.requested_user_id),
         "requested_role": payload.requested_role,
-        "expire_at": datetime.now() + timedelta(hours=1),
+        "expire_at": _test_utc_now() + timedelta(hours=1),
         "execution_result": None,
     }
     values.update(overrides)
@@ -91,7 +109,7 @@ class _FakeSession:
             (),
             {
                 "status": "PENDING",
-                "expire_at": datetime.now() + timedelta(hours=1),
+                "expire_at": _test_utc_now() + timedelta(hours=1),
                 "approver_id": None,
                 "approver_comment": None,
                 "approved_at": None,
@@ -188,7 +206,7 @@ def test_unbound_checkpoint_is_only_valid_for_pending_approval():
         action_payload={},
         agent_reason="reason",
         status="PENDING",
-        expire_at=datetime.now() + timedelta(hours=1),
+        expire_at=_test_utc_now() + timedelta(hours=1),
     )
 
     assert pending.checkpoint_id is None
@@ -202,7 +220,7 @@ def test_unbound_checkpoint_is_only_valid_for_pending_approval():
             action_payload={},
             agent_reason="reason",
             status="APPROVED",
-            expire_at=datetime.now() + timedelta(hours=1),
+            expire_at=_test_utc_now() + timedelta(hours=1),
         )
 
 
@@ -363,7 +381,7 @@ def test_validate_resume_rejects_checkpoint_tampering(
     [
         ({"checkpoint_id": None}, "unbound_approval"),
         ({"payload_digest": None}, "unsigned_approval"),
-        ({"expire_at": datetime.now() - timedelta(seconds=1)}, "expired_approval"),
+        ({"expire_at": _test_utc_now() - timedelta(seconds=1)}, "expired_approval"),
         ({"status": "REJECTED"}, "invalid_status"),
         ({"status": "EXECUTING"}, "invalid_status"),
     ],
@@ -430,14 +448,33 @@ async def test_approve_commits_when_pending_transition_wins(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_approve_returns_false_when_pending_transition_lost(monkeypatch):
-    fake_session = _FakeSession(rowcounts=[0])
+    fake_session = _FakeSession(rowcounts=[0, 0])
     monkeypatch.setattr(hitl_mod, "AsyncSessionLocal", lambda: fake_session)
 
     ok = await HitlService().approve(approval_id=1001, approver_id=9001, comment="late")
 
     assert ok is False
-    assert len(fake_session.executed) == 1
+    assert len(fake_session.executed) == 2
     assert fake_session.commits == 0
+    assert fake_session.rollbacks == 2
+
+
+@pytest.mark.asyncio
+async def test_approve_expires_overdue_record_with_a_second_cas(monkeypatch):
+    fake_session = _FakeSession(rowcounts=[0, 1])
+    fake_session.loaded_approval.expire_at = datetime(2026, 8, 4, 11, 59, 59)
+    monkeypatch.setattr(hitl_mod, "AsyncSessionLocal", lambda: fake_session)
+    monkeypatch.setattr(hitl_mod, "_utc_now", lambda: datetime(2026, 8, 4, 12, 0, 0))
+
+    ok = await HitlService().approve(
+        approval_id=1001,
+        approver_id=9001,
+        comment="expired",
+    )
+
+    assert ok is False
+    assert len(fake_session.executed) == 2
+    assert fake_session.commits == 1
     assert fake_session.rollbacks == 1
 
 
