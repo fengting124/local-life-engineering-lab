@@ -1,10 +1,13 @@
 # LangGraph 安全公告评估报告
 
-- Status: Active
+- Status: Historical
 - Type: Reference
 - Owners: Project maintainers
 - Last verified: 2026-08-05
 - Source of truth: GHSA-g48c-2wqr-h844, GHSA-wwqv-p2pp-99h5, installed dependency source, Testcontainers MySQL tests, compatibility matrix
+- Superseded by: `docs/security/LangGraph安全升级与Checkpoint迁移.md`
+
+> 本文保留 PR #31 升级前的风险评估证据。当前实现状态、迁移和回滚操作以[LangGraph 安全升级与 Checkpoint 迁移](./LangGraph安全升级与Checkpoint迁移.md)为准。
 
 ## 结论
 
