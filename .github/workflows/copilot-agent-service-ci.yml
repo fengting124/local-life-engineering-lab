@@ -20,6 +20,8 @@ jobs:
   test-and-mutation:
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    env:
+      LANGGRAPH_STRICT_MSGPACK: 'true'
 
     defaults:
       run:

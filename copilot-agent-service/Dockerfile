@@ -6,6 +6,7 @@ FROM python:3.11-slim AS base
 # 不生成 .pyc 文件，直接输出日志（不缓冲）
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV LANGGRAPH_STRICT_MSGPACK=true
 
 # 安全：非 root 用户
 RUN groupadd -r appgroup && useradd -r -g appgroup appuser

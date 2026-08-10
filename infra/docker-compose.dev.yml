@@ -143,6 +143,7 @@ services:
       LLM_API_KEY: "${LLM_API_KEY:-}"
       LLM_MODEL: "${LLM_MODEL:-deepseek-v4-flash}"
       LLM_BASE_URL: "${LLM_BASE_URL:-}"
+      LANGGRAPH_STRICT_MSGPACK: "true"
       DEBUG: "false"
     depends_on:
       locallife-copilot:
