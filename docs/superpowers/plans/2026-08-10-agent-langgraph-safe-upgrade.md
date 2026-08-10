@@ -67,5 +67,5 @@
 
 - [x] 更新 typed schema、迁移 runbook、rollout/rollback 和依赖审计文档。
 - [x] 按依赖/schema、Saver、migration、测试、文档拆分提交。
-- [ ] 推送分支并创建 Draft PR #32。
+- [x] 推送 `security/agent-langgraph-safe-upgrade` 并创建 Draft PR #32；保持 Draft，不转 Ready、不合并。
 - [x] 独立审查发现 1 个 legacy special-write 索引阻塞项；以红灯测试、`WRITES_IDX_MAP` 规范化和冲突 fail-closed 修复后，定向 9/9 与 Agent 686 条回归通过，当前 `BLOCKING FINDINGS=0`。不转 Ready、不合并。
