@@ -33,11 +33,11 @@
 - Consumes: `route_task_type`, `synthesis_only`, and normalized `evidence_collected` records.
 - Produces: `AnswerFact`, `EvidenceAnswer`, `build_evidence_answer(state)`, and `validate_or_fallback(candidate, answer)`.
 
-- [ ] **Step 1: Write failing unit tests**
+- [x] **Step 1: Write failing unit tests**
 
 Cover payment mismatch (`WAIT_PAY` + `SUCCESS`), failed payment (`FAILED`), coupon issue (`PAID` plus available coupon facts), optional `UNKNOWN` omission, absent-fact non-invention, exact enum wording, contradictory candidate rejection, and missing-fact fallback.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -48,15 +48,15 @@ DEBUG=false pytest -q tests/test_answer_facts.py
 
 Expected: collection/import failure because `agent.answer_facts` does not exist.
 
-- [ ] **Step 3: Implement the minimal immutable fact model**
+- [x] **Step 3: Implement the minimal immutable fact model**
 
 Use frozen dataclasses and fixed enum render maps. Read only successful bounded evidence, omit unknown values, and return `None` for unsupported or incomplete routes. Rendering must be deterministic and must not inspect user text or case IDs.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run the same test command. Expected: all `test_answer_facts.py` tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit with `test(agent): define evidence answer contract` after reviewing the staged diff.
 
@@ -71,11 +71,11 @@ Commit with `test(agent): define evidence answer contract` after reviewing the s
 - Consumes: `build_evidence_answer` and `validate_or_fallback` from Task 1.
 - Produces: supported completed diagnostic routes return a fact-complete `AIMessage` without invoking the synthesis LLM.
 
-- [ ] **Step 1: Write failing node and graph tests**
+- [x] **Step 1: Write failing node and graph tests**
 
 Construct route/evidence state for payment and coupon diagnostics. Assert all required facts appear, `_llm.ainvoke` is not called after evidence completion, MCP call count is unchanged, and malformed/unsupported evidence does not fabricate an answer. Retain tests proving permission, business rejection, tool errors, and synthesis tool-call rejection keep their current stop reasons.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -86,11 +86,11 @@ DEBUG=false pytest -q tests/test_agent_nodes.py tests/test_e2e_agent.py
 
 Expected: new deterministic-synthesis assertions fail because `llm_node` still calls the LLM.
 
-- [ ] **Step 3: Implement the minimal `llm_node` integration**
+- [x] **Step 3: Implement the minimal `llm_node` integration**
 
 At the existing direct-answer boundary, build an evidence answer only when `synthesis_only=true`. Return its validated deterministic rendering before tool discovery or model invocation. Do not change graph edges, state schema, prompts, tool routing, or `final_node` terminal precedence.
 
-- [ ] **Step 4: Verify GREEN and focused regression**
+- [x] **Step 4: Verify GREEN and focused regression**
 
 ```bash
 cd copilot-agent-service
@@ -104,7 +104,7 @@ DEBUG=false pytest -q \
 
 Expected: all focused tests pass and tool-call counts remain unchanged.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit with `fix(agent): synthesize diagnostic answers from evidence`.
 
@@ -113,7 +113,7 @@ Commit with `fix(agent): synthesize diagnostic answers from evidence`.
 **Files:**
 - Modify only if a test exposes an in-scope synthesis defect.
 
-- [ ] **Step 1: Run the Agent suite and coverage gate**
+- [x] **Step 1: Run the Agent suite and coverage gate**
 
 ```bash
 cd copilot-agent-service
@@ -122,7 +122,7 @@ DEBUG=false pytest -q --cov --cov-report=term-missing --cov-fail-under=45
 
 Expected: all tests pass and coverage remains above 45%.
 
-- [ ] **Step 2: Run the existing mutation gate without changing its targets**
+- [x] **Step 2: Run the existing mutation gate without changing its targets**
 
 ```bash
 cd copilot-agent-service
@@ -132,7 +132,7 @@ python scripts/check_mutmut_score.py --min-kill-rate 50 --max-other 0
 
 Expected: kill rate at least 50%, `other=0`.
 
-- [ ] **Step 3: Run repository document and diff checks**
+- [x] **Step 3: Run repository document and diff checks**
 
 ```bash
 python3 scripts/check_docs.py
@@ -146,19 +146,19 @@ Expected: both commands pass.
 **Files:**
 - Do not commit generated artifacts, database files, logs, or secrets.
 
-- [ ] **Step 1: Rebuild and restart only the Agent from current source**
+- [x] **Step 1: Rebuild and restart only the Agent from current source**
 
 Use the existing Lite Compose pair and required test-only HITL secret. Confirm the Agent is healthy and its source hash matches the worktree.
 
-- [ ] **Step 2: Resolve the unchanged fixtures and contract for Cases 16, 18, and 21**
+- [x] **Step 2: Resolve the unchanged fixtures and contract for Cases 16, 18, and 21**
 
 Use existing `select_baseline_cases`, `resolve_cases`, `EvalDatabase`, `run_group`, and `evaluate_case` functions without changing EvalCase or scoring.
 
-- [ ] **Step 3: Run at most nine DeepSeek V4 Flash requests**
+- [x] **Step 3: Run at most nine DeepSeek V4 Flash requests**
 
 Run each selected case three times at concurrency 1. Persist a new ignored targeted artifact with per-run tools, facts score, failure category, latency, and model-call evidence; do not persist prompts, answers, raw tool payloads, or keys.
 
-- [ ] **Step 4: Evaluate the target**
+- [x] **Step 4: Evaluate the target**
 
 Expected: each case is 3/3 completed when its route reaches the expected tools; required facts are complete; no extra tool, permission, refusal, or tool-execution regression occurs. Any routing failure is recorded and left for PR #34.
 
@@ -168,18 +168,31 @@ Expected: each case is 3/3 completed when its route reaches the expected tools; 
 - Modify: `docs/performance/02-backend-agent-baseline-report.md`
 - Modify: `docs/superpowers/plans/2026-08-11-agent-evidence-driven-synthesis.md`
 
-- [ ] **Step 1: Add the minimal targeted result section**
+- [x] **Step 1: Add the minimal targeted result section**
 
 Record root cause, deterministic design, Cases 16/18/21 results, whether one LLM call was removed, and the unchanged remaining routing failures. Do not overwrite the historical 24x2 baseline or claim global quality improvement.
 
-- [ ] **Step 2: Run final verification and independent diff review**
+- [x] **Step 2: Run final verification and independent diff review**
 
 Confirm no changes to prohibited modules/contracts, no secrets or artifacts are tracked, and report `BLOCKING FINDINGS` with file/line evidence.
 
-- [ ] **Step 3: Commit documentation**
+- [x] **Step 3: Commit documentation**
 
 Commit with `docs(agent): record targeted synthesis validation`.
 
 - [ ] **Step 4: Push and create Draft PR**
 
 Push `fix/agent-evidence-driven-synthesis`, create a Draft PR to `main`, and stop. Do not convert to Ready or merge.
+
+## Execution Record
+
+- Focused regression: 185 passed.
+- Full Agent suite: 700 passed; coverage 79.31%.
+- Mutation: 826 / 1180 killed, 70.0%, other=0.
+- Docker Lite: current-source Agent healthy; host/container source hashes match.
+- Targeted DeepSeek: Cases 16/18/21 each 3/3 completed at concurrency 1;
+  final facts, arguments, trajectories, and permissions all 100%.
+- Model calls: 18 `llm.invoke` spans for 9 runs; the final synthesis model call
+  was removed while tool calls remained unchanged.
+- Independent review: `BLOCKING FINDINGS=0`; prohibited modules, dependencies,
+  evaluation contracts, tracked artifacts, and secrets are unchanged.

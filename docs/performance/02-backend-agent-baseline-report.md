@@ -342,7 +342,42 @@ Case 37 第二轮的实际轨迹为
 这次结果能证明数据库合同故障已消除，不能证明模型质量整体提升：任务完成仅增加
 1 次，而 trajectory、final-fact 和长尾延迟存在随机波动。
 
-## 5. RAG Benchmark
+## 5. Evidence-driven synthesis 定向验证
+
+PR #27 后基线显示 Case 16、18、21 的工具选择、参数和执行轨迹已经正确，失败集中
+在最终回答遗漏工具证据。PR #33 不改 Router、Prompt、图拓扑、工具权限、预算、
+EvalCase、fixture 或评分规则；它只在 Evidence Gate 已确认诊断证据完整后，将现有
+归一化事实转换成不可变 `AnswerFact`，并生成确定性回答。未知、失败或缺失证据不会
+被补写，不支持的任务继续沿用原有模型合成路径。
+
+验证使用当前分支真实重建的 Docker Lite Agent 镜像
+`sha256:5988f3a10f195c3ccd0fbac2361a9112df413a58a96ec700e07187007dba645a`。
+容器内 `answer_facts.py`、`nodes.py` 与宿主机 SHA-256 一致，Agent health 为
+`ok`。随后仅运行 Case 16、18、21，每条 3 次、并发 1，共 9 次真实 DeepSeek
+`deepseek-v4-flash` 请求：
+
+- 产物：`artifacts/performance/deepseek-targeted-synthesis-20260811-015208/`
+- 运行时代码：`86b6362`（基于 `main@a939a7a`）
+- 合同与 fixture：`invalid_eval_contract=0`，6 / 6 引用解析成功
+- 数据边界：产物不保存 Prompt、回答正文、原始工具 payload、API Key 或密钥
+
+| Case | 目标证据 | 3 次结果 | 实际轨迹 | Final fact |
+| ---: | --- | --- | --- | ---: |
+| 16 | `order_status=PAID` | 3 / 3 completed | `query_order -> query_coupon_issue_log` | 3 / 3 |
+| 18 | `order_status=WAIT_PAY`、`pay_status=SUCCESS` | 3 / 3 completed | `query_order -> query_payment` | 3 / 3 |
+| 21 | `pay_status=FAILED` | 3 / 3 completed | `query_order -> query_payment` | 3 / 3 |
+
+9 次运行的 first-tool、tool-argument、trajectory、final-fact、permission、HITL 和
+refusal accuracy 均为 1.000，`tool_execution_failure=0`，P50 / P95 为
+5.714 / 6.489 秒。容器结构化日志记录 18 个 `llm.invoke` span，恰好每次运行
+2 个工具决策调用；证据完整后的第 3 个模型合成调用为 0，因此每次受支持诊断减少
+1 次 LLM 调用，同时没有增加或改变工具调用。
+
+这是定向回归证据，不是新的全量质量基线，也不能据此宣称所有 Agent 场景质量均已
+提升。历史 Case 3、17、19、37、49 的产品语义或路由问题未在本 PR 修改；历史
+24x2 产物和失败分母保持不变。
+
+## 6. RAG Benchmark
 
 最终真实产物：
 
@@ -359,11 +394,11 @@ Case 37 第二轮的实际轨迹为
 
 拒答指标来自真实 retrieval 结果，不是根据标签强行置空。两条 citation miss 暴露了证据跨 chunk 的问题；Recall@5 已满分时，下一步重点应是 chunk 边界和引用归因，而不是继续调大 top-k。
 
-## 6. 测试与结论
+## 7. 测试与结论
 
 | 验证 | 结果 |
 | --- | --- |
-| Agent 主测试套件 | 573 passed，覆盖率 74.34%；`agent/nodes.py` 82.3%，`guardrails/input_checker.py` 100% |
+| Agent 主测试套件 | PR #33 分支 700 passed，覆盖率 79.31%；`agent/nodes.py` 83.1%，`guardrails/input_checker.py` 100% |
 | Agent mutation gate | 826 / 1180 killed，70.0%，other=0（mutmut 3.6.0，完整运行） |
 | Embedding 镜像测试 | 1 passed |
 | Eval 合同、fixture、评分回归 | 固定 24 条合同未修改；Case 22/25 单独纠正；invalid=0，fixture=47/47 |
@@ -407,19 +442,17 @@ PR #26 审查修复另完成了一次当前源码 Docker Lite 烟雾测试：
 本轮是并发 1 的质量基线，不替代容量压测，也不能用单次模型随机观测宣称整体
 Agent 质量提升。
 
-## 7. 下一轮优先级
+## 8. 下一轮优先级
 
-1. 下一项独立安全 PR 实现 HITL 审批载荷不可变绑定与 Checkpoint 安全恢复：
-   防篡改、防重放、单次消费、并发恢复幂等，并在恢复时重新校验身份和商家。
-2. 后续单独处理 Case 16、18、21 的证据到回答合成，不修改 RAG 或评测合同迁就
-   结果；单次真实模型观测不能作为稳定性结论。
-3. 由产品语义决定 Case 3、49 应澄清还是查询，再统一路由规格与评测合同；禁止
+1. Case 16、18、21 的证据到回答合成已完成 3x3 定向验证；后续全量基线按发布
+   节点统一执行，不为提高本 PR 分数重复调用真实模型。
+2. 由产品语义决定 Case 3、49 应澄清还是查询，再统一路由规格与评测合同；禁止
    Case ID 特判。
-4. Case 17 是否必须继续查 MQ 仍需产品语义确认，不能通过增加预算或强制工具
+3. Case 17 是否必须继续查 MQ 仍需产品语义确认，不能通过增加预算或强制工具
    调用迁就现有合同。
-5. 用户请求的订单和动作金额已在审批前绑定；仍需验证 HITL 审批 payload 在
-   checkpoint 恢复后的不可变签名，本轮按批准边界未修改恢复协议。
-6. Agent 入口仍直接信任客户端身份 Header；生产必须由可信网关认证并覆盖或
+4. SSE 的重复 `final_answer` / `hitl_request` 展示事件应在独立 API PR 去重，
+   保持现有数据库幂等和高风险单次执行语义不变。
+5. Agent 入口仍直接信任客户端身份 Header；生产必须由可信网关认证并覆盖或
    签名身份，不能允许公网客户端自报角色。
-7. 为 SSE 增加脱敏 token usage 和模型调用次数，再建立单任务成本门槛；随后
+6. 为 SSE 增加脱敏 token usage 和模型调用次数，再建立单任务成本门槛；随后
    跑 10-30 分钟稳态和故障注入测试。
