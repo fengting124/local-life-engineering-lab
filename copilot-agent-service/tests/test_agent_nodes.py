@@ -1459,6 +1459,84 @@ class TestLlmNode:
         native_factory.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_completed_payment_evidence_skips_synthesis_llm(
+        self, monkeypatch
+    ):
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock(
+            return_value=AIMessage(content="模型遗漏了订单状态。")
+        )
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="为什么订单还是待支付？")],
+            route_task_type="payment_diagnosis",
+            synthesis_only=True,
+            evidence_complete=True,
+            route_next_tool=None,
+            evidence_collected={
+                "query_order": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {"found": True, "order_status": "WAIT_PAY"},
+                },
+                "query_payment": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {"found": True, "payment_status": "SUCCESS"},
+                },
+            },
+        ))
+
+        fake_llm.ainvoke.assert_not_awaited()
+        assert result["final_answer"] == (
+            "订单状态：待支付；支付状态：支付成功。"
+        )
+        assert result["messages"][0].tool_calls == []
+
+    @pytest.mark.asyncio
+    async def test_completed_coupon_evidence_skips_synthesis_llm(
+        self, monkeypatch
+    ):
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock(
+            return_value=AIMessage(content="模型遗漏了发券状态。")
+        )
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="订单支付了为什么没有发券？")],
+            route_task_type="coupon_issue",
+            synthesis_only=True,
+            evidence_complete=True,
+            route_next_tool=None,
+            evidence_collected={
+                "query_order": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {"found": True, "order_status": "PAID"},
+                },
+                "query_coupon_issue_log": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {
+                        "found": True,
+                        "coupon_issue_status": "FAILED",
+                        "coupon_failure_confirmed": True,
+                    },
+                },
+            },
+        ))
+
+        fake_llm.ainvoke.assert_not_awaited()
+        assert result["final_answer"] == (
+            "订单状态：已支付；发券状态：发券失败。"
+        )
+        assert result["messages"][0].tool_calls == []
+
+    @pytest.mark.asyncio
     async def test_deepseek_synthesis_keeps_nonthinking_mode_without_tools(
         self, monkeypatch
     ):
