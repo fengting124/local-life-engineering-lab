@@ -68,8 +68,7 @@ async def lifespan(app: FastAPI):
     )
 
     # ---- 自动创建 Copilot 数据库表（幂等，CREATE TABLE IF NOT EXISTS）----
-    # 包含：agent_session / agent_message / langgraph_checkpoint /
-    #        tool_audit_log / hitl_approval
+    # 包含：Agent 业务表、legacy checkpoint 回滚表和 typed v2 checkpoint 表。
     try:
         from session.manager import engine
         from session.models import Base as SessionBase
@@ -89,6 +88,39 @@ async def lifespan(app: FastAPI):
                   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   PRIMARY KEY (`thread_id`, `checkpoint_id`),
                   KEY `idx_ckpt_thread_time` (`thread_id`, `created_at`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """))
+            await conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS `langgraph_checkpoint_v2` (
+                  `thread_id` VARCHAR(64) NOT NULL,
+                  `checkpoint_ns` VARCHAR(255) NOT NULL DEFAULT '',
+                  `checkpoint_id` VARCHAR(64) NOT NULL,
+                  `parent_checkpoint_id` VARCHAR(64),
+                  `state_type` VARCHAR(32) NOT NULL,
+                  `state_blob` LONGBLOB NOT NULL,
+                  `metadata` JSON,
+                  `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+                  PRIMARY KEY (`thread_id`, `checkpoint_ns`, `checkpoint_id`),
+                  KEY `idx_ckpt_v2_thread_time`
+                    (`thread_id`, `checkpoint_ns`, `created_at`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """))
+            await conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS `langgraph_checkpoint_write_v2` (
+                  `thread_id` VARCHAR(64) NOT NULL,
+                  `checkpoint_ns` VARCHAR(255) NOT NULL DEFAULT '',
+                  `checkpoint_id` VARCHAR(64) NOT NULL,
+                  `task_id` VARCHAR(128) NOT NULL,
+                  `task_path` VARCHAR(255) NOT NULL DEFAULT '',
+                  `write_index` INT NOT NULL,
+                  `channel` VARCHAR(128) NOT NULL,
+                  `value_type` VARCHAR(32) NOT NULL,
+                  `value_blob` LONGBLOB NOT NULL,
+                  `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+                  PRIMARY KEY
+                    (`thread_id`, `checkpoint_ns`, `checkpoint_id`, `task_id`, `write_index`),
+                  KEY `idx_ckpt_write_v2_checkpoint`
+                    (`thread_id`, `checkpoint_ns`, `checkpoint_id`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             """))
             # tool_audit_log 表
