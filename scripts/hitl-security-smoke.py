@@ -747,20 +747,23 @@ async def main():
     tampered = deepcopy(saved.checkpoint)
     protected = tampered["channel_values"]["pending_action"]["approval_payload"]
     protected["amount_minor"] += 1
-    serialized = checkpointer.serde.dumps(tampered)
-    if isinstance(serialized, bytes):
-        serialized = serialized.decode("utf-8")
+    state_type, state_blob = checkpointer.serde.dumps_typed(tampered)
     checkpoint_id = saved.config["configurable"]["checkpoint_id"]
+    checkpoint_ns = saved.config["configurable"].get("checkpoint_ns", "")
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             text("""
-                UPDATE langgraph_checkpoint
-                SET state = :state
-                WHERE thread_id = :thread_id AND checkpoint_id = :checkpoint_id
+                UPDATE langgraph_checkpoint_v2
+                SET state_type = :state_type, state_blob = :state_blob
+                WHERE thread_id = :thread_id
+                  AND checkpoint_ns = :checkpoint_ns
+                  AND checkpoint_id = :checkpoint_id
             """),
             {
-                "state": serialized,
+                "state_type": state_type,
+                "state_blob": state_blob,
                 "thread_id": thread_id,
+                "checkpoint_ns": checkpoint_ns,
                 "checkpoint_id": checkpoint_id,
             },
         )
@@ -1030,8 +1033,8 @@ asyncio.run(main())
             threads = ",".join(sql_literal(value) for value in self.thread_ids)
             statements.extend(
                 [
-                    f"DELETE FROM langgraph_checkpoint_write WHERE thread_id IN ({threads})",
-                    f"DELETE FROM langgraph_checkpoint WHERE thread_id IN ({threads})",
+                    f"DELETE FROM langgraph_checkpoint_write_v2 WHERE thread_id IN ({threads})",
+                    f"DELETE FROM langgraph_checkpoint_v2 WHERE thread_id IN ({threads})",
                 ]
             )
         for order_no, _, shard in self.orders:

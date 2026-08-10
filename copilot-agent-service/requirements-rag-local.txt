@@ -12,7 +12,8 @@
 
 # milvus-lite extra 允许 MilvusClient 使用本地 .db 文件；传 HTTP URI 时仍连接 Standalone。
 pymilvus[milvus-lite]==2.4.9
-langchain-milvus==0.1.6
+# PyMilvus 2.4.9 仍直接 import pkg_resources；Setuptools 81+ 已移除该模块。
+setuptools==80.9.0
 
 # marshmallow 必须 <4：4.x 移除了 __version_info__，与 pymilvus 2.4.9 的 environs 依赖不兼容。
 marshmallow<4

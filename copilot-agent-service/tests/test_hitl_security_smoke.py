@@ -79,8 +79,10 @@ def test_tamper_smoke_mutates_a_real_langgraph_checkpoint():
     assert "checkpointer.aget_tuple" in source
     assert "deepcopy(saved.checkpoint)" in source
     assert 'tampered["channel_values"]' in source
-    assert "checkpointer.serde.dumps(tampered)" in source
-    assert "UPDATE langgraph_checkpoint" in source
+    assert "checkpointer.serde.dumps_typed(tampered)" in source
+    assert "UPDATE langgraph_checkpoint_v2" in source
+    assert "state_type = :state_type" in source
+    assert "state_blob = :state_blob" in source
     assert "empty_checkpoint" not in source
 
 

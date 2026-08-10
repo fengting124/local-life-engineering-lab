@@ -8,6 +8,7 @@ import os
 # Security-sensitive settings stay required in production. Tests inject an
 # explicit non-production value before application modules are imported.
 os.environ.setdefault("HITL_PAYLOAD_SIGNING_SECRET", "test-only-hitl-key")
+os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
 
 # copilot-agent-service/ 根目录
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -147,7 +147,7 @@ class MilvusVectorStore:
                 {
                     "embedding_model": configured_model,
                     "embedding_dimension": configured_dim,
-                    "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
+                "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 }
             ),
         )
@@ -252,7 +252,11 @@ class MilvusVectorStore:
                 collection_name=self.collection_name,
                 filter=f"doc_id == '{_escape_filter_string(doc_id)}'",
             )
-            deleted = int((result or {}).get("delete_count", 0))
+            deleted = (
+                len(result)
+                if isinstance(result, list)
+                else int((result or {}).get("delete_count", 0))
+            )
             log.info("milvus_document_deleted", doc_id=doc_id, deleted=deleted)
             return deleted
         except Exception as exc:

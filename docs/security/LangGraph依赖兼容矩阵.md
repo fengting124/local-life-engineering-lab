@@ -1,10 +1,13 @@
 # LangGraph 依赖兼容矩阵
 
-- Status: Active
+- Status: Historical
 - Type: Reference
 - Owners: Project maintainers
 - Last verified: 2026-08-05
 - Source of truth: PyPI metadata, `pip --dry-run --report`, isolated virtual environments, Agent tests
+- Superseded by: `docs/security/LangGraph安全升级与Checkpoint迁移.md`, `docs/security/RAG依赖可达性审计.md`
+
+> 本文保留 PR #31 的升级候选研究。实施阶段证明 `langchain` 和 `langchain-milvus` 均无生产 import，因此没有采用本文在保留死依赖前提下推导出的 Milvus 3.x 组合。当前版本和运行证据见[安全升级文档](./LangGraph安全升级与Checkpoint迁移.md)与[RAG 依赖可达性审计](./RAG依赖可达性审计.md)。
 
 本文记录 GHSA-g48c-2wqr-h844 和 GHSA-wwqv-p2pp-99h5 第一阶段使用的版本解析和兼容性证据。所有候选环境都位于系统临时目录，没有修改生产 `requirements*.txt`。
 

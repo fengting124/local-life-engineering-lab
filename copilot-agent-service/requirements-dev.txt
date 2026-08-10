@@ -11,3 +11,4 @@ coverage==7.14.1
 pact-python==3.4.0      # 消费者驱动契约测试（tests/contract/）
 mutmut==3.6.0           # 变异测试（支持按 CI 性能校准单 mutant 超时）
 testcontainers[mysql]==4.15.0  # 安全评估的隔离 MySQL 信任边界测试
+langgraph-checkpoint-conformance==0.0.2  # 自定义 Saver 的官方基础协议门禁

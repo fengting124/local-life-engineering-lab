@@ -1,5 +1,4 @@
 import json
-import inspect
 from collections import Counter
 from importlib.metadata import version
 from unittest.mock import AsyncMock
@@ -24,7 +23,7 @@ from session.checkpointer import AsyncMySQLCheckpointer
 def _checkpoint(checkpoint_id: str = "checkpoint-security-1") -> dict:
     return {
         "v": 1,
-        "ts": "2026-08-05T00:00:00+00:00",
+        "ts": "2026-08-10T00:00:00+00:00",
         "id": checkpoint_id,
         "channel_values": {"marker": "original"},
         "channel_versions": {},
@@ -42,30 +41,13 @@ def _harmless_constructor_marker(label: str) -> dict:
     }
 
 
-def _harmless_msgpack_marker(label: str) -> bytes:
+def _harmless_msgpack_ext(label: str) -> ormsgpack.Ext:
     constructor = ormsgpack.packb(("collections", "Counter", [label]))
-    return ormsgpack.packb(
-        ormsgpack.Ext(EXT_CONSTRUCTOR_SINGLE_ARG, constructor)
-    )
+    return ormsgpack.Ext(EXT_CONSTRUCTOR_SINGLE_ARG, constructor)
 
 
-class TrackingSerializer:
-    def __init__(self) -> None:
-        self.delegate = JsonPlusSerializer()
-        self.loads_typed_calls = 0
-
-    def dumps(self, value):
-        return self.delegate.dumps(value)
-
-    def loads(self, value):
-        return self.delegate.loads(value)
-
-    def dumps_typed(self, value):
-        return self.delegate.dumps_typed(value)
-
-    def loads_typed(self, value):
-        self.loads_typed_calls += 1
-        return self.delegate.loads_typed(value)
+def _harmless_msgpack_marker(label: str) -> bytes:
+    return ormsgpack.packb(_harmless_msgpack_ext(label))
 
 
 @pytest.fixture(scope="module")
@@ -95,19 +77,21 @@ async def checkpoint_db(isolated_mysql, monkeypatch):
     )
     engine = create_async_engine(url, pool_pre_ping=False)
     async with engine.begin() as connection:
-        await connection.execute(text("DROP TABLE IF EXISTS langgraph_checkpoint_write"))
-        await connection.execute(text("DROP TABLE IF EXISTS langgraph_checkpoint"))
+        await connection.execute(text("DROP TABLE IF EXISTS langgraph_checkpoint_write_v2"))
+        await connection.execute(text("DROP TABLE IF EXISTS langgraph_checkpoint_v2"))
         await connection.execute(
             text(
                 """
-                CREATE TABLE langgraph_checkpoint (
+                CREATE TABLE langgraph_checkpoint_v2 (
                     thread_id VARCHAR(64) NOT NULL,
+                    checkpoint_ns VARCHAR(255) NOT NULL DEFAULT '',
                     checkpoint_id VARCHAR(64) NOT NULL,
                     parent_checkpoint_id VARCHAR(64) NULL,
-                    state LONGTEXT NOT NULL,
+                    state_type VARCHAR(32) NOT NULL,
+                    state_blob LONGBLOB NOT NULL,
                     metadata JSON NULL,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (thread_id, checkpoint_id)
+                    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+                    PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
                 ) CHARACTER SET utf8mb4
                 """
             )
@@ -115,35 +99,35 @@ async def checkpoint_db(isolated_mysql, monkeypatch):
         await connection.execute(
             text(
                 """
-                CREATE TABLE langgraph_checkpoint_write (
+                CREATE TABLE langgraph_checkpoint_write_v2 (
                     thread_id VARCHAR(64) NOT NULL,
+                    checkpoint_ns VARCHAR(255) NOT NULL DEFAULT '',
                     checkpoint_id VARCHAR(64) NOT NULL,
                     task_id VARCHAR(128) NOT NULL,
                     task_path VARCHAR(255) NOT NULL DEFAULT '',
                     write_index INT NOT NULL,
                     channel VARCHAR(128) NOT NULL,
-                    value LONGTEXT NOT NULL,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (thread_id, checkpoint_id, task_id, write_index)
+                    value_type VARCHAR(32) NOT NULL,
+                    value_blob LONGBLOB NOT NULL,
+                    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+                    PRIMARY KEY (
+                        thread_id, checkpoint_ns, checkpoint_id, task_id, write_index
+                    )
                 ) CHARACTER SET utf8mb4
                 """
             )
         )
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    monkeypatch.setattr(
-        checkpointer_module,
-        "AsyncSessionLocal",
-        session_factory,
-    )
+    monkeypatch.setattr(checkpointer_module, "AsyncSessionLocal", session_factory)
     yield session_factory
     await engine.dispose()
 
 
 async def _save_checkpoint(saver: AsyncMySQLCheckpointer) -> dict:
     return await saver.aput(
-        {"configurable": {"thread_id": "thread-security"}},
+        {"configurable": {"thread_id": "thread-security", "checkpoint_ns": ""}},
         _checkpoint(),
-        {"source": "security-assessment"},
+        {"source": "input", "step": 0},
         {},
     )
 
@@ -164,27 +148,84 @@ async def test_compiled_graph_get_state_delegates_to_custom_aget_tuple():
     saver.aget_tuple.assert_awaited_once_with(config)
 
 
+def test_checkpoint_dependency_is_on_fixed_major_version():
+    assert int(version("langgraph-checkpoint").split(".", 1)[0]) >= 4
+
+
+def test_strict_msgpack_blocks_unregistered_constructor():
+    restored = AsyncMySQLCheckpointer().serde.loads_typed(
+        ("msgpack", _harmless_msgpack_marker("strict-msgpack-marker"))
+    )
+
+    assert not isinstance(restored, Counter)
+
+
+def test_strict_json_blocks_unregistered_constructor():
+    restored = AsyncMySQLCheckpointer().serde.loads_typed(
+        (
+            "json",
+            json.dumps(_harmless_constructor_marker("strict-json-marker")).encode(),
+        )
+    )
+
+    assert not isinstance(restored, Counter)
+    assert restored["id"] == ["collections", "Counter"]
+
+
 @pytest.mark.asyncio
-async def test_ghsa_wwqv_legacy_json_checkpoint_tamper_reconstructs_marker(
+async def test_production_checkpoint_path_does_not_reconstruct_msgpack_marker(
+    checkpoint_db,
+):
+    saver = AsyncMySQLCheckpointer()
+    config = await _save_checkpoint(saver)
+    tampered = _checkpoint()
+    tampered["channel_values"]["marker"] = _harmless_msgpack_ext(
+        "typed-checkpoint-marker"
+    )
+    async with checkpoint_db() as db:
+        await db.execute(
+            text(
+                """
+                UPDATE langgraph_checkpoint_v2
+                SET state_type = 'msgpack', state_blob = :state_blob
+                WHERE thread_id = :thread_id AND checkpoint_id = :checkpoint_id
+                """
+            ),
+            {
+                "state_blob": ormsgpack.packb(tampered),
+                "thread_id": "thread-security",
+                "checkpoint_id": _checkpoint()["id"],
+            },
+        )
+        await db.commit()
+
+    restored = await saver.aget_tuple(config)
+
+    assert restored is not None
+    assert not isinstance(restored.checkpoint["channel_values"]["marker"], Counter)
+
+
+@pytest.mark.asyncio
+async def test_production_checkpoint_path_does_not_reconstruct_json_marker(
     checkpoint_db,
 ):
     saver = AsyncMySQLCheckpointer()
     config = await _save_checkpoint(saver)
     tampered = _checkpoint()
     tampered["channel_values"]["marker"] = _harmless_constructor_marker(
-        "json-checkpoint-marker"
+        "typed-json-marker"
     )
     async with checkpoint_db() as db:
         await db.execute(
             text(
                 """
-                UPDATE langgraph_checkpoint
-                SET state = :state
+                UPDATE langgraph_checkpoint_v2
+                SET state_type = 'json', state_blob = :state_blob
                 WHERE thread_id = :thread_id AND checkpoint_id = :checkpoint_id
                 """
             ),
             {
-                "state": json.dumps(tampered),
+                "state_blob": json.dumps(tampered).encode(),
                 "thread_id": "thread-security",
                 "checkpoint_id": _checkpoint()["id"],
             },
@@ -194,106 +235,33 @@ async def test_ghsa_wwqv_legacy_json_checkpoint_tamper_reconstructs_marker(
     restored = await saver.aget_tuple(config)
 
     assert restored is not None
-    assert restored.checkpoint["channel_values"]["marker"] == Counter(
-        ["json-checkpoint-marker"]
-    )
-
-
-@pytest.mark.asyncio
-async def test_ghsa_g48c_msgpack_state_does_not_reach_typed_deserializer(
-    checkpoint_db,
-):
-    saver = AsyncMySQLCheckpointer()
-    tracker = TrackingSerializer()
-    saver.serde = tracker
-    config = await _save_checkpoint(saver)
-    benign_msgpack = ormsgpack.packb(42)
-    assert benign_msgpack == b"*"
-    async with checkpoint_db() as db:
-        await db.execute(
-            text(
-                """
-                UPDATE langgraph_checkpoint
-                SET state = :state
-                WHERE thread_id = :thread_id AND checkpoint_id = :checkpoint_id
-                """
-            ),
-            {
-                "state": benign_msgpack,
-                "thread_id": "thread-security",
-                "checkpoint_id": _checkpoint()["id"],
-            },
-        )
-        await db.commit()
-
-    with pytest.raises(json.JSONDecodeError):
-        await saver.aget_tuple(config)
-
-    assert tracker.loads_typed_calls == 0
-
-
-def test_ghsa_g48c_dependency_typed_load_reconstructs_harmless_marker():
-    marker = JsonPlusSerializer().loads_typed(
-        ("msgpack", _harmless_msgpack_marker("typed-dependency-marker"))
-    )
-
-    assert marker == Counter(["typed-dependency-marker"])
-
-
-def test_ghsa_wwqv_dependency_status_matches_checkpoint_major_version():
-    marker = JsonPlusSerializer().loads_typed(
-        (
-            "json",
-            json.dumps(_harmless_constructor_marker("json-advisory-marker")).encode(),
-        )
-    )
-    checkpoint_major = int(version("langgraph-checkpoint").split(".", 1)[0])
-
-    if checkpoint_major < 3:
-        assert marker == Counter(["json-advisory-marker"])
-    else:
-        assert not isinstance(marker, Counter)
-
-
-def test_ghsa_g48c_fixed_serializer_blocks_unregistered_msgpack_marker():
-    parameters = inspect.signature(JsonPlusSerializer).parameters
-    if "allowed_msgpack_modules" not in parameters:
-        pytest.skip("strict msgpack allowlist is unavailable in the affected version")
-
-    marker = JsonPlusSerializer(allowed_msgpack_modules=None).loads_typed(
-        ("msgpack", _harmless_msgpack_marker("strict-policy-marker"))
-    )
-
+    marker = restored.checkpoint["channel_values"]["marker"]
     assert not isinstance(marker, Counter)
+    assert marker["id"] == ["collections", "Counter"]
 
 
 @pytest.mark.asyncio
-async def test_ghsa_wwqv_pending_writes_use_legacy_json_deserialization(
+async def test_production_pending_write_path_does_not_reconstruct_marker(
     checkpoint_db,
 ):
     saver = AsyncMySQLCheckpointer()
-    tracker = TrackingSerializer()
-    saver.serde = tracker
     config = await _save_checkpoint(saver)
     await saver.aput_writes(
         config,
         [("security_marker", {"value": "original"})],
         task_id="task-security",
-        task_path="graph:security",
     )
     async with checkpoint_db() as db:
         await db.execute(
             text(
                 """
-                UPDATE langgraph_checkpoint_write
-                SET value = :value
+                UPDATE langgraph_checkpoint_write_v2
+                SET value_type = 'msgpack', value_blob = :value_blob
                 WHERE thread_id = :thread_id AND checkpoint_id = :checkpoint_id
                 """
             ),
             {
-                "value": json.dumps(
-                    _harmless_constructor_marker("pending-write-marker")
-                ),
+                "value_blob": _harmless_msgpack_marker("pending-write-marker"),
                 "thread_id": "thread-security",
                 "checkpoint_id": _checkpoint()["id"],
             },
@@ -303,11 +271,4 @@ async def test_ghsa_wwqv_pending_writes_use_legacy_json_deserialization(
     restored = await saver.aget_tuple(config)
 
     assert restored is not None
-    assert restored.pending_writes == [
-        (
-            "task-security",
-            "security_marker",
-            Counter(["pending-write-marker"]),
-        )
-    ]
-    assert tracker.loads_typed_calls == 0
+    assert not isinstance(restored.pending_writes[0][2], Counter)

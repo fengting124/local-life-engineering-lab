@@ -3,7 +3,7 @@
 - Status: Active
 - Type: Overview
 - Owners: Project maintainers
-- Last verified: 2026-08-04
+- Last verified: 2026-08-10
 - Source of truth: `docs/文档规范.md`
 
 本文档中心按文档类型和目录职责组织。第一次阅读项目时，从 [LocalLife 学习路线](./00-学习路线.md) 开始；维护文档时，先阅读 [文档规范](./文档规范.md) 和 [文档清单](./文档清单.md)。
@@ -37,7 +37,7 @@
 - [Swagger 在线接口文档](./04-notes/Swagger在线接口文档.md)
 - [企业级日志系统](./04-notes/企业级日志系统.md)
 - [HITL 审批与安全恢复](./security/HITL审批与安全恢复.md)
-- [LangGraph 安全公告评估报告](./security/LangGraph安全公告评估报告.md)
+- [LangGraph 安全升级与 Checkpoint 迁移](./security/LangGraph安全升级与Checkpoint迁移.md)
 
 ### Reference
 
@@ -48,6 +48,7 @@
 - [v0.1.0-rc 验收报告](./release/v0.1.0-rc验收报告.md)
 - [Git 版本管理与提交规范](./03-process/Git版本管理与提交规范.md)
 - [LangGraph 依赖兼容矩阵](./security/LangGraph依赖兼容矩阵.md)
+- [RAG 依赖可达性审计](./security/RAG依赖可达性审计.md)
 
 ### Explanation
 
