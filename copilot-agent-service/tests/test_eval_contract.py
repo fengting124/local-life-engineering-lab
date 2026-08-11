@@ -95,6 +95,9 @@ def test_case_49_uses_valid_missing_order_fixture_for_not_found():
                 "order_id": "{{fixture.order.missing.order_no}}",
             }
         }
+        assert candidate.expected_facts == [
+            {"source": "final_answer", "contains": "未找到"}
+        ]
 
 
 def test_cs_compensation_case_expects_safe_escalation_after_read_only_evidence():

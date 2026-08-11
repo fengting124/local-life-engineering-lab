@@ -216,6 +216,9 @@ def _with_baseline_contract(case: EvalCase) -> EvalCase:
                     "order_id": "{{fixture.order.missing.order_no}}",
                 }
             },
+            "expected_facts": [
+                {"source": "final_answer", "contains": "未找到"},
+            ],
         },
         50: _refusal_contract(
             forbidden=["execute_refund"],

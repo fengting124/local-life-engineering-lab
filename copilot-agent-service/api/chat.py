@@ -17,8 +17,9 @@ SSE 事件类型（前端按 event 字段区分处理）：
 import json
 import asyncio
 import structlog
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -109,6 +110,14 @@ _METRIC_WORDS = re.compile(
 _TODAY_RE = re.compile(r"今天|今日|today", re.IGNORECASE)
 _YESTERDAY_RE = re.compile(r"昨天|昨日|yesterday", re.IGNORECASE)
 _MONTH_TO_DATE_RE = re.compile(r"本月|这个月|这月|this month", re.IGNORECASE)
+_BUSINESS_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def _business_today(now: datetime | None = None) -> date:
+    instant = now or datetime.now(timezone.utc)
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    return instant.astimezone(_BUSINESS_TIMEZONE).date()
 
 
 async def _try_fast_path(
@@ -148,19 +157,19 @@ async def _try_fast_path(
         return None
 
     # 确定日期或月到今日范围
-    if _TODAY_RE.search(msg):
-        arguments = {"date": "today"}
-        date_label = "今天"
-    elif _YESTERDAY_RE.search(msg):
-        arguments = {"date": "yesterday"}
-        date_label = "昨天"
-    elif _MONTH_TO_DATE_RE.search(msg):
-        current_date = today or date.today()
+    if _MONTH_TO_DATE_RE.search(msg):
+        current_date = today or _business_today()
         arguments = {
             "start_date": current_date.replace(day=1).isoformat(),
             "end_date": current_date.isoformat(),
         }
         date_label = "本月"
+    elif _TODAY_RE.search(msg):
+        arguments = {"date": "today"}
+        date_label = "今天"
+    elif _YESTERDAY_RE.search(msg):
+        arguments = {"date": "yesterday"}
+        date_label = "昨天"
     else:
         return None  # 没有明确时间词，fallback 到 ReAct
 

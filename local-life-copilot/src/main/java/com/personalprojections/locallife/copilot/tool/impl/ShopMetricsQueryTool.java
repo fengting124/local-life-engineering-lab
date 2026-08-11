@@ -50,7 +50,7 @@ public class ShopMetricsQueryTool implements McpTool {
     private final CopilotOrderMapper orderMapper;
     private final ObjectMapper objectMapper;
 
-    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ISO_LOCAL_DATE;
 
     @Override
     public String getName() {
@@ -89,10 +89,16 @@ public class ShopMetricsQueryTool implements McpTool {
         inputSchema.put("type", "object");
         inputSchema.set("properties", properties);
         var oneOf = inputSchema.putArray("oneOf");
-        oneOf.addObject().putArray("required").add("date");
-        var rangeRequired = oneOf.addObject().putArray("required");
+        var singleDate = oneOf.addObject();
+        singleDate.putArray("required").add("date");
+        var forbiddenRangeFields = singleDate.putObject("not").putArray("anyOf");
+        forbiddenRangeFields.addObject().putArray("required").add("start_date");
+        forbiddenRangeFields.addObject().putArray("required").add("end_date");
+        var dateRange = oneOf.addObject();
+        var rangeRequired = dateRange.putArray("required");
         rangeRequired.add("start_date");
         rangeRequired.add("end_date");
+        dateRange.putObject("not").putArray("required").add("date");
 
         return ToolDefinition.builder()
                 .name("shop_metrics_query")

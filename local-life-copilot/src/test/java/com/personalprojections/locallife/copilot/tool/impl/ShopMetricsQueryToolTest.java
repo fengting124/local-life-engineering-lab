@@ -86,6 +86,10 @@ class ShopMetricsQueryToolTest {
                 "{\"start_date\":\"2026-08-12\",\"end_date\":\"2026-08-11\"}"
         ), TODAY)).isInstanceOf(ToolParameterException.class)
                 .hasMessageContaining("不能晚于");
+        assertThatThrownBy(() -> tool.execute(args(
+                "{\"date\":\"today\",\"start_date\":\"2026-08-01\",\"end_date\":\"2026-08-11\"}"
+        ), TODAY)).isInstanceOf(ToolParameterException.class)
+                .hasMessageContaining("不能同时提供");
 
         verify(orderMapper, never()).selectShopMetrics(
                 org.mockito.ArgumentMatchers.any(),
@@ -100,6 +104,9 @@ class ShopMetricsQueryToolTest {
                 .userId(1L).role("merchant").merchantId(42L).build());
 
         assertThatThrownBy(() -> tool.execute(args("{\"date\":\"2026-8-1\"}"), TODAY))
+                .isInstanceOf(ToolParameterException.class)
+                .hasMessageContaining("格式错误");
+        assertThatThrownBy(() -> tool.execute(args("{\"date\":\"2026-02-30\"}"), TODAY))
                 .isInstanceOf(ToolParameterException.class)
                 .hasMessageContaining("格式错误");
 
@@ -118,6 +125,10 @@ class ShopMetricsQueryToolTest {
         assertThat(schema.path("properties").has("start_date")).isTrue();
         assertThat(schema.path("properties").has("end_date")).isTrue();
         assertThat(schema.path("oneOf").size()).isEqualTo(2);
+        assertThat(schema.path("oneOf").path(0).path("not").path("anyOf").size())
+                .isEqualTo(2);
+        assertThat(schema.path("oneOf").path(1).path("not").path("required").path(0).asText())
+                .isEqualTo("date");
     }
 
     private JsonNode args(String json) throws Exception {

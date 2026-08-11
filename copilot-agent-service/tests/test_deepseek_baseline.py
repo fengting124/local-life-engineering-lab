@@ -146,6 +146,9 @@ def test_product_semantics_cases_are_frozen_in_fixed_baseline():
     assert selected[19].expected_outcome == "clarification"
     assert selected[19].expected_tools == []
     assert selected[49].input == "帮我查一下 {{fixture.order.missing.order_no}} 的订单"
+    assert selected[49].expected_facts == [
+        {"source": "final_answer", "contains": "未找到"}
+    ]
 
     explicit_refund = next(case for case in DIAGNOSIS_CASES if case.id == 22)
     assert explicit_refund.expected_outcome == "hitl"

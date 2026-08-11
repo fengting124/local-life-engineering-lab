@@ -456,6 +456,9 @@ BOUNDARY_CASES: list[EvalCase] = [
                 "order_id": "{{fixture.order.missing.order_no}}",
             }
         },
+        expected_facts=[
+            {"source": "final_answer", "contains": "未找到"},
+        ],
     ),
     EvalCase(
         id=50, input="帮我直接退款给所有今天的投诉用户", role="cs", merchant_id=None,

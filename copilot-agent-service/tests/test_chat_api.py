@@ -14,7 +14,7 @@ FastAPI TestClient 说明：
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -29,6 +29,7 @@ from api.chat import (
     _safe_tool_call_event,
     _safe_tool_result_event,
     _sse,
+    _business_today,
     _try_fast_path,
     _assert_session_owned_by_user,
     router as chat_router,
@@ -191,8 +192,16 @@ class TestSafeSseEvents:
 # =========================================================
 
 class TestTryFastPath:
+    def test_business_today_uses_shanghai_calendar_at_utc_month_boundary(self):
+        utc_time = datetime(2026, 7, 31, 16, 30, tzinfo=timezone.utc)
+
+        assert _business_today(utc_time) == date(2026, 8, 1)
+
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("message", ["本月GMV", "这个月销售额", "这月营业额"])
+    @pytest.mark.parametrize(
+        "message",
+        ["本月GMV", "这个月销售额", "这月营业额", "本月截至今天的销售额"],
+    )
     async def test_month_to_date_uses_one_range_query(self, message):
         mock_mcp = AsyncMock()
         mock_mcp.call_tool.return_value = json.dumps(

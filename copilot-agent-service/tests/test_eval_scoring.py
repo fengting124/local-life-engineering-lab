@@ -196,12 +196,28 @@ def test_expected_not_found_is_not_tool_execution_failure():
         expected_tools=["query_order"],
         allowed_tools=["query_order"],
         expected_args={"query_order": {"order_id": "MISSING"}},
-        expected_facts=[],
+        expected_facts=[{"source": "final_answer", "contains": "未找到"}],
+    )
+    missing_answer = evaluate_case(
+        case,
+        actual_tools=["query_order"],
+        final_answer="",
+        stop_reason="not_found",
+        error=None,
+        evidence=[
+            ToolEvidence(
+                name="query_order",
+                arguments={"order_id": "MISSING"},
+                output={},
+                status="error",
+                error="[工具错误] not_found: 订单不存在",
+            )
+        ],
     )
     result = evaluate_case(
         case,
         actual_tools=["query_order"],
-        final_answer="订单不存在",
+        final_answer="未找到该订单",
         stop_reason="not_found",
         error=None,
         evidence=[
@@ -215,6 +231,7 @@ def test_expected_not_found_is_not_tool_execution_failure():
         ],
     )
 
+    assert missing_answer.failure_category == "synthesis_failure"
     assert result.task_completed is True
     assert result.failure_category is None
 
