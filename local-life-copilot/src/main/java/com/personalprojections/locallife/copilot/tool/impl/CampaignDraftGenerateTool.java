@@ -133,8 +133,9 @@ public class CampaignDraftGenerateTool implements McpTool {
         // 查近期经营数据（自动推算使用门槛）
         int suggestedMinAmount = 0;
         if (!arguments.has("min_order_amount") || arguments.get("min_order_amount").isNull()) {
+            String metricsDate = LocalDate.now().minusDays(7).format(DATE_FMT);
             ShopMetricsSnapshot metrics = orderMapper.selectShopMetrics(
-                    merchantId, LocalDate.now().minusDays(7).format(DATE_FMT), null);
+                    merchantId, metricsDate, metricsDate, null);
             if (metrics != null) {
                 long orderCount = metrics.getOrderCount() != null ? metrics.getOrderCount() : 0L;
                 long gmv = metrics.getGmv() != null ? metrics.getGmv() : 0L;
