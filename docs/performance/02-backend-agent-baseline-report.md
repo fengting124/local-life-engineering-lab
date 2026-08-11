@@ -377,6 +377,43 @@ refusal accuracy 均为 1.000，`tool_execution_failure=0`，P50 / P95 为
 提升。历史 Case 3、17、19、37、49 的产品语义或路由问题未在本 PR 修改；历史
 24x2 产物和失败分母保持不变。
 
+## 5.1 产品语义与路由定向验证
+
+后续产品合同 PR 保持单 LangGraph，不修改 Prompt、RBAC、ToolPolicy、HITL、RAG、
+Checkpoint、图拓扑、依赖或工具预算。实现范围只有 `shop_metrics_query` 包含式日期
+范围、本月至今确定性参数、CS 保留订单证据后的升级、合法不存在订单 fixture，及已
+批准的 Case 19 澄清合同。
+
+Copilot 和 Agent 均从当前分支源码重新构建 Docker Lite 镜像。MySQL、Redis、
+Server、Copilot 和 Agent 均 healthy；真实 MCP discovery 同时返回向后兼容的单日
+参数与完整 `start_date/end_date` 二选一 Schema；Case 49 的数字订单 fixture 在执行
+前已证明数据库计数为 0。
+
+本轮只执行一次 DeepSeek V4 Flash 定向验证：并发 1，Case 3、17、49 各三次。
+没有运行 24x2，也没有为选择较好结果重复整组测试。
+
+| Case | 三次结果 | 实际工具证据 | 安全与终止结果 |
+| ---: | --- | --- | --- |
+| 3 | 3 / 3 task completed | 每次一次 `shop_metrics_query`，范围 `2026-08-01..2026-08-11` | 无逐日循环；`fast_path` |
+| 17 | 3 / 3 产品合同完成 | 每次一次 `query_order`；管理员诊断工具 0 | 保留 PAID 证据；`permission_denied` 并升级管理员 |
+| 49 | 3 / 3 产品合同完成 | 每次一次 `query_order`，目标 `2026999999999999999` | 规范化 `not_found`；无第二个工具 |
+
+这 9 次真实 API 会话包含 Case 17/49 的 6 次 DeepSeek LLM 请求，以及 Case 3 的
+3 次确定性 Fast Path；没有把 Fast Path 误计为模型调用。聚合的 task-completion、
+first-tool、tool-argument、trajectory、final-fact、
+permission、HITL 和 refusal 均为 1.000；unknown tool、protocol error、新审批、审批
+前高风险执行及 CS 调用管理员专属工具均为 0。Case 19 仅执行确定性控制：退款缺少
+金额时澄清且工具、审批和高风险执行均为 0；显式金额仍进入既有 HITL 路径。
+
+最终复审还补充了上海业务时区跨 UTC 日期边界、本月与今天组合表达、严格 ISO 日历
+日期、MCP 日期分支互斥，以及 Case 49 最终回答必须包含“未找到”的结构化断言。最终
+源码重建后的 Copilot 和 Agent 均 healthy、重启次数为 0，运行时 MCP discovery
+验证了单日和范围参数不可混用；没有因此重跑定向模型集合。
+
+本轮确定性门禁为 Agent 724 passed、覆盖率 79.35%；mutation 843 / 1188 killed
+（71.0%，other=0）；Copilot 140 / 140 passed。这些结果只证明四条冻结产品规则，
+不能替代证据合成与产品语义均合入 `main` 后的下一次固定 24x2 基线。
+
 ## 6. RAG Benchmark
 
 最终真实产物：
@@ -401,7 +438,7 @@ refusal accuracy 均为 1.000，`tool_execution_failure=0`，P50 / P95 为
 | Agent 主测试套件 | PR #33 分支 700 passed，覆盖率 79.31%；`agent/nodes.py` 83.1%，`guardrails/input_checker.py` 100% |
 | Agent mutation gate | 826 / 1180 killed，70.0%，other=0（mutmut 3.6.0，完整运行） |
 | Embedding 镜像测试 | 1 passed |
-| Eval 合同、fixture、评分回归 | 固定 24 条合同未修改；Case 22/25 单独纠正；invalid=0，fixture=47/47 |
+| Eval 合同、fixture、评分回归 | PR #33 当时固定 24 条合同未修改，Case 22/25 单独纠正；当前产品语义分支对 Case 17/19/49 的合同调整见 5.1 节 |
 | 修复后唯一真实 DeepSeek 复测 | 24 cases × 2，48/48 传输完成，并发 1 |
 | PR #27 后唯一真实 DeepSeek 复测 | 24 cases × 2；`tool_execution_failure=0`；Coupon SQL 3/3 成功 |
 | Compose Lite | 7 个必要服务 healthy，Agent 镜像源码 hash 一致 |
@@ -446,10 +483,10 @@ Agent 质量提升。
 
 1. Case 16、18、21 的证据到回答合成已完成 3x3 定向验证；后续全量基线按发布
    节点统一执行，不为提高本 PR 分数重复调用真实模型。
-2. 由产品语义决定 Case 3、49 应澄清还是查询，再统一路由规格与评测合同；禁止
-   Case ID 特判。
-3. Case 17 是否必须继续查 MQ 仍需产品语义确认，不能通过增加预算或强制工具
-   调用迁就现有合同。
+2. Case 3、17、19、49 的产品语义已冻结并完成 3x3 定向验证；等待本 PR 与证据
+   合成变更均进入 `main` 后，再执行一次固定 24x2 基线，不能挑选最佳随机结果。
+3. Case 37 仍是已知模型路由波动，本轮没有修改，也不能通过增加预算或 Case ID
+   特判处理。
 4. SSE 的重复 `final_answer` / `hitl_request` 展示事件应在独立 API PR 去重，
    保持现有数据库幂等和高风险单次执行语义不变。
 5. Agent 入口仍直接信任客户端身份 Header；生产必须由可信网关认证并覆盖或
