@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage, RemoveMessage
 from langchain_core.language_models import BaseChatModel
 
+from agent.answer_facts import build_evidence_answer, validate_or_fallback
 from agent.evidence_gate import (
     ToolOutcome,
     advance_evidence,
@@ -405,7 +406,17 @@ async def llm_node(state: AgentState) -> dict:
     输出：新的 assistant 消息（含 tool_calls 或 Final Answer）
     """
     direct_answer = _direct_route_answer(state)
-    response = AIMessage(content=direct_answer) if direct_answer is not None else None
+    evidence_answer = (
+        build_evidence_answer(state) if direct_answer is None else None
+    )
+    if direct_answer is not None:
+        response = AIMessage(content=direct_answer)
+    elif evidence_answer is not None:
+        response = AIMessage(
+            content=validate_or_fallback(None, evidence_answer)
+        )
+    else:
+        response = None
     high_risk_proposal_stop_reason = None
     controlled_tool_unavailable = False
     if response is None:

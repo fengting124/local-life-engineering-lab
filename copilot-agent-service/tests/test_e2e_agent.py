@@ -137,6 +137,106 @@ async def test_full_react_loop_llm_tool_llm_final(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_payment_diagnosis_uses_two_tools_then_deterministic_answer(
+    monkeypatch,
+):
+    _force_memory_saver(monkeypatch)
+    monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
+
+    mock_mcp = MagicMock()
+    mock_mcp.list_tools = AsyncMock(return_value=[
+        {
+            "name": "query_order",
+            "description": "查询订单",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "query_payment",
+            "description": "查询支付记录",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+    ])
+
+    async def call_tool(*, tool_name, arguments, **_context):
+        assert arguments == {"order_id": "202606100001"}
+        if tool_name == "query_order":
+            return (
+                '{"order_no":"202606100001","order_status":"WAIT_PAY",'
+                '"payment":{"pay_status":"SUCCESS"}}'
+            )
+        if tool_name == "query_payment":
+            return '{"payments":[{"pay_status":"SUCCESS"}]}'
+        raise AssertionError(f"unexpected tool: {tool_name}")
+
+    mock_mcp.call_tool = AsyncMock(side_effect=call_tool)
+    monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+    scripted = ScriptedLLM([
+        AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "query_order",
+                "args": {"order_id": "202606100001"},
+                "id": "call-order",
+                "type": "tool_call",
+            }],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "query_payment",
+                "args": {"order_id": "202606100001"},
+                "id": "call-payment",
+                "type": "tool_call",
+            }],
+        ),
+        AIMessage(content="不应调用第三次模型。"),
+    ])
+    monkeypatch.setattr(nodes, "_llm", scripted)
+
+    from agent.graph import build_graph
+    graph = build_graph()
+    message = "订单 202606100001 支付成功了为什么还是待支付？"
+    decision = classify_request("admin", message)
+    initial_state = {
+        "messages": [HumanMessage(content=message)],
+        "step_count": 0,
+        "token_count": 0,
+        "session_id": 0,
+        "thread_id": "e2e-payment-evidence-answer",
+        "user_id": 1,
+        "user_role": "admin",
+        "merchant_id": None,
+        "pending_hitl": False,
+        "final_answer": None,
+        "compact_failures": 0,
+        "needs_reflection": False,
+        "last_tool_failed": False,
+        **decision.to_state(),
+        **initial_evidence_state(decision),
+    }
+
+    final_state = await graph.ainvoke(
+        initial_state,
+        config={
+            "configurable": {"thread_id": "e2e-payment-evidence-answer"}
+        },
+    )
+
+    assert [
+        call.kwargs["tool_name"]
+        for call in mock_mcp.call_tool.await_args_list
+    ] == [
+        "query_order",
+        "query_payment",
+    ]
+    assert scripted._i == 2
+    assert final_state["final_answer"] == (
+        "订单状态：待支付；支付状态：支付成功。"
+    )
+    assert final_state["stop_reason"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_mcp_discovery_failure_finishes_as_internal_error(monkeypatch):
     _force_memory_saver(monkeypatch)
     monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
