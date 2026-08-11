@@ -38,7 +38,7 @@ Source: the single formal post-PR #27 baseline at runtime `e1c7bbd`, artifact `a
 
 Additional evidence:
 
-- `shop_metrics_query` currently requires only `date`; `CopilotOrderMapper.selectShopMetrics` uses `DATE(created_at) = date`.
+- At the historical baseline, `shop_metrics_query` required only `date`; `CopilotOrderMapper.selectShopMetrics` used `DATE(created_at) = date`.
 - `TOOL_ROLE_MAP` permits CS to call `query_order`, but admin alone can call coupon issue and MQ dead-letter diagnostics.
 - Fixture candidate `2026999999999999999` matches the production numeric format and currently has database count zero.
 - Historical Case 17 tool audits contain only two successful authorized-as-admin tools; the unknown attempted tool was never executed by MCP.
@@ -154,9 +154,9 @@ Additional evidence:
 **Files:**
 - Update: `docs/00-overview/文档清单.md` only if required by the docs checker.
 
-- [ ] Inspect `git diff origin/main...HEAD`, generated files, secrets, database files, and ignored artifacts.
-- [ ] Perform an independent scope and safety review; record `BLOCKING FINDINGS` with file and line evidence.
-- [ ] Commit final evidence with Goal, Changes, Verification, and Risk sections.
+- [x] Inspect `git diff origin/main...HEAD`, generated files, secrets, database files, and ignored artifacts.
+- [x] Perform an independent scope and safety review; record `BLOCKING FINDINGS` with file and line evidence.
+- [x] Commit final evidence with Goal, Changes, Verification, and Risk sections.
 - [ ] Push `fix/agent-product-semantics-routing` and create a Draft PR to `main`.
 - [ ] Stop without marking Ready or merging.
 
@@ -207,4 +207,5 @@ combined month-to-date/today wording, strict ISO calendar dates, mutually exclus
 schema branches, and Case 49's required `not_found` final-answer fact. The final Docker smoke
 confirmed both application containers healthy with zero restarts and the live MCP discovery
 schema enforcing the same mutual exclusion. These review fixes did not trigger a second
-targeted model set.
+targeted model set. The independent final diff review reported `BLOCKING FINDINGS=0`; its only
+low-severity wording observation was corrected before publication.
