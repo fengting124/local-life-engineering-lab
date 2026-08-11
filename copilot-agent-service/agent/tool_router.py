@@ -343,12 +343,15 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
         ("订单量", "多少笔订单", "多少单", "gmv", "营业额", "销售额", "交易额", "卖了多少", "多少钱"),
     ) or bool(re.search(r"核销.*(?:多少|几|张|笔|量)", text))
     has_aggregate = has_metric or _contains_any(text, ("数据", "统计", "总共", "汇总"))
-    has_supported_date = _contains_any(text, ("今天", "昨日", "昨天", "today", "yesterday")) or bool(
+    has_month_to_date = _contains_any(text, ("这个月", "本月", "这月", "this month"))
+    has_supported_date = has_month_to_date or _contains_any(
+        text, ("今天", "昨日", "昨天", "today", "yesterday")
+    ) or bool(
         re.search(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{4}年\d{1,2}月\d{1,2}日", text)
     )
     has_unsupported_date = _contains_any(
         text,
-        ("这个月", "本月", "这月", "这周", "本周", "最近", "范围", "区间"),
+        ("这周", "本周", "最近", "范围", "区间"),
     )
     analytics_score = (
         (60 if has_aggregate else 0)

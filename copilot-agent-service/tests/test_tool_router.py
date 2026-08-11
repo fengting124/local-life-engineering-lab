@@ -87,7 +87,7 @@ class TestRolePermissions:
         ("订单 202606100001 没收到券，查根因", "admin", "coupon_root_cause", "controlled", "query_order"),
         ("按照平台规则创建优惠券活动", "merchant", "campaign_draft", "controlled", "coupon_policy_lookup"),
         ("帮我查一下", "cs", "unknown", "clarification", None),
-        ("这个月我总共卖了多少钱？", "merchant", "analytics", "clarification", None),
+        ("这个月我总共卖了多少钱？", "merchant", "analytics", "controlled", "shop_metrics_query"),
         ("哈哈哈这个活动好玩！", "merchant", "small_talk", "controlled", None),
     ],
 )
@@ -118,13 +118,56 @@ def test_coupon_root_cause_beats_coupon_issue_parent_route():
     assert decision.task_type == "coupon_root_cause"
 
 
+def test_cs_coupon_root_cause_reads_order_then_escalates():
+    decision = classify_request(
+        "cs",
+        "订单 202606100001 支付成功但没发券，查一下根因",
+    )
+
+    assert decision.required_tools == (
+        "query_order",
+        "query_coupon_issue_log",
+        "query_mq_dead_letter",
+    )
+    assert decision.authorized_tools == ("query_order",)
+    assert decision.next_tool == "query_order"
+
+
+def test_valid_nonexistent_order_format_is_routed_to_query():
+    decision = classify_request("cs", "帮我查一下 2026999999999999999 的订单")
+
+    assert decision.route_mode == "controlled"
+    assert decision.next_tool == "query_order"
+
+
+def test_malformed_order_id_requires_clarification_without_tools():
+    decision = classify_request("cs", "帮我查一下 ORDER_00000000 的订单")
+
+    assert decision.route_mode == "clarification"
+    assert decision.next_tool is None
+    assert decision.authorized_tools == ()
+
+
+def test_refund_without_amount_requires_clarification_without_tools():
+    decision = classify_request(
+        "cs",
+        "需要给订单 202606100001 退款，库存不足没发出券",
+    )
+
+    assert decision.task_type == "refund_action"
+    assert decision.route_mode == "clarification"
+    assert decision.next_tool is None
+    assert decision.authorized_tools == ()
+    assert decision.requested_amount_minor is None
+
+
 @pytest.mark.parametrize(
     ("message", "task_type", "missing_field"),
     [
         ("查订单状态", "order_query", "order_id"),
         ("今天的数据怎么样？", "analytics", "metric"),
         ("订单量是多少？", "analytics", "date"),
-        ("这个月订单量是多少？", "analytics", "supported_date"),
+        ("这周订单量是多少？", "analytics", "supported_date"),
         ("帮客户退款", "refund_action", "order_id"),
     ],
 )
@@ -134,6 +177,15 @@ def test_missing_route_anchor_requires_clarification(message, task_type, missing
     assert decision.task_type == task_type
     assert decision.route_mode == "clarification"
     assert decision.missing_fields == (missing_field,)
+
+
+@pytest.mark.parametrize("message", ["本月GMV", "这个月销售额", "这月营业额"])
+def test_month_to_date_is_a_supported_analytics_range(message):
+    decision = classify_request("merchant", message)
+
+    assert decision.task_type == "analytics"
+    assert decision.route_mode == "controlled"
+    assert decision.next_tool == "shop_metrics_query"
 
 
 def test_complete_campaign_constraints_skip_policy_lookup():

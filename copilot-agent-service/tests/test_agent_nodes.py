@@ -872,6 +872,43 @@ class TestFinalNode:
         assert result["stop_reason"] == reason
         assert result["final_answer"] == answer
 
+    @pytest.mark.asyncio
+    async def test_permission_escalation_preserves_collected_order_facts(self):
+        result = await nodes.final_node(make_state(
+            [],
+            user_role="cs",
+            route_task_type="coupon_root_cause",
+            evidence_stop_reason="permission_denied",
+            evidence_collected={
+                "query_order": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {
+                        "found": True,
+                        "order_status": "PAID",
+                        "payment_status": "SUCCESS",
+                        "coupon_usage_status": "NONE",
+                    },
+                }
+            },
+        ))
+
+        assert result["stop_reason"] == "permission_denied"
+        assert "PAID" in result["final_answer"]
+        assert "SUCCESS" in result["final_answer"]
+        assert "管理员" in result["final_answer"]
+
+    @pytest.mark.asyncio
+    async def test_clarification_is_not_recorded_as_completed(self):
+        result = await nodes.final_node(make_state(
+            [],
+            route_mode="clarification",
+            route_missing_fields=["amount"],
+            final_answer="请补充明确的退款金额，我再继续处理。",
+        ))
+
+        assert result["stop_reason"] == "clarification"
+
 
 # =========================================================
 # llm_node（fake LLM + mocked MCP）

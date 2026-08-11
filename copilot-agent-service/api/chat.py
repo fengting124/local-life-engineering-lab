@@ -17,6 +17,7 @@ SSE 事件类型（前端按 event 字段区分处理）：
 import json
 import asyncio
 import structlog
+from datetime import date
 from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -99,13 +100,6 @@ def _safe_hitl_request_event(thread_id: str, pending_action: Any) -> dict:
 
 import re
 
-# 时间词 → shop_metrics_query 的 date 参数
-_DATE_MAP = {
-    r"今天|今日|today": "today",
-    r"昨天|昨日|yesterday": "yesterday",
-    r"本月|这个月|this month": None,  # 暂不支持月汇总（需要日期范围，当前工具只支持单天）
-}
-
 # 指标词（触发 analytics 场景）
 _METRIC_WORDS = re.compile(
     r"卖了多少|销售额|gmv|营业额|订单量|订单数|成交额|收入|营收|销售|销量", re.IGNORECASE
@@ -114,6 +108,7 @@ _METRIC_WORDS = re.compile(
 # 时间词匹配
 _TODAY_RE = re.compile(r"今天|今日|today", re.IGNORECASE)
 _YESTERDAY_RE = re.compile(r"昨天|昨日|yesterday", re.IGNORECASE)
+_MONTH_TO_DATE_RE = re.compile(r"本月|这个月|这月|this month", re.IGNORECASE)
 
 
 async def _try_fast_path(
@@ -122,6 +117,7 @@ async def _try_fast_path(
     merchant_id: int | None,
     session_id: int,
     user_id: int,
+    today: date | None = None,
 ) -> str | None:
     """
     Fast Path：识别简单确定性查询，直接调 MCP 工具返回，跳过 LLM 推理。
@@ -151,13 +147,20 @@ async def _try_fast_path(
     if not _METRIC_WORDS.search(msg):
         return None
 
-    # 确定日期
+    # 确定日期或月到今日范围
     if _TODAY_RE.search(msg):
-        date_param = "today"
+        arguments = {"date": "today"}
         date_label = "今天"
     elif _YESTERDAY_RE.search(msg):
-        date_param = "yesterday"
+        arguments = {"date": "yesterday"}
         date_label = "昨天"
+    elif _MONTH_TO_DATE_RE.search(msg):
+        current_date = today or date.today()
+        arguments = {
+            "start_date": current_date.replace(day=1).isoformat(),
+            "end_date": current_date.isoformat(),
+        }
+        date_label = "本月"
     else:
         return None  # 没有明确时间词，fallback 到 ReAct
 
@@ -167,7 +170,7 @@ async def _try_fast_path(
         mcp = McpClient(user_id=user_id, user_role=user_role, merchant_id=merchant_id)
         raw = await mcp.call_tool(
             tool_name="shop_metrics_query",
-            arguments={"date": date_param},
+            arguments=arguments,
             session_id=session_id,
         )
         import json as _json
@@ -195,7 +198,7 @@ async def _try_fast_path(
             f"- 取消订单：**{cancel_count}** 笔\n\n"
             f"如需了解具体某笔订单或排查异常，请告诉我订单号。"
         )
-        log.info("fast_path_hit", date=date_param, merchant_id=merchant_id,
+        log.info("fast_path_hit", date_range=arguments, merchant_id=merchant_id,
                  order_count=order_count, gmv=gmv)
         return answer
 
