@@ -10,7 +10,7 @@ from evals.deepseek_baseline import (
     summarize,
     write_outputs,
 )
-from evals.eval_cases import BOUNDARY_CASES, QUERY_CASES
+from evals.eval_cases import BOUNDARY_CASES, DIAGNOSIS_CASES, QUERY_CASES
 from evals.real_agent_client import _parse_http_error
 
 
@@ -135,3 +135,18 @@ async def test_run_group_uses_distinct_eval_users_to_avoid_shared_rate_limit(mon
     assert len(seen_user_ids) == 4
     assert None not in seen_user_ids
     assert len(set(seen_user_ids)) == 4
+
+
+def test_product_semantics_cases_are_frozen_in_fixed_baseline():
+    selected = {case.id: case for case in deepseek_baseline.select_baseline_cases()}
+
+    assert selected[17].role == "cs"
+    assert selected[17].expected_outcome == "permission_denied"
+    assert selected[17].expected_tools == ["query_order"]
+    assert selected[19].expected_outcome == "clarification"
+    assert selected[19].expected_tools == []
+    assert selected[49].input == "帮我查一下 {{fixture.order.missing.order_no}} 的订单"
+
+    explicit_refund = next(case for case in DIAGNOSIS_CASES if case.id == 22)
+    assert explicit_refund.expected_outcome == "hitl"
+    assert explicit_refund.expected_hitl is True

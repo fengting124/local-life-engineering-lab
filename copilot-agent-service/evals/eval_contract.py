@@ -18,6 +18,7 @@ VALID_OUTCOMES = {
     "hitl",
     "refusal",
     "not_found",
+    "clarification",
 }
 REFUSAL_OUTCOMES = {"refusal", "permission_denied", "escalation"}
 
