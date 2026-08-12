@@ -7,6 +7,9 @@ on:
       - 'README.md'
       - 'docs/**'
       - 'scripts/check_docs.py'
+      - 'scripts/check-compose-recovery.py'
+      - 'infra/docker-compose.dev.yml'
+      - 'infra/docker-compose.lite.yml'
       - '.github/workflows/docs-ci.yml'
   pull_request:
     branches: [main]
@@ -14,6 +17,9 @@ on:
       - 'README.md'
       - 'docs/**'
       - 'scripts/check_docs.py'
+      - 'scripts/check-compose-recovery.py'
+      - 'infra/docker-compose.dev.yml'
+      - 'infra/docker-compose.lite.yml'
       - '.github/workflows/docs-ci.yml'
 
 concurrency:
@@ -37,4 +43,5 @@ jobs:
       - name: Run documentation checks
         run: |
           python scripts/check_docs.py
+          python scripts/check-compose-recovery.py
           git diff --check
