@@ -73,7 +73,7 @@ TASK_TOOL_PLANS: dict[str, tuple[str, ...]] = {
     "refund_action": ("query_order", "execute_refund"),
     "compensation_action": (
         "query_order",
-        "query_coupon_issue_log",
+        "resolve_compensation_coupon",
         "issue_compensation_coupon",
     ),
 }

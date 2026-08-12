@@ -391,22 +391,22 @@ Commit as `feat(copilot): execute approved compensation grants safely`.
 - Resolver arguments are reconstructed from route-bound order/amount, never copied from model-supplied scope/template values.
 - Resolver rejection terminates without approval or high-risk execution.
 
-- [ ] **Step 1: Write RED route tests**
+- [x] **Step 1: Write RED route tests**
 
 Cover normal resolution, absent/disabled/conflicting mapping, CS escalation with zero resolver calls, malicious model-supplied user/shop/template ignored, resolver evidence preserved, and no approval until complete v2 evidence exists.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 cd copilot-agent-service && DEBUG=false pytest -q \
   tests/test_evidence_gate.py tests/test_agent_nodes.py tests/test_tool_router.py
 ```
 
-- [ ] **Step 3: Implement the minimal controlled route**
+- [x] **Step 3: Implement the minimal controlled route**
 
 Use existing evidence normalization and stop-reason machinery. Do not add prompt instructions, case-ID branches, extra LLM calls, or a larger budget.
 
-- [ ] **Step 4: Run GREEN, full Agent suite, coverage, and mutation**
+- [x] **Step 4: Run GREEN, full Agent suite, coverage, and mutation**
 
 ```bash
 cd copilot-agent-service
@@ -416,7 +416,14 @@ DEBUG=false mutmut run --max-children 4
 python scripts/check_mutmut_score.py --min-kill-rate 50 --max-other 0
 ```
 
-- [ ] **Step 5: Commit**
+Execution evidence (2026-08-13): focused route/evidence tests passed 243/243;
+the full non-model Agent suite passed 740/740 with 79.66% coverage; the
+Embedding image passed its model concurrency test 1/1; mutation testing killed
+843/1188 mutants (71.0%) with `other=0`. Testcontainers ran against disposable
+MySQL 8.4 containers from a writable full-repository test copy; no production
+image or working-tree dependency was modified.
+
+- [x] **Step 5: Commit**
 
 Commit as `feat(agent): resolve compensation grants before approval`.
 

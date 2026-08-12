@@ -278,6 +278,30 @@ def test_strong_high_risk_execution_overrides_policy_semantics(message, task_typ
     assert decision.next_tool == "query_order"
 
 
+def test_admin_compensation_route_requires_deterministic_resolver_before_hitl():
+    decision = classify_request(
+        "admin", "给订单 202606100001 执行补券 20 元"
+    )
+
+    assert decision.required_tools == (
+        "query_order",
+        "resolve_compensation_coupon",
+        "issue_compensation_coupon",
+    )
+    assert decision.authorized_tools == decision.required_tools
+
+
+def test_cs_compensation_route_stops_before_admin_only_resolver():
+    decision = classify_request("cs", "给订单 202606100001 执行补券 20 元")
+
+    assert decision.required_tools == (
+        "query_order",
+        "resolve_compensation_coupon",
+        "issue_compensation_coupon",
+    )
+    assert decision.authorized_tools == ("query_order", "issue_compensation_coupon")
+
+
 @pytest.mark.parametrize(
     ("action", "task_type"),
     [

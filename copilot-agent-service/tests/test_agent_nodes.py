@@ -1310,27 +1310,30 @@ class TestLlmNode:
                     tool_call_id="c1",
                     name="query_order",
                 ),
-                ToolMessage(
-                    content=json.dumps({
-                        "order_id": "202606100003",
-                        "order_status": "PAID",
-                        "outbox_messages": [{"status": "FAILED"}],
-                    }),
-                    tool_call_id="c2",
-                    name="query_coupon_issue_log",
-                ),
+                ToolMessage(content=json.dumps({
+                    "order_no": "202606100003",
+                    "target_user_id": "9000000001",
+                    "shop_id": "101",
+                    "merchant_id": "42",
+                    "amount_minor": 2000,
+                    "coupon_template_id": "7001",
+                    "coupon_discount_type": "CASH",
+                    "coupon_min_order_amount": 5000,
+                    "coupon_valid_days": 30,
+                    "coupon_terms_digest": "a" * 64,
+                }), tool_call_id="c2", name="resolve_compensation_coupon"),
             ],
             user_role="admin",
             route_task_type="compensation_action",
             route_mode="controlled",
             route_required_tools=[
                 "query_order",
-                "query_coupon_issue_log",
+                "resolve_compensation_coupon",
                 "issue_compensation_coupon",
             ],
             route_authorized_tools=[
                 "query_order",
-                "query_coupon_issue_log",
+                "resolve_compensation_coupon",
                 "issue_compensation_coupon",
             ],
             route_next_tool="issue_compensation_coupon",
@@ -1342,13 +1345,10 @@ class TestLlmNode:
                     "attempts": 1,
                     "facts": {"found": True, "order_status": "PAID"},
                 },
-                "query_coupon_issue_log": {
+                "resolve_compensation_coupon": {
                     "status": "success",
                     "attempts": 1,
-                    "facts": {
-                        "coupon_issue_status": "FAILED",
-                        "coupon_failure_confirmed": True,
-                    },
+                    "facts": {"compensation_configuration_available": True},
                 },
             },
         ))
@@ -1359,7 +1359,66 @@ class TestLlmNode:
             "user_id": "9000000001",
             "order_id": "202606100003",
             "compensation_amount": 2000,
-            "reason": "优惠券发放失败已确认，等待人工审批",
+            "shop_id": "101",
+            "merchant_id": "42",
+            "coupon_template_id": "7001",
+            "coupon_discount_type": "CASH",
+            "coupon_min_order_amount": 5000,
+            "coupon_valid_days": 30,
+            "coupon_terms_digest": "a" * 64,
+            "reason": "补偿券配置已确定，等待人工审批",
+        }
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_compensation_resolver_call_ignores_model_supplied_scope(self, monkeypatch):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[{
+            "name": "resolve_compensation_coupon",
+            "description": "解析补偿券",
+        }])
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "deepseek")
+
+        result = await nodes.llm_node(make_state(
+            [
+                HumanMessage(content="给订单 202606100003 补偿券 20 元"),
+                ToolMessage(content=json.dumps({
+                    "order_no": "202606100003",
+                    "order_status": "PAID",
+                    "user_id": "9000000001",
+                    "shop_id": "malicious",
+                }), tool_call_id="c1", name="query_order"),
+            ],
+            user_role="admin",
+            route_task_type="compensation_action",
+            route_mode="controlled",
+            route_required_tools=[
+                "query_order", "resolve_compensation_coupon",
+                "issue_compensation_coupon",
+            ],
+            route_authorized_tools=[
+                "query_order", "resolve_compensation_coupon",
+                "issue_compensation_coupon",
+            ],
+            route_next_tool="resolve_compensation_coupon",
+            route_target_order_hash=order_target_hash("202606100003"),
+            route_requested_amount_minor=2000,
+            evidence_collected={
+                "query_order": {
+                    "status": "success", "attempts": 1,
+                    "facts": {"found": True, "order_status": "PAID"},
+                }
+            },
+        ))
+
+        tool_call = result["messages"][0].tool_calls[0]
+        assert tool_call["name"] == "resolve_compensation_coupon"
+        assert tool_call["args"] == {
+            "order_id": "202606100003", "amount_minor": 2000,
         }
         fake_llm.ainvoke.assert_not_awaited()
 

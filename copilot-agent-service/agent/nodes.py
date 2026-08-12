@@ -38,6 +38,7 @@ ORDER_SCOPED_TOOLS = {
     "query_payment",
     "query_coupon_issue_log",
     "query_mq_dead_letter",
+    "resolve_compensation_coupon",
     *HITL_TOOLS,
 }
 
@@ -283,12 +284,16 @@ def _request_binding_error(
     if order_target_hash(args.get("order_id")) != expected_order_hash:
         return "request_target_mismatch"
 
-    if tool_name in HITL_TOOLS:
+    if tool_name in HITL_TOOLS or tool_name == "resolve_compensation_coupon":
         expected_amount = state.get("route_requested_amount_minor")
         amount_key = (
             "amount"
             if tool_name == "execute_refund"
-            else "compensation_amount"
+            else (
+                "compensation_amount"
+                if tool_name == "issue_compensation_coupon"
+                else "amount_minor"
+            )
         )
         actual_amount = args.get(amount_key)
         if (
@@ -346,21 +351,12 @@ def _build_structured_high_risk_proposal(
         return AIMessage(content="订单证据不完整，无法发起人工审批。"), "internal_error"
 
     order_id = order.get("order_no")
-    payment = order.get("payment")
-    paid_amount = (
-        payment.get("paid_amount")
-        if isinstance(payment, Mapping)
-        else None
-    )
     requested_amount = state.get("route_requested_amount_minor")
     expected_order_hash = state.get("route_target_order_hash")
     if (
         not isinstance(order_id, str)
         or not order_id.strip()
         or order_target_hash(order_id) != expected_order_hash
-        or isinstance(paid_amount, bool)
-        or not isinstance(paid_amount, int)
-        or paid_amount <= 0
         or isinstance(requested_amount, bool)
         or not isinstance(requested_amount, int)
         or requested_amount <= 0
@@ -368,6 +364,10 @@ def _build_structured_high_risk_proposal(
         return AIMessage(content="订单证据不完整，无法发起人工审批。"), "internal_error"
 
     if next_tool == "execute_refund":
+        payment = order.get("payment")
+        paid_amount = payment.get("paid_amount") if isinstance(payment, Mapping) else None
+        if isinstance(paid_amount, bool) or not isinstance(paid_amount, int) or paid_amount <= 0:
+            return AIMessage(content="订单证据不完整，无法发起人工审批。"), "internal_error"
         if requested_amount > paid_amount:
             return (
                 AIMessage(content="退款金额超过订单实付金额，无法发起人工审批。"),
@@ -379,29 +379,35 @@ def _build_structured_high_risk_proposal(
             "reason": "订单状态满足退款前置条件，等待人工审批",
         }
     else:
-        coupon_facts = _successful_evidence(state, "query_coupon_issue_log")
-        coupon_result = _latest_tool_payload(
-            state["messages"],
-            "query_coupon_issue_log",
-        )
-        user_id = order.get("user_id")
+        resolver_facts = _successful_evidence(state, "resolve_compensation_coupon")
+        resolution = _latest_tool_payload(state["messages"], "resolve_compensation_coupon")
         if (
-            coupon_facts is None
-            or coupon_facts.get("coupon_issue_status") != "FAILED"
-            or coupon_facts.get("coupon_failure_confirmed") is not True
-            or coupon_result is None
-            or coupon_result.get("order_id") != order_id.strip()
-            or coupon_result.get("order_status") != order_status
-            or isinstance(user_id, bool)
-            or not isinstance(user_id, (str, int))
-            or not str(user_id).strip()
+            resolver_facts is None
+            or resolver_facts.get("compensation_configuration_available") is not True
+            or resolution is None
+            or resolution.get("order_no") != order_id.strip()
+            or resolution.get("amount_minor") != requested_amount
         ):
             return AIMessage(content="补偿证据不完整，无法发起人工审批。"), "internal_error"
+        required = (
+            "target_user_id", "shop_id", "merchant_id", "coupon_template_id",
+            "coupon_discount_type", "coupon_min_order_amount", "coupon_valid_days",
+            "coupon_terms_digest",
+        )
+        if any(key not in resolution for key in required):
+            return AIMessage(content="补偿证据不完整，无法发起人工审批。"), "internal_error"
         args = {
-            "user_id": str(user_id).strip(),
+            "user_id": str(resolution["target_user_id"]).strip(),
             "order_id": order_id.strip(),
             "compensation_amount": requested_amount,
-            "reason": "优惠券发放失败已确认，等待人工审批",
+            "shop_id": str(resolution["shop_id"]).strip(),
+            "merchant_id": str(resolution["merchant_id"]).strip(),
+            "coupon_template_id": str(resolution["coupon_template_id"]).strip(),
+            "coupon_discount_type": resolution["coupon_discount_type"],
+            "coupon_min_order_amount": resolution["coupon_min_order_amount"],
+            "coupon_valid_days": resolution["coupon_valid_days"],
+            "coupon_terms_digest": resolution["coupon_terms_digest"],
+            "reason": "补偿券配置已确定，等待人工审批",
         }
 
     return AIMessage(
@@ -413,6 +419,30 @@ def _build_structured_high_risk_proposal(
             "type": "tool_call",
         }],
     ), None
+
+
+def _build_compensation_resolver_call(state: AgentState) -> AIMessage | None:
+    if (
+        state.get("route_task_type") != "compensation_action"
+        or state.get("route_next_tool") != "resolve_compensation_coupon"
+    ):
+        return None
+    order = _latest_tool_payload(state["messages"], "query_order")
+    amount = state.get("route_requested_amount_minor")
+    if (
+        order is None
+        or order_target_hash(order.get("order_no")) != state.get("route_target_order_hash")
+        or isinstance(amount, bool)
+        or not isinstance(amount, int)
+        or amount <= 0
+    ):
+        return None
+    return AIMessage(content="", tool_calls=[{
+        "name": "resolve_compensation_coupon",
+        "args": {"order_id": order["order_no"], "amount_minor": amount},
+        "id": f"controlled-resolve_compensation_coupon-{state['step_count']}",
+        "type": "tool_call",
+    }])
 
 
 async def llm_node(state: AgentState) -> dict:
@@ -489,6 +519,13 @@ async def llm_node(state: AgentState) -> dict:
                     knowledge_tool.get_knowledge_search_tool_spec(),
                 ]
                 tools = router.route(complete_tool_specs)
+
+                if (
+                    settings.llm_provider.lower() == "deepseek"
+                    and next_tool == "resolve_compensation_coupon"
+                    and tools
+                ):
+                    response = _build_compensation_resolver_call(state)
 
                 if (
                     settings.llm_provider.lower() == "deepseek"
