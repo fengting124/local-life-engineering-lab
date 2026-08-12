@@ -47,6 +47,17 @@ class TestConcurrencySafety:
 
 
 class TestRolePermissions:
+    @pytest.mark.parametrize("role", ["merchant", "cs"])
+    def test_compensation_resolver_is_hidden_from_unauthorized_roles(self, role):
+        assert tool_router.is_tool_allowed_for_role(
+            "resolve_compensation_coupon", role
+        ) is False
+
+    def test_compensation_resolver_is_admin_only(self):
+        assert tool_router.is_tool_allowed_for_role(
+            "resolve_compensation_coupon", "admin"
+        ) is True
+
     @pytest.mark.parametrize(
         ("tool_name", "role", "expected"),
         [

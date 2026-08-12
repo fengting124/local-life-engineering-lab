@@ -272,26 +272,26 @@ Commit as `feat(server): issue real compensation coupons transactionally` with b
 - Output: order-derived user/shop/merchant, template ID, readable stable terms, and terms digest.
 - Allowed role: `admin` only in both Java tool metadata and Python `TOOL_ROLE_MAP`.
 
-- [ ] **Step 1: Write RED Java tool and real-MySQL contract tests**
+- [x] **Step 1: Write RED Java tool and real-MySQL contract tests**
 
 Assert the mapper derives all scope fields by joining order -> shop -> binding -> template and rejects missing, disabled, cross-scope, inactive, non-CASH, and amount-mismatched rows.
 
-- [ ] **Step 2: Write RED Python role-contract tests**
+- [x] **Step 2: Write RED Python role-contract tests**
 
 Assert admin sees the resolver and CS/merchant do not. Existing role entries must remain byte-for-byte equivalent except for the new tool.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```bash
 mvn -B -pl local-life-copilot -Dtest=ResolveCompensationCouponToolTest,CompensationCouponResolverContractIntegrationTest test
 cd copilot-agent-service && DEBUG=false pytest -q tests/test_tool_router.py
 ```
 
-- [ ] **Step 4: Implement resolver and role map**
+- [x] **Step 4: Implement resolver and role map**
 
 The SQL uses `WHERE o.order_no = ? AND o.deleted=0` and joins the enabled binding by the order's `shop_id` and requested face value. The tool recomputes terms/digest in Java and never trusts stored digest data.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 Commit as `feat(copilot): resolve compensation templates deterministically`.
 
