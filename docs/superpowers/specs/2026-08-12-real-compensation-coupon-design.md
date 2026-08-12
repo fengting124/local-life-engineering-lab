@@ -1,6 +1,6 @@
 # Real Compensation Coupon Design
 
-- Status: Proposed
+- Status: Approved
 - Type: Design
 - Owners: Project maintainers
 - Last verified: 2026-08-12
@@ -201,8 +201,13 @@ query_order
   -> HITL
 ```
 
-The resolver is a read-only CS/admin tool in `TOOL_ROLE_MAP`. `ToolPolicy` remains
-the execution authority. No role is widened and no tool budget is increased.
+The resolver is a read-only **admin-only** tool in `TOOL_ROLE_MAP`. `query_order`
+keeps its current roles and `issue_compensation_coupon` keeps its current roles;
+this design does not widen either contract. CS therefore performs its existing
+legal order read and escalates instead of inspecting internal compensation
+configuration. A future CS-to-admin proposal workflow requires an explicit
+product permission decision and is outside this PR. `ToolPolicy` remains the
+execution authority and no tool budget is increased.
 
 ## 6. Terms Digest
 
@@ -240,6 +245,9 @@ fields:
 ```text
 shop_id
 coupon_template_id
+coupon_discount_type
+coupon_min_order_amount
+coupon_valid_days
 coupon_terms_digest
 ```
 
@@ -252,11 +260,25 @@ shop_id
 merchant_id
 amount_minor
 coupon_template_id
+coupon_discount_type
+coupon_min_order_amount
+coupon_valid_days
 coupon_terms_digest
 requested_user_id
 requested_role
 reason
 ```
+
+These readable terms are part of the canonical signed payload rather than an
+unsigned copy of resolver output. The approval card renders only the signed
+payload and displays order, target user, shop, amount, template, discount type,
+minimum spend, and validity days. Thus the benefit an approver reads is the
+benefit that the digest protects and the Server later validates.
+
+`amount_minor` is the approved CASH face value, so payload v2 does not duplicate
+it under another face-value field. For compensation v2,
+`coupon_discount_type` must be `CASH`, `coupon_min_order_amount` must be a
+nonnegative integer, and `coupon_valid_days` must be positive.
 
 Refunds continue to use the byte-for-byte version 1 canonical contract. Java and
 Python signers support both versions explicitly; they never infer a version from
@@ -317,6 +339,12 @@ If Server commits but Copilot loses the response, a later same-approval retry
 reads the successful ledger snapshot and returns the original user-coupon ID.
 It does not decrement stock or insert again.
 
+`side_effect_ledger` retains its database unique key on
+`(operation_type, idempotency_key)`. If two Server requests both observe no
+ledger and race to insert the first row, the duplicate-key loser reloads that
+ledger: it replays `SUCCESS`, or returns in-progress for `RUNNING`. It must not
+surface the duplicate key as HTTP 500 and must never continue to stock decrement.
+
 ### 8.1 Execution failure state
 
 The current execution guard only has a success completion transition. This PR
@@ -364,6 +392,9 @@ matter.
 - Verify the two binding unique constraints.
 - Verify nullable `seckill_session_id`, unique compensation approval, and
   preserved seckill deduplication.
+- Verify the complete compatibility sequence: legacy rows, V14 migration, a new
+  seckill grant, rejection of a second seckill grant for the same user/template,
+  and two distinct approvals each granting the same compensation template.
 
 ### 10.2 Resolver and payload contract
 
@@ -390,6 +421,9 @@ matter.
 7. Approval or terms digest tampering: HTTP 409, no coupon, no ledger effect.
 8. Template terms change between approval and execution: `approval_stale`, then a
    new approval is required.
+9. Two direct Server requests race before the first ledger insert: one owns the
+   effect and the other returns in-progress or replays, with no HTTP 500 and one
+   stock/coupon/ledger effect.
 
 The Docker Lite smoke must query `coupon_template`, `user_coupon`,
 `side_effect_ledger`, `hitl_approval`, and tool audit rows directly. It uses an
@@ -404,20 +438,36 @@ smoke against the configured model.
 
 Rollout order:
 
-1. Pause new compensation approvals.
-2. List and revoke nonterminal payload-v1 compensation approvals; do not revoke
+1. Enter a short maintenance window and pause **all `user_coupon` writes**. This
+   includes new compensation approvals, seckill requests, outbox relay for
+   seckill success, RocketMQ coupon consumers, and reconciliation paths that may
+   create user coupons. Read-only coupon and order traffic may continue.
+2. Drain or stop in-flight coupon events and verify there are no pending writers.
+3. List and revoke nonterminal payload-v1 compensation approvals; do not revoke
    refunds.
-3. Apply the additive Server migration and seed explicit test/development
+4. Apply V14 and seed explicit test/development
    bindings.
-4. Deploy Server, Copilot, then Agent.
-5. Run one real compensation journey and database reconciliation.
-6. Enable new compensation approvals.
+5. Deploy the new Server before any writer resumes, then deploy Copilot and Agent.
+6. While writes remain paused, verify the new Server can insert both a SECKILL
+   `user_coupon` and a COMPENSATION `user_coupon`, and verify the corresponding
+   issuance-key uniqueness behavior.
+7. Run one approved compensation journey and database reconciliation.
+8. Resume seckill/outbox/consumer/reconciliation writers, then enable new
+   compensation approvals.
+
+This release deliberately uses a write pause rather than a dual-version rolling
+schema protocol. Applying V14 while an old Server can still insert
+`user_coupon` is prohibited because the old writer cannot populate the new
+non-null source and issuance fields.
 
 Application rollback keeps the additive binding and source columns. New
-compensation approvals are paused before rolling services back. Already issued
-user coupons and successful ledger rows are retained as business facts, not
-deleted. Version 2 approvals that have not executed are revoked because the old
-application cannot validate their full payload.
+compensation approvals and all coupon writers are paused before rolling services
+back. A pre-V14 Server cannot resume writes against the V14 schema. Rollback is
+therefore application-forward for coupon writers (repair or redeploy the new
+Server), or requires a separately tested schema rollback during continued
+maintenance. Already issued user coupons and successful ledger rows are retained
+as business facts, not deleted. Version 2 approvals that have not executed are
+revoked because the old application cannot validate their full payload.
 
 ## 12. Explicit Non-Goals
 
