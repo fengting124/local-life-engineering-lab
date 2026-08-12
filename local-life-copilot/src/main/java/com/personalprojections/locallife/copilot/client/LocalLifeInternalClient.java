@@ -1,6 +1,7 @@
 package com.personalprojections.locallife.copilot.client;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -93,17 +94,31 @@ public class LocalLifeInternalClient {
      * @param reason             补偿原因
      * @return 补偿结果（含 couponId / status）
      */
-    public Map<String, Object> compensateCoupon(
-            String orderNo, String userId, int compensationAmount,
-            String approvalId, String reason) {
-        String url = localLifeServerUrl + "/internal/orders/" + orderNo + "/compensate-coupon";
-        Map<String, Object> body = Map.of(
-                "userId", userId,
-                "compensationAmount", compensationAmount,
-                "approvalId", approvalId,
-                "reason", reason);
-        log.info("[InternalClient] 调用补偿券 API: orderNo={}, userId={}, amount={}分", orderNo, userId, compensationAmount);
+    public Map<String, Object> compensateCoupon(CompensationCommand command) {
+        String url = localLifeServerUrl + "/internal/orders/" + command.orderNo() + "/compensate-coupon";
+        Map<String, Object> body = objectMapper.convertValue(
+                command, new TypeReference<Map<String, Object>>() { }
+        );
+        body.remove("orderNo");
+        log.info("[InternalClient] 调用补偿券 API: orderNo={}, userId={}, amount={}分",
+                command.orderNo(), command.userId(), command.compensationAmount());
         return post(url, body, "compensate-coupon");
+    }
+
+    public record CompensationCommand(
+            String orderNo,
+            String userId,
+            int compensationAmount,
+            String shopId,
+            String merchantId,
+            String couponTemplateId,
+            String couponDiscountType,
+            int couponMinOrderAmount,
+            int couponValidDays,
+            String couponTermsDigest,
+            String approvalId,
+            String reason
+    ) {
     }
 
     // =========================================================

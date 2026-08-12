@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.personalprojections.locallife.copilot.hitl.ApprovalExecutionGuard;
 import com.personalprojections.locallife.copilot.hitl.ApprovalPayload;
+import com.personalprojections.locallife.copilot.client.LocalLifeInternalClient.CompensationCommand;
 import com.personalprojections.locallife.copilot.mcp.dto.ToolDefinition;
 import com.personalprojections.locallife.copilot.rbac.RbacContext;
 import com.personalprojections.locallife.copilot.tool.McpTool;
@@ -89,11 +90,22 @@ public class IssueCompensationCouponTool implements McpTool {
         approvalDigestProp.put("description", "审批载荷签名，由系统在恢复审批时自动注入");
         properties.set("approval_digest", approvalDigestProp);
 
+        addStringProperty(properties, "shop_id", "订单归属门店 ID，由补偿配置解析器提供");
+        addStringProperty(properties, "merchant_id", "订单归属商家 ID，由补偿配置解析器提供");
+        addStringProperty(properties, "coupon_template_id", "已审批的补偿券模板 ID");
+        addStringProperty(properties, "coupon_discount_type", "已审批的券折扣类型");
+        addIntegerProperty(properties, "coupon_min_order_amount", "已审批的最低消费金额（分）");
+        addIntegerProperty(properties, "coupon_valid_days", "已审批的有效天数");
+        addStringProperty(properties, "coupon_terms_digest", "已审批的券稳定条款摘要");
+
         ObjectNode inputSchema = objectMapper.createObjectNode();
         inputSchema.put("type", "object");
         inputSchema.set("properties", properties);
         inputSchema.putArray("required")
                 .add("user_id").add("order_id").add("compensation_amount")
+                .add("shop_id").add("merchant_id").add("coupon_template_id")
+                .add("coupon_discount_type").add("coupon_min_order_amount")
+                .add("coupon_valid_days").add("coupon_terms_digest")
                 .add("reason").add("approval_id").add("approval_digest");
 
         return ToolDefinition.builder()
@@ -120,6 +132,13 @@ public class IssueCompensationCouponTool implements McpTool {
         String reason            = extractRequiredString(arguments, "reason");
         String approvalId        = extractRequiredString(arguments, "approval_id");
         String approvalDigest    = extractRequiredString(arguments, "approval_digest");
+        String shopId = extractRequiredString(arguments, "shop_id");
+        String merchantId = extractRequiredString(arguments, "merchant_id");
+        String couponTemplateId = extractRequiredString(arguments, "coupon_template_id");
+        String couponDiscountType = extractRequiredString(arguments, "coupon_discount_type");
+        int couponMinOrderAmount = extractNonNegativeInt(arguments, "coupon_min_order_amount");
+        int couponValidDays = extractInt(arguments, "coupon_valid_days");
+        String couponTermsDigest = extractRequiredString(arguments, "coupon_terms_digest");
 
         if (compensationAmount <= 0) {
             throw new ToolParameterException("compensation_amount 必须大于 0", "单位为分，如 2000 表示 20 元");
@@ -127,12 +146,18 @@ public class IssueCompensationCouponTool implements McpTool {
 
         RbacContext caller = requireCaller();
         ApprovalPayload payload = new ApprovalPayload(
-                ApprovalPayload.SUPPORTED_VERSION,
+                ApprovalPayload.COMPENSATION_VERSION,
                 getName(),
                 orderId,
                 compensationAmount,
                 userId,
-                optionalId(caller.getMerchantId()),
+                shopId,
+                merchantId,
+                couponTemplateId,
+                couponDiscountType,
+                couponMinOrderAmount,
+                couponValidDays,
+                couponTermsDigest,
                 String.valueOf(caller.getUserId()),
                 caller.getRole(),
                 reason
@@ -154,15 +179,20 @@ public class IssueCompensationCouponTool implements McpTool {
                 userId, orderId, compensationAmount, approvalId);
 
         // 调用 LocalLife Server 内部补偿券 API（POST /internal/orders/{orderNo}/compensate-coupon）
-        Object result = internalClient.compensateCoupon(
-                orderId,
-                userId,
-                compensationAmount,
-                approvalId,
-                reason
-        );
-        approvalGuard.complete(decision.claim(), result);
-        return result;
+        try {
+            Object result = internalClient.compensateCoupon(new CompensationCommand(
+                    orderId, userId, compensationAmount, shopId, merchantId,
+                    couponTemplateId, couponDiscountType, couponMinOrderAmount,
+                    couponValidDays, couponTermsDigest, approvalId, reason
+            ));
+            approvalGuard.complete(decision.claim(), result);
+            return result;
+        } catch (ToolNotFoundException | ToolParameterException | ToolBusinessException rejected) {
+            approvalGuard.failExecution(
+                    decision.claim(), "business_rejected: " + rejected.getMessage()
+            );
+            throw rejected;
+        }
     }
 
     private ApprovalExecutionGuard.ExecutionDecision claim(
@@ -209,5 +239,27 @@ public class IssueCompensationCouponTool implements McpTool {
             throw new ToolParameterException(key + " 不能为空", null);
         }
         return node.asInt(0);
+    }
+
+    private int extractNonNegativeInt(JsonNode args, String key) {
+        JsonNode node = args.get(key);
+        if (node == null || node.isNull() || !node.canConvertToInt() || node.asInt() < 0) {
+            throw new ToolParameterException(key + " 必须是非负整数", null);
+        }
+        return node.asInt();
+    }
+
+    private void addStringProperty(ObjectNode properties, String name, String description) {
+        ObjectNode property = objectMapper.createObjectNode();
+        property.put("type", "string");
+        property.put("description", description);
+        properties.set(name, property);
+    }
+
+    private void addIntegerProperty(ObjectNode properties, String name, String description) {
+        ObjectNode property = objectMapper.createObjectNode();
+        property.put("type", "integer");
+        property.put("description", description);
+        properties.set(name, property);
     }
 }

@@ -1432,21 +1432,38 @@ async def hitl_node(state: AgentState) -> dict:
             if action_type == "execute_refund"
             else "compensation_amount"
         )
-        approval_payload = ApprovalPayload(
-            payload_version=1,
-            tool_name=action_type,
-            order_id=action_payload.get("order_id"),
-            amount_minor=action_payload.get(amount_key),
-            target_user_id=(
-                action_payload.get("user_id", "")
-                if action_type == "issue_compensation_coupon"
-                else ""
-            ),
-            merchant_id=merchant_id if merchant_id is not None else "",
-            requested_user_id=state.get("user_id"),
-            requested_role=state.get("user_role"),
-            reason=action_payload.get("reason") or agent_reason,
-        )
+        common_payload = {
+            "tool_name": action_type,
+            "order_id": action_payload.get("order_id"),
+            "amount_minor": action_payload.get(amount_key),
+            "requested_user_id": state.get("user_id"),
+            "requested_role": state.get("user_role"),
+            "reason": action_payload.get("reason") or agent_reason,
+        }
+        if action_type == "issue_compensation_coupon":
+            approval_payload = ApprovalPayload(
+                payload_version=2,
+                target_user_id=action_payload.get("user_id", ""),
+                shop_id=action_payload.get("shop_id", ""),
+                merchant_id=action_payload.get("merchant_id", ""),
+                coupon_template_id=action_payload.get("coupon_template_id", ""),
+                coupon_discount_type=action_payload.get(
+                    "coupon_discount_type", ""
+                ),
+                coupon_min_order_amount=action_payload.get(
+                    "coupon_min_order_amount"
+                ),
+                coupon_valid_days=action_payload.get("coupon_valid_days"),
+                coupon_terms_digest=action_payload.get("coupon_terms_digest", ""),
+                **common_payload,
+            )
+        else:
+            approval_payload = ApprovalPayload(
+                payload_version=1,
+                target_user_id="",
+                merchant_id=merchant_id if merchant_id is not None else "",
+                **common_payload,
+            )
         approval_id = await hitl_service.create_approval(
             session_id=session_id or 0,
             thread_id=thread_id,
@@ -1471,9 +1488,21 @@ async def hitl_node(state: AgentState) -> dict:
         }
 
     # ---- 生成挂起通知消息 ----
+    approval_details = ""
+    if approval_payload.payload_version == 2:
+        approval_details = (
+            f"**订单**：{approval_payload.order_id}\n\n"
+            f"**目标用户**：{approval_payload.target_user_id}\n\n"
+            f"**门店**：{approval_payload.shop_id}\n\n"
+            f"**补偿金额**：{approval_payload.amount_minor / 100:.2f} 元\n\n"
+            f"**券模板**：{approval_payload.coupon_template_id}\n\n"
+            f"**使用门槛**：{approval_payload.coupon_min_order_amount / 100:.2f} 元\n\n"
+            f"**有效期**：{approval_payload.coupon_valid_days} 天\n\n"
+        )
     hitl_message = AIMessage(content=(
         f"此操作（**{action_type}**）涉及高风险，需要人工审批后才能执行。\n\n"
-        f"**申请原因**：{agent_reason}\n\n"
+        f"{approval_details}"
+        f"**申请原因**：{approval_payload.reason}\n\n"
         f"**审批记录 ID**：{approval_id or '写入失败，请联系技术支持'}\n\n"
         f"已提交审批申请，请运营人员在审批工作台处理。"
         f"审批通过后系统将继续执行，拒绝则任务终止。"
@@ -1483,6 +1512,11 @@ async def hitl_node(state: AgentState) -> dict:
         "messages":      [hitl_message],
         "pending_hitl":  True,
         "stop_reason":   "pending_approval",
+        **(
+            {"merchant_id": int(approval_payload.merchant_id)}
+            if approval_payload.payload_version == 2
+            else {}
+        ),
         # 将 approval_id 存入 state，恢复时传给工具作为凭证
         "pending_action": {
             **pending,

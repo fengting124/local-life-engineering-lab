@@ -93,6 +93,54 @@ def controlled_state(messages, task, required, authorized, next_tool, **over):
 
 class TestHitlNode:
     @pytest.mark.asyncio
+    async def test_compensation_card_displays_only_signed_v2_terms(self, monkeypatch):
+        import session.hitl as hitl_module
+
+        mock_service = MagicMock()
+        mock_service.create_approval = AsyncMock(return_value=1002)
+        monkeypatch.setattr(hitl_module, "hitl_service", mock_service)
+        state = make_state(
+            [HumanMessage(content="给订单补发20元券")],
+            session_id=2002,
+            user_role="admin",
+            merchant_id=None,
+            pending_action={
+                "action_type": "issue_compensation_coupon",
+                "payload": {
+                    "order_id": "202606100003",
+                    "user_id": "9001",
+                    "shop_id": "101",
+                    "merchant_id": "42",
+                    "compensation_amount": 2000,
+                    "coupon_template_id": "7001",
+                    "coupon_discount_type": "CASH",
+                    "coupon_min_order_amount": 5000,
+                    "coupon_valid_days": 30,
+                    "coupon_terms_digest": "0123456789abcdef" * 4,
+                    "reason": "订单异常，补发20元优惠券",
+                },
+                "reason": "订单异常，补发20元优惠券",
+            },
+        )
+
+        result = await nodes.hitl_node(state)
+
+        payload = mock_service.create_approval.await_args.kwargs["approval_payload"]
+        assert payload.payload_version == 2
+        assert payload.merchant_id == "42"
+        assert payload.shop_id == "101"
+        assert payload.coupon_template_id == "7001"
+        assert result["merchant_id"] == 42
+        message = result["messages"][0].content
+        assert "202606100003" in message
+        assert "9001" in message
+        assert "101" in message
+        assert "20.00 元" in message
+        assert "7001" in message
+        assert "50.00 元" in message
+        assert "30 天" in message
+
+    @pytest.mark.asyncio
     async def test_create_approval_payload_includes_current_merchant_id(self, monkeypatch):
         import session.hitl as hitl_module
 

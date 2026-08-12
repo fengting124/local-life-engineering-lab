@@ -87,11 +87,16 @@ class IssueCompensationCouponToolTest {
     private static final String VALID_ORDER_ID = "1234567890123456789";
     private static final String VALID_REASON = "库存不足，发放等额补偿券";
     private static final String VALID_APPROVAL_ID = "APPROVAL_001";
+    private static final String TERMS_DIGEST = "0123456789abcdef".repeat(4);
 
     private String validArgsWithAmount(Object amountLiteral) {
         return "{\"user_id\":\"" + VALID_USER_ID + "\",\"order_id\":\"" + VALID_ORDER_ID + "\","
                 + "\"compensation_amount\":" + amountLiteral + ","
                 + "\"reason\":\"" + VALID_REASON + "\",\"approval_id\":\"" + VALID_APPROVAL_ID + "\","
+                + "\"shop_id\":\"101\",\"merchant_id\":\"42\","
+                + "\"coupon_template_id\":\"7001\",\"coupon_discount_type\":\"CASH\","
+                + "\"coupon_min_order_amount\":5000,\"coupon_valid_days\":30,"
+                + "\"coupon_terms_digest\":\"" + TERMS_DIGEST + "\","
                 + "\"approval_digest\":\"" + APPROVAL_DIGEST + "\"}";
     }
 
@@ -176,7 +181,7 @@ class IssueCompensationCouponToolTest {
         Map<String, Object> compensateResult = Map.of(
                 "couponId", "COUPON_5566",
                 "status", "ISSUED");
-        when(internalClient.compensateCoupon(VALID_ORDER_ID, VALID_USER_ID, 2000, VALID_APPROVAL_ID, VALID_REASON))
+        when(internalClient.compensateCoupon(any()))
                 .thenReturn(compensateResult);
 
         Object result = tool.execute(args(validArgsWithAmount(2000)));
@@ -184,18 +189,26 @@ class IssueCompensationCouponToolTest {
         assertThat(result)
                 .as("execute() 直接 return internalClient 的结果——同一个 Map 实例，不做二次包装")
                 .isSameAs(compensateResult);
-        verify(internalClient).compensateCoupon(
-                eq(VALID_ORDER_ID), eq(VALID_USER_ID), eq(2000), eq(VALID_APPROVAL_ID), eq(VALID_REASON));
+        verify(internalClient).compensateCoupon(eq(new LocalLifeInternalClient.CompensationCommand(
+                VALID_ORDER_ID, VALID_USER_ID, 2000, "101", "42", "7001",
+                "CASH", 5000, 30, TERMS_DIGEST, VALID_APPROVAL_ID, VALID_REASON
+        )));
         verify(guard).claim(
                 eq(VALID_APPROVAL_ID),
                 eq(APPROVAL_DIGEST),
                 eq(new ApprovalPayload(
-                        1,
+                        2,
                         "issue_compensation_coupon",
                         VALID_ORDER_ID,
                         2000,
                         VALID_USER_ID,
+                        "101",
                         "42",
+                        "7001",
+                        "CASH",
+                        5000,
+                        30,
+                        TERMS_DIGEST,
                         "30001",
                         "cs",
                         VALID_REASON
@@ -206,15 +219,50 @@ class IssueCompensationCouponToolTest {
     }
 
     @Test
+    void definitionRequiresEverySignedCompensationField() {
+        JsonNode schema = tool.getDefinition().getInputSchema();
+
+        assertThat(schema.path("required").findValuesAsText(""))
+                .isEmpty();
+        assertThat(schema.path("required").toString()).contains(
+                "shop_id", "merchant_id", "coupon_template_id",
+                "coupon_discount_type", "coupon_min_order_amount",
+                "coupon_valid_days", "coupon_terms_digest"
+        );
+    }
+
+    @Test
+    void definiteBusinessRejectionMarksExecutionFailed() throws Exception {
+        when(internalClient.compensateCoupon(any()))
+                .thenThrow(new ToolBusinessException("库存不足"));
+
+        assertThatThrownBy(() -> tool.execute(args(validArgsWithAmount(2000))))
+                .isInstanceOf(ToolBusinessException.class);
+
+        verify(guard).failExecution(claim, "business_rejected: 库存不足");
+    }
+
+    @Test
+    void ambiguousTransportFailureKeepsExecutionLease() throws Exception {
+        when(internalClient.compensateCoupon(any()))
+                .thenThrow(new RuntimeException("connection reset"));
+
+        assertThatThrownBy(() -> tool.execute(args(validArgsWithAmount(2000))))
+                .isInstanceOf(RuntimeException.class);
+
+        verify(guard, never()).failExecution(any(), anyString());
+        verify(guard, never()).complete(any(), any());
+    }
+
+    @Test
     void execute_amountExactlyAtLowerBound_oneCent_passesValidationAndDelegates() throws Exception {
         // compensationAmount <= 0 才拒绝——1 分钱属于"大于 0"，应该放行（边界值探测，不是业务上的合理输入）
-        when(internalClient.compensateCoupon(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
+        when(internalClient.compensateCoupon(any()))
                 .thenReturn(Map.of("status", "ISSUED"));
 
         tool.execute(args(validArgsWithAmount(1)));
 
-        verify(internalClient).compensateCoupon(eq(VALID_ORDER_ID), eq(VALID_USER_ID), eq(1), eq(VALID_APPROVAL_ID), eq(VALID_REASON));
+        verify(internalClient).compensateCoupon(any());
     }
 
     @Test

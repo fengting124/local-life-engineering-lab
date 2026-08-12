@@ -66,10 +66,14 @@ def _ensure_approval_is_bound(approval) -> None:
             status_code=409,
             detail={"code": "unbound_approval", "message": "审批尚未绑定恢复点"},
         )
-    if (
-        getattr(approval, "payload_version", None) != 1
-        or not getattr(approval, "payload_digest", None)
-    ):
+    signed_contract = (
+        (getattr(approval, "payload_version", None) == 1
+         and getattr(approval, "action_type", None) == "execute_refund")
+        or (getattr(approval, "payload_version", None) == 2
+            and getattr(approval, "action_type", None)
+            == "issue_compensation_coupon")
+    )
+    if not signed_contract or not getattr(approval, "payload_digest", None):
         raise HTTPException(
             status_code=409,
             detail={"code": "unsigned_approval", "message": "审批缺少签名绑定"},

@@ -69,4 +69,17 @@ public interface HitlApprovalMapper {
             @Param("result") String result,
             @Param("error") String error
     );
+
+    @Update("""
+            UPDATE hitl_approval
+            SET status = 'EXECUTION_FAILED', execution_lease_until = NULL,
+                execution_error = #{error}, updated_at = NOW()
+            WHERE id = #{id} AND status = 'EXECUTING'
+              AND execution_id = #{executionId}
+            """)
+    int failExecution(
+            @Param("id") long id,
+            @Param("executionId") String executionId,
+            @Param("error") String error
+    );
 }

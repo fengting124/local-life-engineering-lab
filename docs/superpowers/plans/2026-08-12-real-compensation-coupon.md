@@ -314,26 +314,26 @@ Commit as `feat(copilot): resolve compensation templates deterministically`.
   `coupon_terms_digest`.
 - Approval UI/card reads those signed fields from `approval_payload` only.
 
-- [ ] **Step 1: Add shared RED vectors**
+- [x] **Step 1: Add shared RED vectors**
 
 Assert Python and Java produce the same exact canonical JSON and HMAC for v1 refund and v2 compensation. Assert v1 compensation, missing v2 fields, invalid type/minimum/validity, and digest mismatch fail closed.
 
-- [ ] **Step 2: Add RED approval-card test**
+- [x] **Step 2: Add RED approval-card test**
 
 Assert the pending HITL message displays order, target user, shop, amount, template, minimum spend, and validity from the signed payload.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```bash
 cd copilot-agent-service && DEBUG=false pytest -q tests/test_hitl_binding.py tests/test_agent_nodes.py
 mvn -B -pl local-life-copilot -Dtest=ApprovalPayloadSignerTest,HitlApprovalContractIntegrationTest test
 ```
 
-- [ ] **Step 4: Implement explicit version branches**
+- [x] **Step 4: Implement explicit version branches**
 
 Do not create one optional superset serializer. Use explicit v1 refund and v2 compensation validation/canonicalization so old refund signatures remain unchanged and old compensation cannot execute.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 Commit as `feat(hitl): bind compensation template terms to approval`.
 
@@ -351,28 +351,28 @@ Commit as `feat(hitl): bind compensation template terms to approval`.
 - Definite Server 4xx business rejection calls `failExecution`.
 - Timeout/connection/protocol ambiguity leaves `EXECUTING` for lease recovery.
 
-- [ ] **Step 1: Write RED guard/tool tests**
+- [x] **Step 1: Write RED guard/tool tests**
 
 Cover claimed success, replay, in-progress, stale/config/stock business rejection, timeout after possible commit, concurrent completion/failure CAS, and sanitization of secrets.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 mvn -B -pl local-life-copilot \
   -Dtest=ApprovalExecutionGuardTest,IssueCompensationCouponToolTest test
 ```
 
-- [ ] **Step 3: Implement minimal error classification and payload forwarding**
+- [x] **Step 3: Implement minimal error classification and payload forwarding**
 
 Do not add generic retries. Forward all approved v2 fields to the Server. Classify only an explicit parsed business response as definite; transport and malformed responses remain ambiguous.
 
-- [ ] **Step 4: Run GREEN and full Copilot verify**
+- [x] **Step 4: Run GREEN and full Copilot verify**
 
 ```bash
 mvn -B -pl local-life-copilot clean verify
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit as `feat(copilot): execute approved compensation grants safely`.
 
