@@ -3,7 +3,7 @@
 - Status: Active
 - Type: How-to
 - Owners: Agent and MCP maintainers
-- Last verified: 2026-08-04
+- Last verified: 2026-08-13
 - Source of truth: `copilot-agent-service/session/hitl.py`, `copilot-agent-service/session/checkpointer.py`, `copilot-agent-service/api/chat.py`, `local-life-copilot/.../hitl/`, `local-life-server/.../InternalService.java`
 
 本文说明退款和补偿券审批的安全边界、恢复流程、排障查询和事故处理。它描述的是当前已实现行为，不代替 IAM、数据库备份或密钥管理制度。
@@ -25,7 +25,10 @@
 - `execute_refund`
 - `issue_compensation_coupon`
 
-受保护载荷字段为 `payload_version`、`tool_name`、`order_id`、`amount_minor`、`target_user_id`、`merchant_id`、`requested_user_id`、`requested_role` 和 `reason`。
+退款继续使用原有 payload v1。补偿券使用 payload v2，在共同字段之外还签名绑定
+`shop_id`、`coupon_template_id`、`coupon_discount_type`、
+`coupon_min_order_amount`、`coupon_valid_days` 和 `coupon_terms_digest`。
+审批卡片直接显示这些已签名稳定条款；执行时 Server 重读模板并重算摘要。
 
 ## 2. 组件职责
 
@@ -35,7 +38,7 @@
 | Checkpointer | 在同一数据库事务中保存真实 LangGraph 快照并绑定精确 `checkpoint_id` | `session/checkpointer.py` |
 | Resume API | 从审批记录读取 `thread_id + checkpoint_id`，验证载荷、身份、权限和摘要 | `api/chat.py`、`HitlService.validate_resume()` |
 | Copilot MCP | 在调用主服务前再次验证并以 CAS 获取执行租约 | `ApprovalExecutionGuard.java` |
-| LocalLife Server | 用 `(operation_type, approval_id)` 唯一账本去重业务调用；退款会更新订单，补偿券当前仍是演示结果 | `InternalService.java`、`side_effect_ledger` |
+| LocalLife Server | 用 `(operation_type, approval_id)` 唯一账本去重；补偿券在同一事务内原子扣库存、写 `user_coupon` 并完成账本 | `InternalService.java`、`side_effect_ledger` |
 
 Agent 不信任恢复请求中的业务参数；Copilot 不只信任 `approval_id`；Server 不把网络重试当作新业务请求。
 
@@ -43,6 +46,8 @@ Agent 不信任恢复请求中的业务参数；Copilot 不只信任 `approval_i
 
 ```text
 用户明确提出订单和金额
+  -> Agent 查询订单并用 (shop_id, amount_minor) 调 admin-only resolver
+  -> resolver 唯一确定模板、可读条款和条款摘要
   -> Agent 生成 ApprovalPayload 和 HMAC 摘要
   -> hitl_approval=PENDING，checkpoint_id=NULL
   -> hitl_node 输出 pending_hitl=True
@@ -99,7 +104,10 @@ WHERE id = ?
 | Copilot 已完成、Agent 超时 | 再次恢复 | 返回 `EXECUTED` 的脱敏结果 |
 | Agent 在审批后重启 | 精确 Checkpoint 恢复 | 不取 thread 的任意最新快照 |
 
-这里的“恰好一次”只表示同一审批的 Server 业务调用由唯一账本去重，不代表跨数据库、日志、SSE 和所有外部系统具有全局分布式 exactly-once。退款路径会真实更新订单状态；补偿券路径当前只生成演示结果并完成账本，还没有创建 `coupon_template/user_coupon`，因此不能宣称真实发券效果已经实现。
+这里的“恰好一次”只表示同一审批的 Server 业务调用由唯一账本和
+`user_coupon.issuance_key=COMPENSATION:{approval_id}` 去重，不代表跨数据库、日志、
+SSE 和所有外部系统具有全局分布式 exactly-once。补偿券的库存、用户券和账本在
+同一 Server 事务中提交；用户通知尚未接入，不能宣称已完成消息触达。
 
 ## 6. 日志、审计与排障
 
@@ -129,6 +137,13 @@ ORDER BY created_at;
 SELECT operation_type, approval_id, status, resource_id, created_at, updated_at
 FROM side_effect_ledger
 WHERE approval_id = ?;
+
+-- 补偿券业务效果与库存
+SELECT id, coupon_template_id, source_type, source_approval_id, issuance_key
+FROM user_coupon
+WHERE source_approval_id = ?;
+
+SELECT remain_stock FROM coupon_template WHERE id = ?;
 ```
 
 容器日志入口：
@@ -155,11 +170,35 @@ docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.lite.yml 
 read -rsp 'HITL signing secret: ' HITL_PAYLOAD_SIGNING_SECRET
 export HITL_PAYLOAD_SIGNING_SECRET
 python3 scripts/hitl-security-smoke.py
+python3 scripts/compensation-coupon-smoke.py
 ```
 
 脚本覆盖拒绝、退款、补券、Agent 重启、并发恢复、真实 Checkpoint 单字段篡改和 Server 已提交后重试。原始报告写入被忽略的 `artifacts/security/hitl-<timestamp>/`，不得提交数据库文件、密钥或完整业务载荷。
 
-2026-08-04 的真实 Lite 验证结果为 7/7 场景通过。篡改场景返回 HTTP 409 `payload_mismatch`，审批保持 `PENDING`，工具审计和副作用账本均为 0；完整场景结束后隔离测试数据清理成功。补偿场景证明了审批、MCP、CAS、结果重放和账本链路，不证明 `user_coupon` 已实际发放。
+2026-08-13 的真实 Lite 补偿券验证覆盖 7 个业务场景。成功场景库存
+`20 -> 19`、`user_coupon 0 -> 1`、账本 `0 -> 1`；同审批并发和重复调用均只保留
+一个业务效果并重放同一 coupon ID；库存不足为 `EXECUTION_FAILED` 且零副作用；
+门店/条款篡改在执行前拒绝；Server 已提交但上层结果未知时从账本恢复；7 条高风险
+工具审计未泄漏审批摘要。脚本仅删除自己的唯一前缀数据。
+
+V14 不是双版本滚动迁移。部署时必须暂停全部 `user_coupon` 写入，包括普通秒杀券：
+
+```text
+先构建新 Server/Copilot/Agent
+-> 停止三个应用服务，暂停全部券写入
+-> 执行 V14，并重复执行一次确认 schema_migrations 幂等跳过
+-> 启动新镜像
+-> 验证 SECKILL issuance_key 和真实 COMPENSATION 旅程
+-> 恢复券写入
+```
+
+日常恢复只重启常驻服务，不要对带 `--profile app` 的全部服务无差别执行
+`restart`，因为 `db-init` 是绑定迁移文件的一次性容器：
+
+```bash
+docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.lite.yml \
+  --profile app restart mysql redis locallife-server locallife-copilot copilot-agent
+```
 
 `hitl_approval` 的 `DATETIME` 字段统一写入无时区的 UTC 值，Python 和 Java 的过期判断也都以 UTC 为基准。将过期审批从 `PENDING` 改为 `EXPIRED` 时使用第二次 CAS；若并发的批准或拒绝已先成功，过期路径必须回滚并重读，不能覆盖最新状态。
 
@@ -191,8 +230,8 @@ python3 scripts/hitl-security-smoke.py
 - 运行时尚未迁移到 LangGraph 官方 `interrupt()/Command(resume=...)`；当前安全性依赖自定义精确 Checkpoint 契约及测试。
 - 工具审计是异步 fail-open：审计数据库写失败会告警，但不会回滚已经成功的业务调用。
 - 当前单密钥设计不支持无停机轮换。
-- `issue_compensation_coupon` 的 Server 实现仍是业务桩，只保存账本和结果；接入真实券模板、用户券和通知后必须复用同一审批幂等键并补充事务/补偿测试。
-- 项目固定 `langgraph==0.2.45`。官方公告指出 `langgraph<=1.0.9` 的特定 Checkpoint msgpack 反序列化路径受影响；当前自定义 `JsonPlusSerializer` 路径不能在未验证前宣称安全或可利用。独立跟踪项 [GitHub Issue #29](https://github.com/fengting124/local-life-engineering-lab/issues/29) 负责评估严格 msgpack 模式、限制 Checkpoint 数据库写权限，并制定升级到修复版本及兼容测试计划；本分支不升级 LangGraph。
+- 补偿券已真实落库，但用户通知尚未接入。
+- 补偿模板映射没有管理 API；当前由迁移/运维 SQL 预配置 `(shop_id, face_value_minor)`。
 
 ## 11. 面试常问
 
@@ -206,7 +245,7 @@ python3 scripts/hitl-security-smoke.py
 
 **CAS 已经保证 exactly-once 了吗？**
 
-CAS 保证同一时刻最多一个有效执行租约，属于执行权控制。网络可能在 Server 提交后丢失响应，因此还要用 Server 唯一账本去重并重放结果。当前退款路径由此实现订单状态副作用去重；补偿券还是业务桩，只验证到调用和账本层。
+CAS 保证同一时刻最多一个有效执行租约，属于执行权控制。网络可能在 Server 提交后丢失响应，因此还要用 Server 唯一账本去重并重放结果。补偿券另外使用唯一 issuance key，库存、用户券和账本在一个事务中提交。
 
 **为什么恢复不能只用 thread 的最新 Checkpoint？**
 

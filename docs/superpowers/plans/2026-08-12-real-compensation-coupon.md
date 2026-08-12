@@ -442,13 +442,13 @@ Commit as `feat(agent): resolve compensation grants before approval`.
 - Smoke creates uniquely prefixed test data and deletes only those rows afterward.
 - It directly reconciles `coupon_template`, `user_coupon`, `side_effect_ledger`, `hitl_approval`, and tool audit.
 
-- [ ] **Step 1: Write the smoke script assertions before rebuilding**
+- [x] **Step 1: Write the smoke script assertions before rebuilding**
 
 The script must fail unless it observes all seven approved journeys: success,
 repeat replay, concurrent resume, stock rejection, scope mismatch, ambiguous
 response replay, and payload/terms tamper denial.
 
-- [ ] **Step 2: Rebuild current-source Server, Copilot, and Agent images**
+- [x] **Step 2: Rebuild current-source Server, Copilot, and Agent images**
 
 ```bash
 export HITL_PAYLOAD_SIGNING_SECRET='<local test secret>'
@@ -460,7 +460,7 @@ docker compose --env-file /absolute/path/to/infra/.env \
   --profile app up -d locallife-server locallife-copilot copilot-agent
 ```
 
-- [ ] **Step 3: Execute deterministic and optional model smoke**
+- [x] **Step 3: Execute deterministic and optional model smoke**
 
 ```bash
 python3 scripts/compensation-coupon-smoke.py
@@ -469,7 +469,7 @@ python3 scripts/compensation-coupon-smoke.py
 Run at most one explicit-amount positive model request and one tampered/invalid
 negative request at concurrency one. Do not run 24x2.
 
-- [ ] **Step 4: Run complete gates**
+- [x] **Step 4: Run complete gates**
 
 ```bash
 mvn -B -pl local-life-server clean verify
@@ -481,7 +481,29 @@ python3 scripts/check-compose-recovery.py
 git diff --check
 ```
 
-- [ ] **Step 5: Update documentation with measured evidence and commit**
+Execution evidence (2026-08-13): standard current-source images were rebuilt as
+`locallife-server@6034cfb9`, `locallife-copilot@91dab93d`, and
+`copilot-agent@7eba4591`. All coupon writers were stopped before V14; the first
+migration applied `server:V14` and the second skipped it. A post-migration
+seckill seed stored `source_type=SECKILL` with its stable issuance key.
+
+The deterministic Docker journey passed all seven scenarios: success changed
+stock `20 -> 19`, `user_coupon 0 -> 1`, and ledger `0 -> 1`; concurrent resume
+produced one effect; repeat and ambiguous-response retries returned the same
+coupon ID; exhausted stock produced `EXECUTION_FAILED` with zero effects;
+scope and signed-term tampering produced zero effects; seven high-risk audit
+rows contained zero credential leaks. No live-model request or 24x2 baseline
+was run.
+
+Full gates passed: Server 196 unit + 5 integration tests and JaCoCo; Server PIT
+87/136 killed (64%, no gate failure); Copilot 153 tests; Agent 740 tests at
+79.66% coverage plus the 1/1 Embedding concurrency test; Agent mutation 843/1188
+killed (71.0%, `other=0`); 80 Markdown files; Compose recovery policy; and
+`git diff --check`. An explicit restart of MySQL, Redis, Server, Copilot, and
+Agent restored all five healthy with V14 and seeded data retained. The one-shot
+`db-init` container is intentionally excluded from runtime restart commands.
+
+- [x] **Step 5: Update documentation with measured evidence and commit**
 
 Remove every statement that compensation remains a stub. Record exact row deltas,
 image IDs, test counts, mutation results, known lack of notification, and the V14
