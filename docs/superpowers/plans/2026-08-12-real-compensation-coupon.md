@@ -541,14 +541,17 @@ to name V14's `uk_user_coupon_issuance` index instead of the removed legacy
 index. No credential, generated database, smoke row, or test artifact is part
 of the Git diff. `BLOCKING FINDINGS=0` after these corrections.
 
-- [ ] **Step 3: Push and create Draft PR**
+- [x] **Step 3: Push and create Draft PR**
 
 ```bash
 git push -u origin feat/real-compensation-coupon
 gh pr create --draft --base main --head feat/real-compensation-coupon
 ```
 
-- [ ] **Step 4: Stop at Draft**
+Published as Draft PR
+[#38](https://github.com/fengting124/local-life-engineering-lab/pull/38).
+
+- [x] **Step 4: Stop at Draft**
 
 Report final head, commits, deterministic tests, Docker row evidence, optional
 model-smoke count, unresolved risks, and `BLOCKING FINDINGS`. Do not mark Ready or
