@@ -67,7 +67,12 @@ class ApprovalPayload:
         object.__setattr__(self, "tool_name", tool_name)
         object.__setattr__(self, "order_id", _required_text("order_id", self.order_id))
         object.__setattr__(self, "target_user_id", target_user_id)
-        object.__setattr__(self, "merchant_id", _optional_text(self.merchant_id))
+        merchant_id = (
+            _required_text("merchant_id", self.merchant_id)
+            if self.payload_version == COMPENSATION_PAYLOAD_VERSION
+            else _optional_text(self.merchant_id)
+        )
+        object.__setattr__(self, "merchant_id", merchant_id)
         object.__setattr__(
             self,
             "requested_user_id",

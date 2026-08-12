@@ -54,6 +54,7 @@ public record ApprovalPayload(
             }
             targetUserId = required("targetUserId", targetUserId);
             shopId = required("shopId", shopId);
+            merchantId = required("merchantId", merchantId);
             couponTemplateId = required("couponTemplateId", couponTemplateId);
             if (!"CASH".equals(couponDiscountType)) {
                 throw new IllegalArgumentException("couponDiscountType must be CASH");

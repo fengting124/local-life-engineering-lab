@@ -1372,7 +1372,7 @@ rocketMQTemplate.syncSend(seckill-success-topic)
 [SeckillSuccessConsumer 消费，与 PaymentSuccessConsumer 同款幂等模板]
     ├── Redis SETNX 判重（consume:seckill_success:{eventId}）
     ├── INSERT user_coupon（真正的 DB 写入，从主链路里搬出来了）
-    ├── 捕获 DuplicateKeyException 兜底幂等（uk_user_coupon_template 唯一索引）
+    ├── 捕获 DuplicateKeyException 兜底幂等（uk_user_coupon_issuance 唯一索引）
     └── 写 Redis 结果 Key 为 SUCCESS
 ```
 

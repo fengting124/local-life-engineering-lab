@@ -95,6 +95,7 @@ def test_compensation_v2_matches_cross_language_contract_vector():
     ("field", "value"),
     [
         ("shop_id", ""),
+        ("merchant_id", ""),
         ("coupon_template_id", ""),
         ("coupon_discount_type", "PERCENT"),
         ("coupon_min_order_amount", -1),

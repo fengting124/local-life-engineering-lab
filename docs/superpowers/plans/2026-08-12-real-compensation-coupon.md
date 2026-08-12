@@ -496,7 +496,7 @@ rows contained zero credential leaks. No live-model request or 24x2 baseline
 was run.
 
 Full gates passed: Server 196 unit + 5 integration tests and JaCoCo; Server PIT
-87/136 killed (64%, no gate failure); Copilot 153 tests; Agent 740 tests at
+87/136 killed (64%, no gate failure); Copilot 154 tests; Agent 741 tests at
 79.66% coverage plus the 1/1 Embedding concurrency test; Agent mutation 843/1188
 killed (71.0%, `other=0`); 80 Markdown files; Compose recovery policy; and
 `git diff --check`. An explicit restart of MySQL, Redis, Server, Copilot, and
@@ -514,7 +514,7 @@ maintenance-window procedure. Commit as `docs(coupon): document real compensatio
 **Files:**
 - No new feature files; only correct blocking findings within this plan's scope.
 
-- [ ] **Step 1: Verify branch integrity**
+- [x] **Step 1: Verify branch integrity**
 
 ```bash
 git fetch --prune origin
@@ -523,11 +523,23 @@ git status --short
 git diff --check origin/main...HEAD
 ```
 
-- [ ] **Step 2: Perform an independent diff review**
+- [x] **Step 2: Perform an independent diff review**
 
 Focus on migration compatibility, v1 refund signature stability, v1 compensation
 denial, order-derived scope, terms display/signature equivalence, ledger insert
 race, transaction rollback, error classification, and secret/test-data leakage.
+
+Review evidence (2026-08-13): the branch was `0 behind / 12 ahead` of
+`origin/main` before the final review fix. The review preserved the byte-level
+v1 refund contract vector, kept v1 compensation fail-closed, confirmed that
+order-derived user/shop/merchant/template scope reaches the signed v2 payload,
+and confirmed the Server ledger claim plus transaction protects concurrent
+issuance. One contract gap was found and fixed by requiring `merchant_id` in
+both v2 payload implementations; its Python and Java tests were observed RED
+before the minimum fix and GREEN afterward. Two tutorials were also corrected
+to name V14's `uk_user_coupon_issuance` index instead of the removed legacy
+index. No credential, generated database, smoke row, or test artifact is part
+of the Git diff. `BLOCKING FINDINGS=0` after these corrections.
 
 - [ ] **Step 3: Push and create Draft PR**
 

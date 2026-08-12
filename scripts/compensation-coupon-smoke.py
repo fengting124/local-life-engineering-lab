@@ -455,7 +455,7 @@ class CompensationSmoke:
         sessions = ",".join(map(str, self.sessions))
         leaks = int(self.scalar(
             "SELECT COUNT(*) FROM tool_audit_log WHERE session_id IN "
-            f"({sessions}) AND CAST(tool_input AS CHAR) LIKE '%approval_digest%" 
+            f"({sessions}) AND CAST(tool_input AS CHAR) LIKE '%approval_digest%"
             "' AND CAST(tool_input AS CHAR) NOT LIKE '%[REDACTED]%';"
         ) or 0)
         if leaks:

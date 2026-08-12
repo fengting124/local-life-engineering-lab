@@ -120,6 +120,18 @@ class ApprovalPayloadSignerTest {
     }
 
     @Test
+    void compensationPayloadRequiresMerchant() {
+        ApprovalPayload valid = compensationPayload();
+        assertThatThrownBy(() -> new ApprovalPayload(
+                valid.payloadVersion(), valid.toolName(), valid.orderId(), valid.amountMinor(),
+                valid.targetUserId(), valid.shopId(), "", valid.couponTemplateId(),
+                valid.couponDiscountType(), valid.couponMinOrderAmount(), valid.couponValidDays(),
+                valid.couponTermsDigest(), valid.requestedUserId(), valid.requestedRole(), valid.reason()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("merchantId");
+    }
+
+    @Test
     void signerRejectsBlankSecretAndMalformedDigest() {
         assertThatThrownBy(() -> new ApprovalPayloadSigner(new ObjectMapper(), " "))
                 .isInstanceOf(IllegalArgumentException.class)
