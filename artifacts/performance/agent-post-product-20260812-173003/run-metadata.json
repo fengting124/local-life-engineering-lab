@@ -1,0 +1,20 @@
+{
+  "baseline_runtime_sha": "6bbf266684af3d9caccc85d1da5e1179c66b9a46",
+  "branch": "test/agent-post-product-baseline",
+  "model": "deepseek-v4-flash",
+  "case_count": 24,
+  "repeat": 2,
+  "concurrency": 1,
+  "artifact": "artifacts/performance/agent-post-product-20260812-173003/deepseek-flash-post-product.json",
+  "started_at": "2026-08-12T17:30:03+08:00",
+  "completed_at": "2026-08-12T17:38:00+08:00",
+  "rerun": false,
+  "docker_version": "28.1.1",
+  "docker_compose_version": "2.35.1-desktop.1",
+  "agent_image": "sha256:d74f8512589cbcf32d9fc865e68d7c96bc38b9bc4c0a6aace7445a5e5b075338",
+  "copilot_image": "sha256:dd06c54d5d739b7464bf4beb6388be26d13be629373d5a1e03f3b5b9fd5ded78",
+  "source_matches_container": true,
+  "environment_recovery_note": "MySQL and Redis were restarted with existing volumes after Docker Desktop left both containers exited with code 255; all five Lite services were healthy before the run.",
+  "quality_conclusion": "PASS",
+  "latency_conclusion": "PARTIAL"
+}

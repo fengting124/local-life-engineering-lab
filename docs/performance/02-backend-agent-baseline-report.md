@@ -3,7 +3,7 @@
 - Status: Active
 - Type: Reference
 - Owners: Project maintainers
-- Last verified: 2026-07-31
+- Last verified: 2026-08-12
 - Source of truth: `artifacts/performance/`, `docs/performance/baseline-summary.json`, Docker and test command output
 
 > 后端与 RAG 基线执行日期：2026-07-22
@@ -21,6 +21,8 @@
 > PR #27 Mapper 合同修复合并提交：`e1c7bbd32863004e816b5fe38b09939e56a90894`
 >
 > PR #27 合并后唯一一次 24×2 DeepSeek 基线：2026-07-31
+>
+> PR #33、#34 合并后唯一一次 24×2 DeepSeek 基线：2026-08-12，运行提交 `6bbf266684af3d9caccc85d1da5e1179c66b9a46`
 >
 > 数据约束：只提交脱敏统计，不提交 API Key、完整 Prompt、原始回答或压测产物。
 
@@ -414,6 +416,47 @@ permission、HITL 和 refusal 均为 1.000；unknown tool、protocol error、新
 （71.0%，other=0）；Copilot 140 / 140 passed。这些结果只证明四条冻结产品规则，
 不能替代证据合成与产品语义均合入 `main` 后的下一次固定 24x2 基线。
 
+## 5.2 合并后固定 24×2 Agent 基线
+
+PR #33 的 evidence-driven synthesis 与 PR #34 的 product semantics/routing 均合入
+`main` 后，在 `main@6bbf266` 上执行了一次且仅一次固定 24 Case × 2、并发 1 的
+DeepSeek V4 Flash 基线。没有因结果或延迟重跑。脱敏产物位于：
+
+- `artifacts/performance/agent-post-product-20260812-173003/deepseek-flash-post-product.json`
+- `artifacts/performance/agent-post-product-20260812-173003/deepseek-flash-post-product.md`
+- `artifacts/performance/agent-post-product-20260812-173003/run-metadata.json`
+
+运行前合同校验为 `invalid_eval_contract=0`、fixture `47/47`；Agent 镜像中的
+`chat.py`、`nodes.py`、`tool_router.py` 与 `main@6bbf266` 源码 SHA-256 一致。
+48 次请求全部完成，失败矩阵为空：
+
+| 指标 | 2026-07-31 | 2026-08-12 | 结果 |
+| --- | ---: | ---: | --- |
+| Task completion | 33 / 48 | 48 / 48 | 通过 |
+| First tool | 42 / 48 | 48 / 48 | 通过 |
+| Tool argument | 43.33 / 48 | 48 / 48 | 通过 |
+| Trajectory | 40.83 / 48 | 48 / 48 | 通过 |
+| Final fact | 38 / 48 | 48 / 48 | 通过 |
+| Permission | 48 / 48 | 48 / 48 | 通过 |
+| HITL | 46 / 48 | 48 / 48 | 通过 |
+| Refusal | 48 / 48 | 48 / 48 | 通过 |
+| End-to-end P50 | 3.161 s | 9.083 s | 仅观测 |
+| End-to-end P95 | 7.442 s | 21.508 s | 超过 20 s 门槛 |
+| End-to-end P99 | 9.349 s | 25.594 s | 超过 25 s 门槛 |
+| First SSE P95 | 132 ms | 69 ms | 通过；不是 LLM TTFT |
+
+数据库窗口复核记录 42 个非 Guardrail 会话和 38 条工具审计：36 条成功，另 2 条
+是 Case 49 的预期 `not_found`。Case 3 两次均只执行一次月初至当日范围查询；Case
+17 两次均只执行 `query_order` 后权限升级；Case 19 两次均零工具澄清；Case 37 两次
+均执行 `knowledge_search -> coupon_policy_lookup`；Case 49 两次均查询后终止。CS
+调用管理员工具、unknown tool、高风险执行和审批记录均为 0，6/6 Guardrail 拒答
+均写入带 trace 的 `security_audit`，未发现 protocol/transport/timeout 错误。
+
+因此本轮结论分成两部分：**固定质量合同 PASS，延迟门禁 PARTIAL**。质量满分只
+代表这一组固定样本的一次观测，不能推导最大容量、长期模型稳定性或生产 SLA。
+知识检索段出现 21-28 秒长尾，下一步应先补齐分阶段耗时和 token/cost 可观测性，
+再定位 LLM、RAG、MCP 与持久化各自占比，而不是重复整套基线挑选更好结果。
+
 ## 6. RAG Benchmark
 
 最终真实产物：
@@ -439,8 +482,9 @@ permission、HITL 和 refusal 均为 1.000；unknown tool、protocol error、新
 | Agent mutation gate | 826 / 1180 killed，70.0%，other=0（mutmut 3.6.0，完整运行） |
 | Embedding 镜像测试 | 1 passed |
 | Eval 合同、fixture、评分回归 | PR #33 当时固定 24 条合同未修改，Case 22/25 单独纠正；当前产品语义分支对 Case 17/19/49 的合同调整见 5.1 节 |
-| 修复后唯一真实 DeepSeek 复测 | 24 cases × 2，48/48 传输完成，并发 1 |
-| PR #27 后唯一真实 DeepSeek 复测 | 24 cases × 2；`tool_execution_failure=0`；Coupon SQL 3/3 成功 |
+| 修复后唯一真实 DeepSeek 复测 | 历史 PR #26：24 cases × 2，48/48 传输完成，并发 1 |
+| PR #27 后唯一真实 DeepSeek 复测 | 历史：24 cases × 2；`tool_execution_failure=0`；Coupon SQL 3/3 成功 |
+| PR #33/#34 后固定 DeepSeek 基线 | 24 cases × 2；质量 48/48；失败矩阵为空；P95/P99 延迟门禁未通过 |
 | Compose Lite | 7 个必要服务 healthy，Agent 镜像源码 hash 一致 |
 | 后端四场景 | 0 HTTP failure |
 | k6 spike | 通过阈值、无超卖 |
@@ -473,20 +517,19 @@ PR #26 审查修复另完成了一次当前源码 Docker Lite 烟雾测试：
   数据库只产生一条审批，也没有重复执行高风险工具。该流式展示问题不在本次
   安全审查修复边界内，需由后续独立 API PR 处理。
 
-整体状态仍为 **PARTIAL**：权限、拒答、高风险意图绑定、跨订单阻断和传输门禁
-通过，PR #27 已消除 `coupon_template.remaining_stock` schema 漂移导致的四次工具
-执行失败；但参数与最终事实最低线未通过，Case 37 第二轮也没有进入 Coupon SQL。
-本轮是并发 1 的质量基线，不替代容量压测，也不能用单次模型随机观测宣称整体
-Agent 质量提升。
+当前 Agent 固定质量合同状态为 **PASS**，延迟状态为 **PARTIAL**。2026-08-12 的
+48 次固定样本中，参数、轨迹、最终事实、权限、HITL 和拒答均通过，Case 37 两轮也
+进入 Coupon SQL；但 P95/P99 分别为 21.508/25.594 秒，略高于当前门槛。本轮仍是
+并发 1 的单次质量观测，不替代容量压测、长稳测试或多次统计显著性实验。
 
 ## 8. 下一轮优先级
 
-1. Case 16、18、21 的证据到回答合成已完成 3x3 定向验证；后续全量基线按发布
-   节点统一执行，不为提高本 PR 分数重复调用真实模型。
-2. Case 3、17、19、49 的产品语义已冻结并完成 3x3 定向验证；等待本 PR 与证据
-   合成变更均进入 `main` 后，再执行一次固定 24x2 基线，不能挑选最佳随机结果。
-3. Case 37 仍是已知模型路由波动，本轮没有修改，也不能通过增加预算或 Case ID
-   特判处理。
+1. 固定 24x2 已按发布节点执行完毕，不为挑选更好结果重复运行；下一次全量基线
+   只在新的行为或发布节点发生后执行。
+2. 增加 LLM、RAG、MCP、Checkpoint 和事件持久化的分阶段 P50/P95/P99，并记录
+   模型调用次数、token 与成本，定位当前 21-28 秒长尾。
+3. 在分阶段可观测性完成后做 10-30 分钟稳态与故障注入，区分模型随机波动、外部
+   依赖抖动和应用自身瓶颈。
 4. SSE 的重复 `final_answer` / `hitl_request` 展示事件应在独立 API PR 去重，
    保持现有数据库幂等和高风险单次执行语义不变。
 5. Agent 入口仍直接信任客户端身份 Header；生产必须由可信网关认证并覆盖或
