@@ -3,10 +3,12 @@
 - Status: Active
 - Type: Reference
 - Owners: Project maintainers
-- Last verified: 2026-07-22
+- Last verified: 2026-08-12
 - Source of truth: `performance-tests/`, `scripts/run-backend-perf-baseline.sh`, `scripts/run-agent-deepseek-baseline.sh`, `.github/workflows/`
 
-> 本文记录第一轮“后端与 Agent 性能基线测试”的阶段 0 审计结果。审计只记录能力、缺口和环境事实，不包含 API Key、Prompt 原文或敏感业务数据。
+> 本文主体保留第一轮“后端与 Agent 性能基线测试”的阶段 0 审计；2026-08-12
+> 在 `main@6bbf266684af3d9caccc85d1da5e1179c66b9a46` 完成最新固定 24×2 Agent
+> 基线。审计和产物不包含 API Key、Prompt 原文或敏感业务数据。
 
 ## 1. 基本信息
 
@@ -14,8 +16,9 @@
 | --- | --- |
 | 仓库 | `fengting124/local-life-engineering-lab` |
 | 审计分支 | `test/performance-agent-baseline` |
-| main 基线 SHA | `659b2427178a07567f978541d94770407bed2b70` |
-| 测试日期 | 2026-07-22 |
+| 第一轮 main 基线 SHA | `659b2427178a07567f978541d94770407bed2b70` |
+| 当前 Agent 基线 SHA | `6bbf266684af3d9caccc85d1da5e1179c66b9a46` |
+| 测试日期 | 第一轮 2026-07-22；当前 Agent 2026-08-12 |
 | CPU | 16 cores |
 | 内存 | 11 GiB total, 5.1 GiB available at audit start |
 | 磁盘 | `/dev/sdd`, 1007 GiB total, 943 GiB available |
@@ -51,7 +54,7 @@
 | `scripts/demo-smoke.sh` | Demo Smoke | 演示链路、RAG 检查 | 可作为端到端演示验收 |
 | `scripts/run-agent-evals.sh` | Agent eval | 50 条 AgentOps 用例，支持 mock/real | 已有报告输出，真实模式依赖本地 Agent 服务 |
 | `scripts/run-rag-benchmark.sh` | RAG benchmark | Recall@5、citation、refusal、rerank delta | 支持 offline/real，两类报告已存在 |
-| `copilot-agent-service/evals/` | Agent/RAG 评测 | EvalCase、真实 SSE client、RAG benchmark | 已有确定性指标，但真实 DeepSeek 并发和成本基线仍需统一入口 |
+| `copilot-agent-service/evals/` | Agent/RAG 评测 | EvalCase、真实 SSE client、RAG benchmark | 固定 24×2 DeepSeek 质量入口已统一；token/cost 和并发容量仍待补齐 |
 
 ## 4. 已有指标
 
@@ -89,6 +92,10 @@
 
 当前结果仍是短基线，不等同于生产容量证明。长稳压测、故障注入、Agent 质量优化仍需后续执行。
 
+2026-08-12 的最新 Lite 复核中，MySQL、Redis、Server、Copilot、Agent 均 healthy；
+固定 Agent 质量合同为 48/48，但 P95/P99 延迟 21.508/25.594 秒，超过当前
+20/25 秒门槛。详细结果见 `02-backend-agent-baseline-report.md`。
+
 ## 7. 已有报告产物
 
 | 路径 | 内容 |
@@ -97,6 +104,7 @@
 | `copilot-agent-service/evals/reports/*.json` | 历史 Agent/RAG eval JSON |
 | `copilot-agent-service/evals/reports/*.md` | 历史 Agent/RAG eval Markdown |
 | `.codex/DOCKER_SMOKE_REPORT.md` | Docker Lite runtime 验收报告 |
+| `artifacts/performance/agent-post-product-20260812-173003/` | 当前固定 24×2 DeepSeek 脱敏质量与延迟产物 |
 | `docs/04-notes/测试总览与结果汇总.md` | 测试体系总览 |
 | `docs/04-notes/企业级测试实践-集成测试与压测.md` | 集成测试和压测说明 |
 | `docs/04-notes/AgentOps评测与GenAI追踪.md` | AgentOps 和 GenAI trace 说明 |

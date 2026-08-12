@@ -176,7 +176,7 @@ curl -X POST http://localhost:8000/chat \
 | 层 | 技术 | 用途 |
 |---|------|------|
 | 协议 | MCP JSON-RPC 2.0 | Agent 调用业务工具的标准协议 |
-| Agent 编排 | LangGraph 0.2 + Python | ReAct 主循环、Checkpoint、中断 |
+| Agent 编排 | LangGraph 1.2.10 + Python | ReAct 主循环、Checkpoint、中断 |
 | LLM | DeepSeek flash（默认）/ Claude / OpenAI / Qwen / Ollama | 推理决策，多 Provider 可切换 |
 | 向量库 | Milvus 2.4 | 知识库语义检索 |
 | Embedding | multilingual-e5-base | 768 维中英双语向量 |

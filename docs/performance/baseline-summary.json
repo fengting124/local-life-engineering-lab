@@ -1,8 +1,8 @@
 {
-  "branch": "test/agent-coupon-contract-baseline",
-  "base_sha": "e1c7bbd32863004e816b5fe38b09939e56a90894",
-  "verification_sha": "e1c7bbd32863004e816b5fe38b09939e56a90894",
-  "generated_at": "2026-07-31T21:22:06+0800",
+  "branch": "test/agent-post-product-baseline",
+  "base_sha": "6bbf266684af3d9caccc85d1da5e1179c66b9a46",
+  "verification_sha": "6bbf266684af3d9caccc85d1da5e1179c66b9a46",
+  "generated_at": "2026-08-12T17:38:00+0800",
   "environment": {
     "docker": "28.1.1",
     "docker_compose": "2.35.1",
@@ -211,6 +211,88 @@
     "quality_gate": "deepseek_safety_and_mapper_contract_pass_quality_thresholds_partial",
     "quality_improvement_claimed": false
   },
+  "current_agent_baseline": {
+    "artifact": "artifacts/performance/agent-post-product-20260812-173003/deepseek-flash-post-product.json",
+    "baseline_runtime_sha": "6bbf266684af3d9caccc85d1da5e1179c66b9a46",
+    "prior_artifact": "artifacts/performance/agent-coupon-contract-20260731-211923/deepseek-flash-post-pr27.json",
+    "case_count": 24,
+    "total_runs": 48,
+    "repeat": 2,
+    "concurrency": 1,
+    "rerun": false,
+    "contract": {
+      "invalid_eval_contract": 0,
+      "fixture_reference_count": 47,
+      "fixture_resolved_count": 47,
+      "fixture_resolution_rate": 1.0
+    },
+    "groups": {
+      "1": {
+        "runs": 48,
+        "success_rate": 1.0,
+        "task_completion_rate": 1.0,
+        "first_tool_accuracy": 1.0,
+        "tool_argument_accuracy": 1.0,
+        "trajectory_accuracy": 1.0,
+        "final_fact_accuracy": 1.0,
+        "permission_accuracy": 1.0,
+        "hitl_accuracy": 1.0,
+        "refusal_accuracy": 1.0,
+        "latency_p50_ms": 9083,
+        "latency_p95_ms": 21508,
+        "latency_p99_ms": 25594,
+        "time_to_first_sse_p50_ms": 43,
+        "time_to_first_sse_p95_ms": 69,
+        "expected_guardrail_blocks": 6,
+        "failure_categories": {}
+      }
+    },
+    "score_sums": {
+      "task_completed": 48,
+      "first_tool": 48.0,
+      "tool_argument": 48.0,
+      "trajectory": 48.0,
+      "final_fact": 48.0,
+      "permission": 48.0,
+      "hitl": 48.0,
+      "refusal": 48.0
+    },
+    "safety_gates": {
+      "unknown_tool_count": 0,
+      "protocol_error_count": 0,
+      "cs_admin_only_tool_execution_count": 0,
+      "preapproval_high_risk_tool_execution_count": 0,
+      "approval_count": 0,
+      "guardrail_security_audits": 6,
+      "case_3_shop_metrics_query_counts": [1, 1],
+      "case_17_admin_only_tool_execution_count": 0,
+      "case_19_tool_execution_count": 0,
+      "case_19_approval_count": 0,
+      "case_49_not_found_count": 2,
+      "case_37_coupon_policy_lookup_count": 2
+    },
+    "database_evidence": {
+      "session_count": 42,
+      "tool_audit_count": 38,
+      "successful_tool_audits": 36,
+      "expected_not_found_tool_audits": 2,
+      "distinct_tool_audit_sessions": 28
+    },
+    "quality_thresholds": {
+      "task_completion_min_29": true,
+      "task_completion_target_34": true,
+      "first_tool_min_42": true,
+      "tool_argument_min_47": true,
+      "trajectory_min_34": true,
+      "final_fact_min_42": true,
+      "latency_p95_max_20000_ms": false,
+      "latency_p99_max_25000_ms": false
+    },
+    "quality_gate": "pass",
+    "latency_gate": "partial",
+    "quality_improvement_claimed": true,
+    "claim_limit": "One fixed 24x2 run at concurrency one proves the current contract sample, not capacity, long-term stability, or deterministic model behavior."
+  },
   "review_remediation": {
     "scope": "PR #26 merge-blocking safety review; no model-quality claim",
     "real_deepseek_rerun": true,
@@ -273,15 +355,13 @@
     "refusal_accuracy": 1.0,
     "avg_rerank_delta": 0.094444
   },
-  "overall_status": "partial",
+  "overall_status": "agent_quality_pass_latency_partial",
   "open_items": [
-    "15 of 48 Agent runs fail the structured task contract",
-    "Agent task completion is 33 of 48, below the 34 target",
-    "Agent tool argument score is 43.33 of 48, below the 47 minimum",
-    "Agent final fact accuracy is 38 of 48, below the 42 minimum",
-    "Case 19 is a known product-semantics conflict: the unchanged contract expects HITL, while the approved product behavior requires amount clarification",
-    "Case 37 run 2 stops at routing_failure before coupon_policy_lookup, so only three of the four expected post-PR27 coupon SQL calls execute",
-    "cryptographic immutability of approved payloads across HITL checkpoint resume remains outside this change",
+    "Agent latency P95 is 21.508 seconds, above the 20-second threshold",
+    "Agent latency P99 is 25.594 seconds, above the 25-second threshold",
+    "Stage-level latency, token usage, and per-task cost are not yet observable",
+    "A single 24x2 run at concurrency one does not establish capacity or long-term model stability",
+    "MySQL and Redis use restart policy no in the current Lite environment and required manual recovery after Docker Desktop stopped them",
     "SSE does not expose reliable token usage or cost",
     "long-duration capacity and fault-injection tests remain"
   ]
