@@ -199,13 +199,13 @@ Commit as `feat(coupon): add compensation domain contracts` with Goal / Changes 
 - `CompensateResult.couponId` is the persisted `user_coupon.id`, not a generated demo string.
 - Existing refund request/result remain unchanged.
 
-- [ ] **Step 1: Write RED unit tests for validation and ledger race**
+- [x] **Step 1: Write RED unit tests for validation and ledger race**
 
 Cover order not found, target-user mismatch, shop/merchant mismatch, missing/disabled binding, wrong template, stale terms, inactive/percent/amount mismatch, no stock, successful grant, replay, and duplicate-ledger insert race.
 
 For the race, mock both initial reads as absent, make one ledger insert throw `DuplicateKeyException`, then return an existing `SUCCESS` ledger. Assert replay and zero stock/user-coupon writes for the loser.
 
-- [ ] **Step 2: Write RED real-MySQL journey tests**
+- [x] **Step 2: Write RED real-MySQL journey tests**
 
 Use one isolated shop/order/template/binding and assert direct SQL before/after for:
 
@@ -218,14 +218,14 @@ stale terms: zero effect
 two approval IDs: two compensation rows may use the same template
 ```
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```bash
 mvn -B -pl local-life-server \
   -Dtest=InternalServiceTest,CompensationCouponJourneyIntegrationTest test
 ```
 
-- [ ] **Step 4: Implement the one-transaction command**
+- [x] **Step 4: Implement the one-transaction command**
 
 Keep the operation order from the design. Start the ledger only after all read-only validation and immediately before stock mutation. Duplicate ledger insert reloads and replays/in-progress; it never continues.
 
@@ -245,7 +245,7 @@ UserCoupon.builder()
     .build();
 ```
 
-- [ ] **Step 5: Run GREEN, JaCoCo verify, and commit**
+- [x] **Step 5: Run GREEN, JaCoCo verify, and commit**
 
 ```bash
 mvn -B -pl local-life-server \

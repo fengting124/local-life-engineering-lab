@@ -5,6 +5,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.PositiveOrZero;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -108,10 +109,7 @@ public class InternalController {
 
         CompensateResult result = internalService.issueCompensationCoupon(
                 orderNo,
-                request.getUserId(),
-                request.getCompensationAmount(),
-                request.getApprovalId(),
-                request.getReason());
+                request);
 
         return Result.ok(result);
     }
@@ -153,6 +151,27 @@ public class InternalController {
 
         @Positive(message = "补偿金额必须大于 0")
         private Integer compensationAmount;   // 补偿券面值（分）
+
+        @NotBlank(message = "shopId 不能为空")
+        private String shopId;
+
+        @NotBlank(message = "merchantId 不能为空")
+        private String merchantId;
+
+        @NotBlank(message = "couponTemplateId 不能为空")
+        private String couponTemplateId;
+
+        @NotBlank(message = "券折扣类型不能为空")
+        private String couponDiscountType;
+
+        @PositiveOrZero(message = "券使用门槛不能小于 0")
+        private Integer couponMinOrderAmount;
+
+        @Positive(message = "券有效天数必须大于 0")
+        private Integer couponValidDays;
+
+        @NotBlank(message = "券条款摘要不能为空")
+        private String couponTermsDigest;
 
         @NotBlank(message = "approvalId 不能为空")
         private String approvalId;

@@ -1,14 +1,24 @@
 package com.personalprojections.locallife.server.module.internal;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.personalprojections.locallife.server.common.exception.BizException;
 import com.personalprojections.locallife.server.common.result.ErrorCode;
 import com.personalprojections.locallife.server.domain.entity.OrderInfo;
+import com.personalprojections.locallife.server.domain.entity.CompensationCouponBinding;
+import com.personalprojections.locallife.server.domain.entity.CouponTemplate;
+import com.personalprojections.locallife.server.domain.entity.Shop;
 import com.personalprojections.locallife.server.domain.entity.SideEffectLedger;
+import com.personalprojections.locallife.server.domain.entity.UserCoupon;
+import com.personalprojections.locallife.server.domain.mapper.CompensationCouponBindingMapper;
+import com.personalprojections.locallife.server.domain.mapper.CouponTemplateMapper;
 import com.personalprojections.locallife.server.domain.mapper.OrderInfoMapper;
+import com.personalprojections.locallife.server.domain.mapper.ShopMapper;
 import com.personalprojections.locallife.server.domain.mapper.SideEffectLedgerMapper;
+import com.personalprojections.locallife.server.domain.mapper.UserCouponMapper;
+import com.personalprojections.locallife.server.module.internal.InternalController.CompensateRequest;
 import com.personalprojections.locallife.server.module.internal.InternalController.CompensateResult;
 import com.personalprojections.locallife.server.module.internal.InternalController.RefundResult;
 import lombok.RequiredArgsConstructor;
@@ -44,6 +54,10 @@ public class InternalService {
 
     private final OrderInfoMapper orderInfoMapper;
     private final SideEffectLedgerMapper sideEffectLedgerMapper;
+    private final ShopMapper shopMapper;
+    private final CompensationCouponBindingMapper compensationCouponBindingMapper;
+    private final CouponTemplateMapper couponTemplateMapper;
+    private final UserCouponMapper userCouponMapper;
     private final ObjectMapper objectMapper;
 
     // =========================================================
@@ -127,46 +141,155 @@ public class InternalService {
      * 生产实现：先创建临时 CouponTemplate，再发 UserCoupon，并通知用户。
      *
      * @param orderNo             关联订单号
-     * @param userId              目标用户 ID
-     * @param compensationAmount  补偿券面值（分）
-     * @param approvalId          HITL 审批 ID
-     * @param reason              补偿原因
+     * @param request             已签名并批准的补偿目标和券条款
      * @return 补偿结果
      */
     @Transactional(rollbackFor = Exception.class)
-    public CompensateResult issueCompensationCoupon(
-            String orderNo, String userId, int compensationAmount,
-            String approvalId, String reason) {
-        SideEffectLedger existing = findLedger(OP_COMPENSATE_COUPON, approvalId);
+    public CompensateResult issueCompensationCoupon(String orderNo, CompensateRequest request) {
+        SideEffectLedger existing = findLedger(OP_COMPENSATE_COUPON, request.getApprovalId());
         if (existing != null) {
             return replayCompensateLedger(existing);
         }
-        SideEffectLedger ledger = beginLedger(
-                OP_COMPENSATE_COUPON,
-                approvalId,
-                approvalId,
-                orderNo,
-                Map.of(
-                        "orderNo", orderNo,
-                        "userId", userId,
-                        "compensationAmount", compensationAmount,
-                        "approvalId", approvalId,
-                        "reason", reason));
 
-        // 生成补偿券 ID（实际应先创建 coupon_template，此处简化）
-        String couponId = "COMP_" + System.currentTimeMillis();
+        long expectedUserId = parseId("userId", request.getUserId());
+        long expectedShopId = parseId("shopId", request.getShopId());
+        long expectedMerchantId = parseId("merchantId", request.getMerchantId());
+        long expectedTemplateId = parseId("couponTemplateId", request.getCouponTemplateId());
 
-        log.info("[Internal] 补偿券发放: orderNo={}, userId={}, amount={}分, couponId={}, approvalId={}",
-                orderNo, userId, compensationAmount, couponId, approvalId);
+        OrderInfo order = orderInfoMapper.selectOne(
+                new LambdaQueryWrapper<OrderInfo>()
+                        .eq(OrderInfo::getOrderNo, orderNo)
+                        .eq(OrderInfo::getDeleted, 0));
+        if (order == null) {
+            throw new BizException(ErrorCode.ORDER_NOT_FOUND);
+        }
+        requireEqual("目标用户", expectedUserId, order.getUserId());
+        requireEqual("门店", expectedShopId, order.getShopId());
 
-        // 实际生产实现（伪代码）：
-        // 1. INSERT coupon_template (compensation type, face_value = compensationAmount, stock = 1)
-        // 2. INSERT user_coupon (user_id, coupon_template_id, status=UNUSED, expire_at=30天后)
-        // 3. 发短信/Push 通知用户
+        Shop shop = shopMapper.selectById(order.getShopId());
+        if (shop == null || Integer.valueOf(1).equals(shop.getDeleted())) {
+            throw new BizException(ErrorCode.SHOP_NOT_FOUND);
+        }
+        requireEqual("商家", expectedMerchantId, shop.getMerchantId());
 
-        CompensateResult result = CompensateResult.of(couponId, userId, compensationAmount, "SUCCESS");
+        CompensationCouponBinding binding = compensationCouponBindingMapper.selectEnabled(
+                order.getShopId(), request.getCompensationAmount());
+        if (binding == null) {
+            throw invalidCompensation("补偿券配置不存在或已停用");
+        }
+        requireEqual("配置门店", order.getShopId(), binding.getShopId());
+        requireEqual("配置商家", shop.getMerchantId(), binding.getMerchantId());
+        requireEqual("券模板", expectedTemplateId, binding.getCouponTemplateId());
+
+        CouponTemplate template = couponTemplateMapper.selectById(binding.getCouponTemplateId());
+        if (template == null || Integer.valueOf(1).equals(template.getDeleted())) {
+            throw invalidCompensation("补偿券模板不存在");
+        }
+        requireEqual("模板门店", order.getShopId(), template.getShopId());
+        if (!"ACTIVE".equals(template.getStatus())
+                || !"CASH".equals(template.getDiscountType())
+                || !template.getDiscountValue().equals(request.getCompensationAmount())) {
+            throw invalidCompensation("补偿券模板状态、类型或面值不符合审批");
+        }
+
+        CouponTerms currentTerms = new CouponTerms(
+                1,
+                String.valueOf(template.getId()),
+                String.valueOf(order.getShopId()),
+                String.valueOf(shop.getMerchantId()),
+                template.getDiscountType(),
+                template.getDiscountValue(),
+                template.getMinOrderAmount(),
+                template.getValidDays());
+        if (!currentTerms.discountType().equals(request.getCouponDiscountType())
+                || currentTerms.minOrderAmount() != request.getCouponMinOrderAmount()
+                || currentTerms.validDays() != request.getCouponValidDays()
+                || !currentTerms.digest().equals(request.getCouponTermsDigest())) {
+            throw invalidCompensation("补偿券条款已变化，需要重新审批");
+        }
+
+        LedgerClaim claim = beginCompensationLedger(orderNo, request);
+        if (!claim.claimed()) {
+            return replayCompensateLedger(claim.ledger());
+        }
+        SideEffectLedger ledger = claim.ledger();
+
+        if (couponTemplateMapper.decrementActiveStock(template.getId()) != 1) {
+            throw new BizException(ErrorCode.COUPON_STOCK_EXHAUSTED);
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        UserCoupon coupon = UserCoupon.builder()
+                .userId(order.getUserId())
+                .couponTemplateId(template.getId())
+                .seckillSessionId(null)
+                .sourceType("COMPENSATION")
+                .sourceApprovalId(request.getApprovalId())
+                .issuanceKey("COMPENSATION:" + request.getApprovalId())
+                .couponStatus("UNUSED")
+                .receivedAt(now)
+                .expireAt(now.plusDays(template.getValidDays()))
+                .build();
+        userCouponMapper.insert(coupon);
+
+        CompensateResult result = CompensateResult.of(
+                String.valueOf(coupon.getId()),
+                String.valueOf(order.getUserId()),
+                request.getCompensationAmount(),
+                "SUCCESS");
         completeLedger(ledger, result);
+        log.info("[Internal] 补偿券发放成功: orderNo={}, userId={}, templateId={}, couponId={}, approvalId={}",
+                orderNo, order.getUserId(), template.getId(), coupon.getId(), request.getApprovalId());
         return result;
+    }
+
+    private LedgerClaim beginCompensationLedger(String orderNo, CompensateRequest request) {
+        SideEffectLedger candidate = SideEffectLedger.builder()
+                .id(IdWorker.getId())
+                .operationType(OP_COMPENSATE_COUPON)
+                .idempotencyKey(request.getApprovalId())
+                .approvalId(request.getApprovalId())
+                .resourceId(orderNo)
+                .requestPayload(writeJson(Map.ofEntries(
+                        Map.entry("orderNo", orderNo),
+                        Map.entry("userId", request.getUserId()),
+                        Map.entry("shopId", request.getShopId()),
+                        Map.entry("merchantId", request.getMerchantId()),
+                        Map.entry("compensationAmount", request.getCompensationAmount()),
+                        Map.entry("couponTemplateId", request.getCouponTemplateId()),
+                        Map.entry("couponTermsDigest", request.getCouponTermsDigest()),
+                        Map.entry("approvalId", request.getApprovalId()),
+                        Map.entry("reason", request.getReason()))))
+                .status("RUNNING")
+                .build();
+        sideEffectLedgerMapper.claim(candidate);
+        SideEffectLedger winner = sideEffectLedgerMapper.selectForUpdate(
+                OP_COMPENSATE_COUPON, request.getApprovalId());
+        if (winner == null) {
+            throw new BizException(ErrorCode.SYS_BUSY, "补偿券账本竞争结果不可见，请稍后重试");
+        }
+        return new LedgerClaim(winner, candidate.getId().equals(winner.getId()));
+    }
+
+    private record LedgerClaim(SideEffectLedger ledger, boolean claimed) {
+    }
+
+    private long parseId(String field, String value) {
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException error) {
+            throw invalidCompensation(field + " 格式不合法");
+        }
+    }
+
+    private void requireEqual(String field, Long expected, Long actual) {
+        if (actual == null || !expected.equals(actual)) {
+            throw invalidCompensation(field + " 与订单或审批不一致");
+        }
+    }
+
+    private BizException invalidCompensation(String message) {
+        return new BizException(ErrorCode.SYS_PARAM_INVALID, message);
     }
 
     private SideEffectLedger findLedger(String operationType, String idempotencyKey) {
