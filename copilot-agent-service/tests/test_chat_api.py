@@ -14,7 +14,7 @@ FastAPI TestClient 说明：
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -29,6 +29,7 @@ from api.chat import (
     _safe_tool_call_event,
     _safe_tool_result_event,
     _sse,
+    _business_today,
     _try_fast_path,
     _assert_session_owned_by_user,
     router as chat_router,
@@ -191,6 +192,40 @@ class TestSafeSseEvents:
 # =========================================================
 
 class TestTryFastPath:
+    def test_business_today_uses_shanghai_calendar_at_utc_month_boundary(self):
+        utc_time = datetime(2026, 7, 31, 16, 30, tzinfo=timezone.utc)
+
+        assert _business_today(utc_time) == date(2026, 8, 1)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "message",
+        ["本月GMV", "这个月销售额", "这月营业额", "本月截至今天的销售额"],
+    )
+    async def test_month_to_date_uses_one_range_query(self, message):
+        mock_mcp = AsyncMock()
+        mock_mcp.call_tool.return_value = json.dumps(
+            {"gmv": 3000, "order_count": 2, "coupon_used_count": 1, "cancel_count": 0}
+        )
+
+        with patch("mcp.mcp_client.McpClient", return_value=mock_mcp):
+            result = await _try_fast_path(
+                message,
+                user_role="merchant",
+                merchant_id=42,
+                session_id=100,
+                user_id=999,
+                today=date(2026, 8, 11),
+            )
+
+        assert result is not None
+        assert "本月" in result
+        mock_mcp.call_tool.assert_called_once_with(
+            tool_name="shop_metrics_query",
+            arguments={"start_date": "2026-08-01", "end_date": "2026-08-11"},
+            session_id=100,
+        )
+
     @pytest.mark.asyncio
     async def test_non_merchant_returns_none(self):
         result = await _try_fast_path(

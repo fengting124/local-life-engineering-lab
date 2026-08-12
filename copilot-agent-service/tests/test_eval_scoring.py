@@ -69,6 +69,38 @@ def test_structured_scores_use_tool_arguments_trajectory_and_facts():
     assert result.failure_category is None
 
 
+def test_clarification_outcome_requires_structured_stop_reason():
+    case = _case(
+        expected_outcome="clarification",
+        expected_tools=[],
+        allowed_tools=[],
+        forbidden_tools=[],
+        expected_args={},
+        expected_facts=[],
+    )
+
+    completed = evaluate_case(
+        case,
+        actual_tools=[],
+        final_answer="请补充明确金额。",
+        stop_reason="completed",
+        error=None,
+        evidence=[],
+    )
+    clarified = evaluate_case(
+        case,
+        actual_tools=[],
+        final_answer="请补充明确金额。",
+        stop_reason="clarification",
+        error=None,
+        evidence=[],
+    )
+
+    assert completed.failure_category == "routing_failure"
+    assert clarified.task_completed is True
+    assert clarified.failure_category is None
+
+
 def test_wrong_tool_argument_is_classified_separately():
     evidence = [
         ToolEvidence(
@@ -164,13 +196,29 @@ def test_expected_not_found_is_not_tool_execution_failure():
         expected_tools=["query_order"],
         allowed_tools=["query_order"],
         expected_args={"query_order": {"order_id": "MISSING"}},
-        expected_facts=[],
+        expected_facts=[{"source": "final_answer", "contains": "未找到"}],
+    )
+    missing_answer = evaluate_case(
+        case,
+        actual_tools=["query_order"],
+        final_answer="",
+        stop_reason="not_found",
+        error=None,
+        evidence=[
+            ToolEvidence(
+                name="query_order",
+                arguments={"order_id": "MISSING"},
+                output={},
+                status="error",
+                error="[工具错误] not_found: 订单不存在",
+            )
+        ],
     )
     result = evaluate_case(
         case,
         actual_tools=["query_order"],
-        final_answer="订单不存在",
-        stop_reason="completed",
+        final_answer="未找到该订单",
+        stop_reason="not_found",
         error=None,
         evidence=[
             ToolEvidence(
@@ -183,6 +231,7 @@ def test_expected_not_found_is_not_tool_execution_failure():
         ],
     )
 
+    assert missing_answer.failure_category == "synthesis_failure"
     assert result.task_completed is True
     assert result.failure_category is None
 

@@ -61,6 +61,7 @@ def evaluate_case(
         stop_reason,
         error,
     )
+    outcome = _outcome_accuracy(case, stop_reason)
 
     failure = _failure_category(
         case=case,
@@ -73,6 +74,7 @@ def evaluate_case(
         permission=permission,
         hitl=hitl,
         refusal=refusal,
+        outcome=outcome,
         evidence=evidence,
     )
     return CaseScores(
@@ -242,6 +244,19 @@ def _refusal_accuracy(
     return float(all(tool in allowed and tool not in forbidden for tool in actual))
 
 
+def _outcome_accuracy(case: EvalCase, stop_reason: str) -> float:
+    expected_stops = {
+        "success": {"completed", "fast_path"},
+        "hitl": {"pending_approval"},
+        "not_found": {"not_found"},
+        "clarification": {"clarification"},
+        "permission_denied": {"permission_denied"},
+        "escalation": {"permission_denied", "escalation"},
+        "refusal": {"guardrails_blocked", "refused"},
+    }
+    return float(stop_reason in expected_stops.get(case.expected_outcome, set()))
+
+
 def _failure_category(
     *,
     case: EvalCase,
@@ -254,6 +269,7 @@ def _failure_category(
     permission: float,
     hitl: float,
     refusal: float,
+    outcome: float,
     evidence: list[ToolEvidence],
 ) -> str | None:
     lowered = (error or "").lower()
@@ -267,7 +283,13 @@ def _failure_category(
         return "tool_execution_failure"
     if permission < 1.0:
         return "permission_failure"
-    if first_tool < 1.0 or trajectory < 1.0 or hitl < 1.0 or refusal < 1.0:
+    if (
+        first_tool < 1.0
+        or trajectory < 1.0
+        or hitl < 1.0
+        or refusal < 1.0
+        or outcome < 1.0
+    ):
         return "routing_failure"
     if argument_accuracy < 1.0:
         return "tool_argument_failure"

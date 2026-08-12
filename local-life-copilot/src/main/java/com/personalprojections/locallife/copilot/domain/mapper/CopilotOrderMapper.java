@@ -99,7 +99,8 @@ public interface CopilotOrderMapper {
      * 查询门店经营数据（GMV / 订单数 / 退款数 / 券核销数）。
      *
      * @param merchantId 商家 ID（用于过滤本商家门店）
-     * @param date       查询日期（yyyy-MM-dd）
+     * @param startDate  查询开始日期（含，yyyy-MM-dd）
+     * @param endDate    查询结束日期（含，yyyy-MM-dd）
      * @param shopId     指定门店 ID（null 时查该商家所有门店汇总）
      * @return 经营汇总数据
      */
@@ -112,14 +113,16 @@ public interface CopilotOrderMapper {
                 COALESCE(SUM(o.coupon_discount), 0) AS total_coupon_discount
             FROM order_info o
             JOIN shop s ON s.id = o.shop_id AND s.merchant_id = #{merchantId}
-            WHERE DATE(o.created_at) = #{date}
+            WHERE o.created_at >= CAST(#{startDate} AS DATETIME)
+              AND o.created_at < DATE_ADD(CAST(#{endDate} AS DATE), INTERVAL 1 DAY)
               AND o.order_status IN ('PAID', 'COMPLETED')
               AND o.deleted = 0
               AND (#{shopId} IS NULL OR o.shop_id = #{shopId})
             """)
     ShopMetricsSnapshot selectShopMetrics(
             @Param("merchantId") Long merchantId,
-            @Param("date") String date,
+            @Param("startDate") String startDate,
+            @Param("endDate") String endDate,
             @Param("shopId") Long shopId);
 
     /**

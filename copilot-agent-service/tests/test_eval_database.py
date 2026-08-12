@@ -1,5 +1,6 @@
 from evals.eval_database import (
     FIXTURE_QUERIES,
+    MISSING_ORDER_NO,
     _evidence_from_audits,
     _evidence_from_messages,
     _fixture_values_from_rows,
@@ -27,7 +28,35 @@ def test_fixture_rows_build_complete_catalog_and_negative_fixture():
 
     assert catalog.get("actor.merchant.merchant_id") == 880000100001
     assert catalog.get("order.failed_payment.order_no") == "BULK2026061000009999"
-    assert catalog.get("order.missing.order_no") == "EVAL_ORDER_DOES_NOT_EXIST"
+    missing_order = catalog.get("order.missing.order_no")
+    assert missing_order == MISSING_ORDER_NO
+    assert missing_order.isdigit()
+    assert len(missing_order) >= 12
+
+
+def test_missing_order_fixture_query_proves_numeric_target_is_absent():
+    query = FIXTURE_QUERIES["missing_order_count"]
+
+    assert MISSING_ORDER_NO in query
+    assert "COUNT(*)" in query
+
+
+def test_missing_order_fixture_rejects_existing_target():
+    rows = {
+        "merchant_actor": {"user_id": 1, "merchant_id": 2},
+        "cs_actor": {"user_id": 3},
+        "admin_actor": {"user_id": 4},
+        "paid_order": {"order_no": "202606100001"},
+        "payment_mismatch_order": {"order_no": "202606100002"},
+        "coupon_issue_order": {"order_no": "202606100003"},
+        "failed_payment_order": {"order_no": "202606100004"},
+        "missing_order_count": {"count": 1},
+    }
+
+    import pytest
+
+    with pytest.raises(ValueError, match="missing_order_count"):
+        _fixture_values_from_rows(rows)
 
 
 def test_agent_messages_reconstruct_tool_arguments_and_results():

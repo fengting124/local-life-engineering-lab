@@ -14,7 +14,7 @@ from evals.eval_scoring import ToolEvidence
 from evals.fixtures import FixtureCatalog
 
 
-MISSING_ORDER_NO = "EVAL_ORDER_DOES_NOT_EXIST"
+MISSING_ORDER_NO = "2026999999999999999"
 
 FIXTURE_QUERIES = {
     "merchant_actor": """
@@ -61,7 +61,7 @@ FIXTURE_QUERIES = {
     """,
     "missing_order_count": """
         SELECT COUNT(*) AS count FROM order_info
-        WHERE order_no = 'EVAL_ORDER_DOES_NOT_EXIST'
+        WHERE order_no = '2026999999999999999'
     """,
 }
 

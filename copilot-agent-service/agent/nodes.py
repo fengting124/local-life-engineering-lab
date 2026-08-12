@@ -217,6 +217,23 @@ def _direct_route_answer(state: AgentState) -> str | None:
     return None
 
 
+def _permission_escalation_answer(state: AgentState) -> str | None:
+    if state.get("route_task_type") != "coupon_root_cause":
+        return None
+    order_evidence = state.get("evidence_collected", {}).get("query_order", {})
+    if order_evidence.get("status") != "success":
+        return None
+    facts = order_evidence.get("facts", {})
+    if facts.get("found") is not True:
+        return None
+    return (
+        f"已确认订单状态为 {facts.get('order_status', 'UNKNOWN')}，"
+        f"支付状态为 {facts.get('payment_status', 'UNKNOWN')}，"
+        f"优惠券状态为 {facts.get('coupon_usage_status', 'UNKNOWN')}。"
+        "继续查询发券日志和消息队列需要管理员权限，请升级给管理员完成根因排查。"
+    )
+
+
 def _latest_tool_payload(
     messages: list,
     tool_name: str,
@@ -1496,7 +1513,11 @@ async def final_node(state: AgentState) -> dict:
     )
     if requested_stop == "permission_denied" or state.get("policy_denied_tool"):
         stop_reason = "permission_denied"
-        final_answer = final_answer or "当前角色没有权限执行该工具，任务已安全终止。"
+        final_answer = (
+            final_answer
+            or _permission_escalation_answer(state)
+            or "当前角色没有权限执行该工具，任务已安全终止。"
+        )
     elif requested_stop == "tool_budget_exhausted" or state.get("tool_budget_exhausted"):
         stop_reason = "tool_budget_exhausted"
         final_answer = final_answer or "本次任务已达到工具调用预算，已停止继续执行。"
@@ -1518,6 +1539,9 @@ async def final_node(state: AgentState) -> dict:
             "business_rejected": "当前业务状态不满足继续处理的前置条件。",
             "internal_error": "依赖工具返回异常，本次任务未生成未经证实的结论。",
         }[requested_stop]
+    elif state.get("route_mode") == "clarification":
+        stop_reason = "clarification"
+        final_answer = final_answer or _direct_route_answer(state)
     elif step_count >= settings.agent_max_steps:
         stop_reason = "max_steps"
         if not final_answer:

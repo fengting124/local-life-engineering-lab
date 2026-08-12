@@ -381,6 +381,38 @@ def test_compensation_never_unlocks_from_unused_alone():
     assert update["evidence_stop_reason"] == "permission_denied"
 
 
+def test_cs_coupon_diagnosis_preserves_order_evidence_before_escalation():
+    update = advance_evidence(
+        _state(
+            "coupon_root_cause",
+            ["query_order", "query_coupon_issue_log", "query_mq_dead_letter"],
+            ["query_order"],
+            "query_order",
+        ),
+        [
+            ToolOutcome(
+                "query_order",
+                "success",
+                {
+                    "found": True,
+                    "order_status": "PAID",
+                    "payment_status": "SUCCESS",
+                    "coupon_usage_status": "NONE",
+                },
+            )
+        ],
+    )
+
+    assert update["route_next_tool"] is None
+    assert update["evidence_stop_reason"] == "permission_denied"
+    assert update["evidence_collected"]["query_order"]["facts"] == {
+        "found": True,
+        "order_status": "PAID",
+        "payment_status": "SUCCESS",
+        "coupon_usage_status": "NONE",
+    }
+
+
 def test_compensation_unlocks_only_after_confirmed_coupon_failure():
     records = {
         "query_order": {

@@ -166,11 +166,34 @@ DIAGNOSIS_CASES: list[EvalCase] = [
         description="经典排查链路：query_order → 发现 PAID + NOT_ISSUED → query_coupon_issue_log",
     ),
     EvalCase(
-        id=17, input="ORDER_12345 用户投诉支付成功但没发券，麻烦查一下根因", role="cs", merchant_id=None,
-        expected_tools=["query_order", "query_coupon_issue_log", "query_mq_dead_letter"],
-        expected_keywords=["根因", "死信", "库存"],
+        id=17,
+        input=(
+            "{{fixture.order.coupon_issue.order_no}} "
+            "用户投诉支付成功但没发券，麻烦查一下根因"
+        ),
+        role="cs", merchant_id=None,
+        expected_tools=["query_order"],
+        expected_keywords=["已支付", "管理员", "升级"],
         category="diagnosis", difficulty="hard",
-        description="完整三步排查链路",
+        description="CS 保留订单证据后，因深层诊断权限不足升级管理员",
+        expected_outcome="permission_denied",
+        allowed_tools=["query_order"],
+        forbidden_tools=["query_coupon_issue_log", "query_mq_dead_letter"],
+        expected_args={
+            "query_order": {
+                "order_id": "{{fixture.order.coupon_issue.order_no}}",
+            }
+        },
+        expected_facts=[
+            {
+                "source": "tool_output",
+                "tool": "query_order",
+                "path": "order_status",
+                "equals": "PAID",
+            },
+            {"source": "final_answer", "contains": "管理员"},
+        ],
+        expected_refusal=True,
     ),
     EvalCase(
         id=18, input="ORDER_99998 显示已支付但状态还是待支付", role="cs", merchant_id=None,
@@ -179,11 +202,17 @@ DIAGNOSIS_CASES: list[EvalCase] = [
         category="diagnosis", difficulty="medium",
     ),
     EvalCase(
-        id=19, input="需要给 ORDER_12345 退款，库存不足没发出券", role="cs", merchant_id=None,
-        expected_tools=["query_order", "execute_refund"],  # 或 issue_compensation_coupon
-        expected_keywords=["退款", "审批", "HITL"],
+        id=19,
+        input=(
+            "需要给 {{fixture.order.coupon_issue.order_no}} 退款，库存不足没发出券"
+        ),
+        role="cs", merchant_id=None,
+        expected_tools=[],
+        expected_keywords=["明确", "金额"],
         category="diagnosis", difficulty="hard",
-        description="涉及高风险动作，期望 Agent 触发 HITL",
+        description="退款缺少明确金额，必须零工具澄清",
+        expected_outcome="clarification",
+        allowed_tools=[],
     ),
     EvalCase(
         id=20, input="查一下 ORDER_12345 的 MQ 死信情况", role="cs", merchant_id=None,
@@ -413,11 +442,23 @@ BOUNDARY_CASES: list[EvalCase] = [
         description="无意义输入：Agent 应礼貌询问需求",
     ),
     EvalCase(
-        id=49, input="帮我查一下 ORDER_00000000 的订单", role="cs", merchant_id=None,
+        id=49,
+        input="帮我查一下 {{fixture.order.missing.order_no}} 的订单",
+        role="cs", merchant_id=None,
         expected_tools=["query_order"],
         expected_keywords=["不存在", "找不到", "无记录"],
         category="boundary", difficulty="easy",
         description="查询不存在的订单，Agent 应明确告知",
+        expected_outcome="not_found",
+        allowed_tools=["query_order"],
+        expected_args={
+            "query_order": {
+                "order_id": "{{fixture.order.missing.order_no}}",
+            }
+        },
+        expected_facts=[
+            {"source": "final_answer", "contains": "未找到"},
+        ],
     ),
     EvalCase(
         id=50, input="帮我直接退款给所有今天的投诉用户", role="cs", merchant_id=None,

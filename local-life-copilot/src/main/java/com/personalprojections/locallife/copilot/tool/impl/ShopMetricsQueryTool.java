@@ -14,6 +14,8 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -48,7 +50,7 @@ public class ShopMetricsQueryTool implements McpTool {
     private final CopilotOrderMapper orderMapper;
     private final ObjectMapper objectMapper;
 
-    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ISO_LOCAL_DATE;
 
     @Override
     public String getName() {
@@ -66,6 +68,16 @@ public class ShopMetricsQueryTool implements McpTool {
                 "示例：'2026-05-28' 或 'yesterday'。");
         properties.set("date", dateProp);
 
+        ObjectNode startDateProp = objectMapper.createObjectNode();
+        startDateProp.put("type", "string");
+        startDateProp.put("description", "查询开始日期（含），格式 yyyy-MM-dd。");
+        properties.set("start_date", startDateProp);
+
+        ObjectNode endDateProp = objectMapper.createObjectNode();
+        endDateProp.put("type", "string");
+        endDateProp.put("description", "查询结束日期（含），格式 yyyy-MM-dd。");
+        properties.set("end_date", endDateProp);
+
         ObjectNode shopIdProp = objectMapper.createObjectNode();
         shopIdProp.put("type", "string");
         shopIdProp.put("description",
@@ -76,13 +88,24 @@ public class ShopMetricsQueryTool implements McpTool {
         ObjectNode inputSchema = objectMapper.createObjectNode();
         inputSchema.put("type", "object");
         inputSchema.set("properties", properties);
-        inputSchema.putArray("required").add("date");
+        var oneOf = inputSchema.putArray("oneOf");
+        var singleDate = oneOf.addObject();
+        singleDate.putArray("required").add("date");
+        var forbiddenRangeFields = singleDate.putObject("not").putArray("anyOf");
+        forbiddenRangeFields.addObject().putArray("required").add("start_date");
+        forbiddenRangeFields.addObject().putArray("required").add("end_date");
+        var dateRange = oneOf.addObject();
+        var rangeRequired = dateRange.putArray("required");
+        rangeRequired.add("start_date");
+        rangeRequired.add("end_date");
+        dateRange.putObject("not").putArray("required").add("date");
 
         return ToolDefinition.builder()
                 .name("shop_metrics_query")
                 .description(
                         "查询门店经营数据，包括订单量、GMV（总成交额，单位：分）、" +
                         "优惠券核销量、取消订单数。" +
+                        "支持单日 date 或 start_date/end_date 日期范围。" +
                         "适用：商家询问经营情况、日报生成、活动效果评估。")
                 .inputSchema(inputSchema)
                 .xBusinessHint(
@@ -97,13 +120,15 @@ public class ShopMetricsQueryTool implements McpTool {
 
     @Override
     public Object execute(JsonNode arguments) {
+        return execute(arguments, LocalDate.now());
+    }
+
+    Object execute(JsonNode arguments, LocalDate today) {
         // ---- Step 1：解析参数 ----
-        String dateStr = extractRequiredString(arguments, "date");
+        DateRange range = resolveRange(arguments, today);
         String shopIdStr = arguments.has("shop_id") && !arguments.get("shop_id").isNull()
                 ? arguments.get("shop_id").asText() : null;
 
-        // 解析日期关键词
-        String actualDate = resolveDate(dateStr);
         Long shopId = shopIdStr != null && !shopIdStr.isBlank() ? Long.parseLong(shopIdStr) : null;
 
         // ---- Step 2：RBAC —— 确定 merchantId ----
@@ -122,13 +147,17 @@ public class ShopMetricsQueryTool implements McpTool {
         // cs/admin 无 merchantId 过滤时，查全局数据（merchantId=null → SQL 不过滤）
         // 生产环境需要限制 cs 只能查已被分配的商家列表
 
-        log.info("[ShopMetricsQueryTool] 查询经营数据: date={}, shopId={}, merchantId={}",
-                actualDate, shopId, merchantId);
+        log.info("[ShopMetricsQueryTool] 查询经营数据: startDate={}, endDate={}, shopId={}, merchantId={}",
+                range.startDate(), range.endDate(), shopId, merchantId);
 
         // ---- Step 3：查询数据库 ----
         // 如果 merchantId 为 null（cs/admin 不限商家），
         // 当前 SQL 会查所有商家的数据，面试时可以说「生产环境需要加商家权限过滤」
-        ShopMetricsSnapshot metrics = orderMapper.selectShopMetrics(merchantId, actualDate, shopId);
+        ShopMetricsSnapshot metrics = orderMapper.selectShopMetrics(
+                merchantId,
+                range.startDate().format(DATE_FMT),
+                range.endDate().format(DATE_FMT),
+                shopId);
 
         if (metrics == null) {
             // 数据库无数据时返回全零（正常情况，该日期没有订单）
@@ -136,44 +165,85 @@ public class ShopMetricsQueryTool implements McpTool {
         }
 
         // ---- Step 4：整理结果 ----
-        return Map.of(
-                "date",                  actualDate,
-                "merchant_id",           merchantId != null ? merchantId.toString() : "all",
-                "shop_id",               shopId != null ? shopId.toString() : "all",
-                "order_count",           metrics.getOrderCount() != null ? metrics.getOrderCount() : 0L,
-                "gmv",                   metrics.getGmv() != null ? metrics.getGmv() : 0L,
-                "cancel_count",          metrics.getCancelCount() != null ? metrics.getCancelCount() : 0L,
-                "coupon_used_count",     metrics.getCouponUsedCount() != null ? metrics.getCouponUsedCount() : 0L,
-                "total_coupon_discount", metrics.getTotalCouponDiscount() != null ? metrics.getTotalCouponDiscount() : 0L
-        );
+        Map<String, Object> result = new LinkedHashMap<>();
+        if (range.singleDate()) {
+            result.put("date", range.startDate().format(DATE_FMT));
+        }
+        result.put("start_date", range.startDate().format(DATE_FMT));
+        result.put("end_date", range.endDate().format(DATE_FMT));
+        result.put("merchant_id", merchantId != null ? merchantId.toString() : "all");
+        result.put("shop_id", shopId != null ? shopId.toString() : "all");
+        result.put("order_count", metrics.getOrderCount() != null ? metrics.getOrderCount() : 0L);
+        result.put("gmv", metrics.getGmv() != null ? metrics.getGmv() : 0L);
+        result.put("cancel_count", metrics.getCancelCount() != null ? metrics.getCancelCount() : 0L);
+        result.put("coupon_used_count", metrics.getCouponUsedCount() != null ? metrics.getCouponUsedCount() : 0L);
+        result.put("total_coupon_discount", metrics.getTotalCouponDiscount() != null ? metrics.getTotalCouponDiscount() : 0L);
+        return result;
     }
 
     /**
      * 将日期关键词转换为 yyyy-MM-dd 格式。
      * 支持 today / yesterday / 直接日期字符串。
      */
-    private String resolveDate(String dateStr) {
-        return switch (dateStr.toLowerCase().trim()) {
-            case "today"     -> LocalDate.now().format(DATE_FMT);
-            case "yesterday" -> LocalDate.now().minusDays(1).format(DATE_FMT);
-            default          -> {
-                // 简单格式校验：yyyy-MM-dd
-                if (!dateStr.matches("\\d{4}-\\d{2}-\\d{2}")) {
-                    throw new ToolParameterException(
-                            "date 格式错误: " + dateStr,
-                            "格式：yyyy-MM-dd 或 today / yesterday");
-                }
-                yield dateStr;
-            }
+    private DateRange resolveRange(JsonNode arguments, LocalDate today) {
+        String date = textValue(arguments, "date");
+        String startDate = textValue(arguments, "start_date");
+        String endDate = textValue(arguments, "end_date");
+        if (date != null && (startDate != null || endDate != null)) {
+            throw new ToolParameterException(
+                    "date 与 start_date/end_date 不能同时提供",
+                    "单日使用 date；范围使用完整的 start_date 和 end_date");
+        }
+        if (date != null) {
+            LocalDate resolved = resolveDate(date, today);
+            return new DateRange(resolved, resolved, true);
+        }
+        if (startDate == null || endDate == null) {
+            throw new ToolParameterException(
+                    "start_date 和 end_date 必须同时提供",
+                    "单日使用 date；范围使用完整的 start_date 和 end_date");
+        }
+        LocalDate start = parseDate(startDate, "start_date");
+        LocalDate end = parseDate(endDate, "end_date");
+        if (start.isAfter(end)) {
+            throw new ToolParameterException(
+                    "start_date 不能晚于 end_date",
+                    "请提供有效的闭区间日期范围");
+        }
+        return new DateRange(start, end, false);
+    }
+
+    private LocalDate resolveDate(String date, LocalDate today) {
+        return switch (date.toLowerCase().trim()) {
+            case "today" -> today;
+            case "yesterday" -> today.minusDays(1);
+            default -> parseDate(date, "date");
         };
     }
 
-    private String extractRequiredString(JsonNode args, String key) {
-        JsonNode node = args.get(key);
-        if (node == null || node.isNull() || node.asText().isBlank()) {
-            throw new ToolParameterException(key + " 不能为空",
-                    "date 格式：yyyy-MM-dd 或 today / yesterday");
+    private LocalDate parseDate(String value, String field) {
+        if (!value.matches("\\d{4}-\\d{2}-\\d{2}")) {
+            throw invalidDate(field, value);
         }
-        return node.asText().trim();
+        try {
+            return LocalDate.parse(value, DATE_FMT);
+        } catch (DateTimeParseException exception) {
+            throw invalidDate(field, value);
+        }
     }
+
+    private ToolParameterException invalidDate(String field, String value) {
+        return new ToolParameterException(
+                field + " 格式错误: " + value,
+                "格式：yyyy-MM-dd；date 还支持 today / yesterday");
+    }
+
+    private String textValue(JsonNode arguments, String key) {
+        JsonNode node = arguments.get(key);
+        return node == null || node.isNull() || node.asText().isBlank()
+                ? null
+                : node.asText().trim();
+    }
+
+    private record DateRange(LocalDate startDate, LocalDate endDate, boolean singleDate) {}
 }

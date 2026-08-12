@@ -3,7 +3,7 @@ from dataclasses import replace
 import pytest
 
 from evals.deepseek_baseline import select_baseline_cases
-from evals.eval_cases import DIAGNOSIS_CASES, EvalCase
+from evals.eval_cases import BOUNDARY_CASES, DIAGNOSIS_CASES, EvalCase
 from evals.eval_contract import validate_eval_contract
 from evals.fixtures import FixtureCatalog, resolve_cases
 
@@ -17,7 +17,7 @@ FIXTURES = {
     "order.payment_mismatch.order_no": "202606100002",
     "order.coupon_issue.order_no": "202606100003",
     "order.failed_payment.order_no": "BULK2026061000009999",
-    "order.missing.order_no": "EVAL_ORDER_DOES_NOT_EXIST",
+    "order.missing.order_no": "2026999999999999999",
 }
 
 
@@ -39,11 +39,65 @@ def test_small_talk_case_is_no_tool_success_not_refusal():
     assert case.expected_refusal is False
 
 
-@pytest.mark.parametrize("case_id", [5, 16, 17, 18, 20, 21])
+@pytest.mark.parametrize("case_id", [5, 16, 18, 20, 21])
 def test_admin_only_diagnosis_cases_use_admin_role(case_id):
     case = next(case for case in select_baseline_cases() if case.id == case_id)
 
     assert case.role == "admin"
+
+
+def test_case_17_keeps_cs_read_evidence_then_requires_admin_escalation():
+    case = next(case for case in select_baseline_cases() if case.id == 17)
+
+    assert case.role == "cs"
+    assert case.expected_tools == ["query_order"]
+    assert case.allowed_tools == ["query_order"]
+    assert case.forbidden_tools == [
+        "query_coupon_issue_log",
+        "query_mq_dead_letter",
+    ]
+    assert case.expected_outcome == "permission_denied"
+    assert case.expected_refusal is True
+    assert {
+        (fact.get("source"), fact.get("tool"), fact.get("path"), fact.get("contains"))
+        for fact in case.expected_facts
+    } == {
+        ("tool_output", "query_order", "order_status", None),
+        ("final_answer", None, None, "管理员"),
+    }
+
+
+def test_case_19_missing_amount_is_clarification_without_tools_or_hitl():
+    base = next(case for case in DIAGNOSIS_CASES if case.id == 19)
+    baseline = next(case for case in select_baseline_cases() if case.id == 19)
+
+    for case in (base, baseline):
+        assert case.input == (
+            "需要给 {{fixture.order.coupon_issue.order_no}} 退款，库存不足没发出券"
+        )
+        assert case.expected_outcome == "clarification"
+        assert case.expected_tools == []
+        assert case.allowed_tools == []
+        assert case.expected_hitl is False
+        assert case.expected_refusal is False
+
+
+def test_case_49_uses_valid_missing_order_fixture_for_not_found():
+    case = next(case for case in BOUNDARY_CASES if case.id == 49)
+    baseline = next(case for case in select_baseline_cases() if case.id == 49)
+
+    for candidate in (case, baseline):
+        assert candidate.input == "帮我查一下 {{fixture.order.missing.order_no}} 的订单"
+        assert candidate.expected_outcome == "not_found"
+        assert candidate.expected_tools == ["query_order"]
+        assert candidate.expected_args == {
+            "query_order": {
+                "order_id": "{{fixture.order.missing.order_no}}",
+            }
+        }
+        assert candidate.expected_facts == [
+            {"source": "final_answer", "contains": "未找到"}
+        ]
 
 
 def test_cs_compensation_case_expects_safe_escalation_after_read_only_evidence():
