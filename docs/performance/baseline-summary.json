@@ -361,7 +361,6 @@
     "Agent latency P99 is 25.594 seconds, above the 25-second threshold",
     "Stage-level latency, token usage, and per-task cost are not yet observable",
     "A single 24x2 run at concurrency one does not establish capacity or long-term model stability",
-    "MySQL and Redis use restart policy no in the current Lite environment and required manual recovery after Docker Desktop stopped them",
     "SSE does not expose reliable token usage or cost",
     "long-duration capacity and fault-injection tests remain"
   ]
