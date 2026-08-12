@@ -3,6 +3,8 @@ package com.personalprojections.locallife.server.domain.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.personalprojections.locallife.server.domain.entity.CouponTemplate;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Update;
 
 /**
  * 优惠券模板 Mapper。
@@ -16,4 +18,14 @@ import org.apache.ibatis.annotations.Mapper;
  */
 @Mapper
 public interface CouponTemplateMapper extends BaseMapper<CouponTemplate> {
+
+    @Update("""
+            UPDATE coupon_template
+            SET remain_stock = remain_stock - 1
+            WHERE id = #{templateId}
+              AND deleted = 0
+              AND status = 'ACTIVE'
+              AND remain_stock > 0
+            """)
+    int decrementActiveStock(@Param("templateId") long templateId);
 }

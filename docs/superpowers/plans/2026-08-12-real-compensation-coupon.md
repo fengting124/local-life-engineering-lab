@@ -39,7 +39,7 @@
 - Produces nullable `user_coupon.seckill_session_id` plus `source_type`, `source_approval_id`, and `issuance_key`.
 - Replaces `uk_user_coupon_template` with unique issuance identity while preserving existing seckill semantics.
 
-- [ ] **Step 1: Write a failing MySQL 8.4 migration test**
+- [x] **Step 1: Write a failing MySQL 8.4 migration test**
 
 Create a Testcontainers test that applies migrations through V13, inserts one legacy coupon row, applies V14, and asserts:
 
@@ -55,7 +55,7 @@ uk_user_coupon_source_approval exists
 
 Then insert one new seckill row, verify a duplicate user/template seckill issuance key is rejected, and verify two distinct `COMPENSATION:{approval_id}` rows can use the same user/template.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 mvn -B -pl local-life-server -Dtest=CompensationCouponMigrationIntegrationTest test
@@ -63,7 +63,7 @@ mvn -B -pl local-life-server -Dtest=CompensationCouponMigrationIntegrationTest t
 
 Expected: FAIL because V14 and its columns/tables do not exist.
 
-- [ ] **Step 3: Implement V14 in compatibility-safe SQL order**
+- [x] **Step 3: Implement V14 in compatibility-safe SQL order**
 
 The migration must:
 
@@ -89,7 +89,7 @@ ALTER TABLE user_coupon
 
 Create the binding table exactly as approved in the design. No physical foreign keys are introduced because this schema consistently uses logical foreign keys.
 
-- [ ] **Step 4: Run GREEN and full migration smoke**
+- [x] **Step 4: Run GREEN and full migration smoke**
 
 ```bash
 mvn -B -pl local-life-server -Dtest=CompensationCouponMigrationIntegrationTest test
@@ -99,7 +99,12 @@ bash infra/scripts/init-db.sh
 
 Expected: test passes; both migration runs complete safely; V14 is recorded once.
 
-- [ ] **Step 5: Commit**
+Execution note (2026-08-12): the isolated MySQL 8.4 migration test passed, including
+legacy backfill and issuance uniqueness. Applying V14 to the shared development
+database is intentionally deferred to Task 8, where every coupon writer can be
+stopped and rebuilt inside the required maintenance window.
+
+- [x] **Step 5: Commit**
 
 ```bash
 git add local-life-server/src/main/resources/db/migration/V14__add_compensation_coupon_binding.sql \
@@ -125,7 +130,7 @@ git commit -m "feat(coupon): define compensation issuance schema" \
 - `CouponTemplateMapper.decrementActiveStock(long templateId)` returns affected rows.
 - `UserCoupon` exposes source fields without changing seckill entity use.
 
-- [ ] **Step 1: Write failing digest-vector and mapper-contract tests**
+- [x] **Step 1: Write failing digest-vector and mapper-contract tests**
 
 Use this fixed canonical vector in Java and later Python/Copilot tests:
 
@@ -135,7 +140,7 @@ Use this fixed canonical vector in Java and later Python/Copilot tests:
 
 Assert exact canonical JSON and a precomputed lowercase SHA-256. Assert mapper SQL contains `remain_stock = remain_stock - 1`, `status = 'ACTIVE'`, and `remain_stock > 0`.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 mvn -B -pl local-life-server -Dtest=CouponTermsTest test
@@ -143,7 +148,7 @@ mvn -B -pl local-life-server -Dtest=CouponTermsTest test
 
 Expected: FAIL because the terms class and atomic mapper method do not exist.
 
-- [ ] **Step 3: Add minimal entities and mapper SQL**
+- [x] **Step 3: Add minimal entities and mapper SQL**
 
 The binding mapper provides one exact lookup:
 
@@ -170,14 +175,14 @@ Update the existing seckill consumer to populate:
 This change must deploy with V14 while all coupon writers are paused. Add a
 consumer assertion so the new non-null columns cannot silently regress.
 
-- [ ] **Step 4: Run GREEN and focused seckill regressions**
+- [x] **Step 4: Run GREEN and focused seckill regressions**
 
 ```bash
 mvn -B -pl local-life-server \
   -Dtest=CouponTermsTest,SeckillSuccessConsumerTest,CouponServiceTest,SeckillServiceTest test
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit as `feat(coupon): add compensation domain contracts` with Goal / Changes / Verification / Risk body.
 

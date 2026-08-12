@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <h2>为什么必须用真实 MySQL，不能用 Mock / H2</h2>
  * <ul>
- *   <li><b>唯一索引冲突</b>：{@code uk_user_coupon_template (user_id, coupon_template_id)}
+ *   <li><b>唯一索引冲突</b>：{@code uk_user_coupon_issuance (issuance_key)}
  *       是「一人一单」的最后一道防线——即使 Redis 判重整个失效，DB 也必须挡住重复领取。
  *       这个行为只有真 MySQL 才能验证：Mock 不会抛冲突，H2 的唯一约束语义与 MySQL 有差异。</li>
  *   <li><b>逻辑删除</b>：MyBatis-Plus 的 {@code @TableLogic} 把 DELETE 改写成
@@ -157,7 +157,7 @@ class UserCouponRepositoryIT {
     // =========================================================
 
     @Test
-    @DisplayName("同一 (user_id, coupon_template_id) 二次插入：唯一索引抛冲突")
+    @DisplayName("同一秒杀发放键二次插入：唯一索引抛冲突")
     void uniqueIndex_blocksDoubleClaim_forSameUserAndTemplate() {
         try (SqlSession session = sqlSessionFactory.openSession(true)) {
             UserCouponMapper mapper = session.getMapper(UserCouponMapper.class);
@@ -168,7 +168,7 @@ class UserCouponRepositoryIT {
             // 第二次「重复领取」：同一用户 + 同一券模板，但不同主键 id
             UserCoupon duplicate = newCoupon(2002L, 8888L, 9999L, 7002L);
 
-            // 唯一索引 uk_user_coupon_template 触发冲突，MyBatis 包装成 PersistenceException，
+            // 唯一索引 uk_user_coupon_issuance 触发冲突，MyBatis 包装成 PersistenceException，
             // 根因是 MySQL 的 SQLIntegrityConstraintViolationException（Duplicate entry）
             assertThatThrownBy(() -> mapper.insert(duplicate))
                     .isInstanceOf(PersistenceException.class)
@@ -229,6 +229,9 @@ class UserCouponRepositoryIT {
                 .userId(userId)
                 .couponTemplateId(templateId)
                 .seckillSessionId(sessionId)
+                .sourceType("SECKILL")
+                .sourceApprovalId(null)
+                .issuanceKey("SECKILL:" + userId + ":" + templateId)
                 .couponStatus("UNUSED")
                 .receivedAt(LocalDateTime.now())
                 .expireAt(LocalDateTime.now().plusDays(7))

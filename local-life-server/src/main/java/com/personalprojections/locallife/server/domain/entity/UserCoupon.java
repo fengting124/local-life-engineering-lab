@@ -24,7 +24,7 @@ import java.time.LocalDateTime;
  * <ol>
  *   <li>Redis Set 判重（seckill:user:{sessionId}:{couponTemplateId}）：
  *       Lua 脚本里原子性检查，快速拒绝重复请求（第一道防线，毫秒级）</li>
- *   <li>数据库唯一索引 uk_user_coupon_template (user_id, coupon_template_id)：
+ *   <li>数据库唯一索引 uk_user_coupon_issuance (issuance_key)：
  *       即使 Redis 数据丢失或异常，INSERT 时也会因唯一索引冲突而失败（最终兜底）</li>
  * </ol>
  *
@@ -51,8 +51,17 @@ public class UserCoupon {
     /** 券模板 ID，逻辑外键 → coupon_template.id。 */
     private Long couponTemplateId;
 
-    /** 来自哪个秒杀场次，逻辑外键 → seckill_session.id。 */
+    /** 来自哪个秒杀场次；补偿券为 NULL。 */
     private Long seckillSessionId;
+
+    /** 发券来源：SECKILL / COMPENSATION。 */
+    private String sourceType;
+
+    /** 补偿券对应的 HITL 审批 ID；秒杀券为 NULL。 */
+    private String sourceApprovalId;
+
+    /** 数据库最终幂等键。 */
+    private String issuanceKey;
 
     /**
      * 券状态：UNUSED（未使用）/ USED（已使用）/ EXPIRED（已过期）。
