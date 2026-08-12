@@ -225,6 +225,11 @@ public class LocalLifeInternalClient {
             case "PAYMENT_AMOUNT_MISMATCH" ->
                 throw new com.personalprojections.locallife.copilot.tool.McpTool.ToolParameterException(message,
                         "退款金额不能超过实付金额");
+            case "SYS_PARAM_INVALID" ->
+                throw new com.personalprojections.locallife.copilot.tool.McpTool.ToolParameterException(message,
+                        "补偿目标或券条款已变化，请重新解析并审批");
+            case "COUPON_STOCK_EXHAUSTED" ->
+                throw new com.personalprojections.locallife.copilot.tool.McpTool.ToolBusinessException(message);
             default -> throw new RuntimeException("业务错误 [" + code + "]: " + message);
         }
     }
