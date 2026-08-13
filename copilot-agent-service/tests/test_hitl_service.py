@@ -52,6 +52,26 @@ def _approval_payload() -> ApprovalPayload:
     )
 
 
+def _compensation_payload() -> ApprovalPayload:
+    return ApprovalPayload(
+        payload_version=2,
+        tool_name="issue_compensation_coupon",
+        order_id="202606100003",
+        amount_minor=2000,
+        target_user_id="9001",
+        shop_id="101",
+        merchant_id="42",
+        coupon_template_id="7001",
+        coupon_discount_type="CASH",
+        coupon_min_order_amount=5000,
+        coupon_valid_days=30,
+        coupon_terms_digest="0123456789abcdef" * 4,
+        requested_user_id="1001",
+        requested_role="admin",
+        reason="订单异常，补发20元优惠券",
+    )
+
+
 def _bound_approval(payload=None, **overrides):
     payload = payload or _approval_payload()
     values = {
@@ -340,6 +360,18 @@ def test_validate_resume_returns_only_verified_canonical_payload():
     )
 
     assert validated == payload
+
+
+def test_validate_resume_accepts_verified_compensation_v2_payload():
+    payload = _compensation_payload()
+
+    validated = HitlService().validate_resume(
+        _bound_approval(payload),
+        _checkpoint_values(payload),
+    )
+
+    assert validated == payload
+    assert validated.coupon_template_id == "7001"
 
 
 @pytest.mark.parametrize(

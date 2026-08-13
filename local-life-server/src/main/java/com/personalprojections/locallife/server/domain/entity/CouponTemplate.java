@@ -78,7 +78,7 @@ public class CouponTemplate {
 
     /**
      * 每人限领次数，通常为 1（一人一单）。
-     * 数据库唯一索引 uk_user_coupon_template 是最终兜底。
+     * 数据库唯一索引 uk_user_coupon_issuance 是最终兜底。
      * Redis Set 是快速判重（O(1)）的第一道防线。
      */
     private Integer perUserLimit;

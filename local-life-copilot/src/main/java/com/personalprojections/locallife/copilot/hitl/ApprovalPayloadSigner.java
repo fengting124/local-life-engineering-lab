@@ -36,7 +36,17 @@ public class ApprovalPayloadSigner {
         fields.put("order_id", payload.orderId());
         fields.put("amount_minor", payload.amountMinor());
         fields.put("target_user_id", payload.targetUserId());
-        fields.put("merchant_id", payload.merchantId());
+        if (payload.payloadVersion() == ApprovalPayload.COMPENSATION_VERSION) {
+            fields.put("shop_id", payload.shopId());
+            fields.put("merchant_id", payload.merchantId());
+            fields.put("coupon_template_id", payload.couponTemplateId());
+            fields.put("coupon_discount_type", payload.couponDiscountType());
+            fields.put("coupon_min_order_amount", payload.couponMinOrderAmount());
+            fields.put("coupon_valid_days", payload.couponValidDays());
+            fields.put("coupon_terms_digest", payload.couponTermsDigest());
+        } else {
+            fields.put("merchant_id", payload.merchantId());
+        }
         fields.put("requested_user_id", payload.requestedUserId());
         fields.put("requested_role", payload.requestedRole());
         fields.put("reason", payload.reason());

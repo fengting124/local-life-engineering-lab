@@ -130,6 +130,15 @@ ON DUPLICATE KEY UPDATE
     `status` = 'ACTIVE',
     `deleted` = 0;
 
+INSERT INTO `compensation_coupon_binding`
+    (`id`, `shop_id`, `merchant_id`, `face_value_minor`, `coupon_template_id`, `enabled`)
+VALUES
+    (880000350001, @shop_id, @merchant_id, 2000, @coupon_id, 1)
+ON DUPLICATE KEY UPDATE
+    `coupon_template_id` = VALUES(`coupon_template_id`),
+    `merchant_id` = VALUES(`merchant_id`),
+    `enabled` = 1;
+
 INSERT INTO `seckill_session`
     (`id`, `coupon_template_id`, `seckill_stock`, `begin_time`, `end_time`, `session_status`, `deleted`)
 VALUES
@@ -142,12 +151,17 @@ ON DUPLICATE KEY UPDATE
     `deleted` = 0;
 
 INSERT INTO `user_coupon`
-    (`id`, `user_id`, `coupon_template_id`, `seckill_session_id`, `coupon_status`,
-     `received_at`, `expire_at`, `used_at`, `deleted`)
+    (`id`, `user_id`, `coupon_template_id`, `seckill_session_id`, `source_type`,
+     `source_approval_id`, `issuance_key`, `coupon_status`, `received_at`,
+     `expire_at`, `used_at`, `deleted`)
 VALUES
-    (@user_coupon_id, @coupon_user_id, @coupon_id, @session_id, 'UNUSED',
+    (@user_coupon_id, @coupon_user_id, @coupon_id, @session_id, 'SECKILL', NULL,
+     CONCAT('SECKILL:', @coupon_user_id, ':', @coupon_id), 'UNUSED',
      NOW() - INTERVAL 2 HOUR, NOW() + INTERVAL 7 DAY, NULL, 0)
 ON DUPLICATE KEY UPDATE
+    `source_type` = 'SECKILL',
+    `source_approval_id` = NULL,
+    `issuance_key` = VALUES(`issuance_key`),
     `coupon_status` = 'UNUSED',
     `received_at` = VALUES(`received_at`),
     `expire_at` = VALUES(`expire_at`),

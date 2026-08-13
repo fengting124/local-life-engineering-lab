@@ -210,6 +210,28 @@ def test_coupon_policy_lookup_normalizes_real_java_shapes(
     assert "SECRET" not in repr(outcome)
 
 
+def test_compensation_resolver_normalizes_availability_without_leaking_terms():
+    outcome = normalize_tool_outcome(
+        "resolve_compensation_coupon",
+        json.dumps({
+            "order_no": "202606100003",
+            "target_user_id": "9001",
+            "shop_id": "101",
+            "merchant_id": "42",
+            "amount_minor": 2000,
+            "coupon_template_id": "7001",
+            "coupon_discount_type": "CASH",
+            "coupon_min_order_amount": 5000,
+            "coupon_valid_days": 30,
+            "coupon_terms_digest": "a" * 64,
+        }),
+    )
+
+    assert outcome.status == "success"
+    assert outcome.facts == {"compensation_configuration_available": True}
+    assert "7001" not in repr(outcome)
+
+
 @pytest.mark.parametrize(
     "raw_result",
     [
@@ -356,12 +378,12 @@ def test_refund_unlock_requires_structured_order_status():
     assert ineligible["evidence_stop_reason"] == "business_rejected"
 
 
-def test_compensation_never_unlocks_from_unused_alone():
+def test_compensation_advances_to_resolver_after_eligible_order():
     update = advance_evidence(
         _state(
             "compensation_action",
-            ["query_order", "query_coupon_issue_log", "issue_compensation_coupon"],
-            ["query_order", "issue_compensation_coupon"],
+            ["query_order", "resolve_compensation_coupon", "issue_compensation_coupon"],
+            ["query_order", "resolve_compensation_coupon", "issue_compensation_coupon"],
             "query_order",
         ),
         [
@@ -377,8 +399,50 @@ def test_compensation_never_unlocks_from_unused_alone():
         ],
     )
 
+    assert update["route_next_tool"] == "resolve_compensation_coupon"
+
+
+def test_compensation_resolver_success_unlocks_hitl_tool():
+    update = advance_evidence(
+        _state(
+            "compensation_action",
+            ["query_order", "resolve_compensation_coupon", "issue_compensation_coupon"],
+            ["query_order", "resolve_compensation_coupon", "issue_compensation_coupon"],
+            "resolve_compensation_coupon",
+            records={
+                "query_order": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {"found": True, "order_status": "PAID"},
+                }
+            },
+        ),
+        [ToolOutcome(
+            "resolve_compensation_coupon",
+            "success",
+            {"compensation_configuration_available": True},
+        )],
+    )
+
+    assert update["route_next_tool"] == "issue_compensation_coupon"
+
+
+def test_cs_compensation_preserves_order_evidence_then_escalates():
+    update = advance_evidence(
+        _state(
+            "compensation_action",
+            ["query_order", "resolve_compensation_coupon", "issue_compensation_coupon"],
+            ["query_order", "issue_compensation_coupon"],
+            "query_order",
+        ),
+        [ToolOutcome(
+            "query_order", "success", {"found": True, "order_status": "PAID"}
+        )],
+    )
+
     assert update["route_next_tool"] is None
     assert update["evidence_stop_reason"] == "permission_denied"
+    assert update["evidence_collected"]["query_order"]["status"] == "success"
 
 
 def test_cs_coupon_diagnosis_preserves_order_evidence_before_escalation():
@@ -411,34 +475,6 @@ def test_cs_coupon_diagnosis_preserves_order_evidence_before_escalation():
         "payment_status": "SUCCESS",
         "coupon_usage_status": "NONE",
     }
-
-
-def test_compensation_unlocks_only_after_confirmed_coupon_failure():
-    records = {
-        "query_order": {
-            "status": "success",
-            "attempts": 1,
-            "facts": {"found": True, "order_status": "PAID"},
-        }
-    }
-    update = advance_evidence(
-        _state(
-            "compensation_action",
-            ["query_order", "query_coupon_issue_log", "issue_compensation_coupon"],
-            ["query_order", "query_coupon_issue_log", "issue_compensation_coupon"],
-            "query_coupon_issue_log",
-            records,
-        ),
-        [
-            ToolOutcome(
-                "query_coupon_issue_log",
-                "success",
-                {"found": True, "coupon_issue_status": "FAILED", "coupon_failure_confirmed": True},
-            )
-        ],
-    )
-
-    assert update["route_next_tool"] == "issue_compensation_coupon"
 
 
 def test_inconsistent_coupon_failure_pair_is_rebound_and_cannot_unlock_compensation():

@@ -116,6 +116,24 @@ public class ApprovalExecutionGuard {
         }
     }
 
+    public void failExecution(ExecutionClaim claim, String reason) {
+        String sanitizedReason = sanitizeReason(reason);
+        if (mapper.failExecution(
+                claim.approvalId(), claim.executionId(), sanitizedReason
+        ) != 1) {
+            throw new IllegalStateException("HITL execution failure was not accepted");
+        }
+    }
+
+    private String sanitizeReason(String reason) {
+        String sanitized = reason == null ? "business_rejected" : reason;
+        sanitized = sanitized.replaceAll(
+                "(?i)(key|token|secret|password|authorization|cookie)\\s*[=:]\\s*[^\\s,;]+",
+                "[REDACTED]"
+        );
+        return sanitized.length() > 500 ? sanitized.substring(0, 500) : sanitized;
+    }
+
     private ExecutionDecision recoverOrReload(
             HitlApprovalRecord approval,
             String digest,

@@ -17,6 +17,7 @@ TOOL_ROLE_MAP: dict[str, list[str]] = {
     "query_payment": ["admin"],
     "query_coupon_issue_log": ["admin"],
     "query_mq_dead_letter": ["admin"],
+    "resolve_compensation_coupon": ["admin"],
     "shop_metrics_query": ["merchant", "admin"],
     "coupon_policy_lookup": ["merchant", "admin"],
     "campaign_draft_generate": ["merchant", "admin"],
@@ -37,6 +38,7 @@ TOOL_CONCURRENCY_SAFE: set[str] = {
     "query_payment",
     "query_coupon_issue_log",
     "query_mq_dead_letter",
+    "resolve_compensation_coupon",
     "shop_metrics_query",
     "coupon_policy_lookup",
     "knowledge_search",
@@ -71,7 +73,7 @@ TASK_TOOL_PLANS: dict[str, tuple[str, ...]] = {
     "refund_action": ("query_order", "execute_refund"),
     "compensation_action": (
         "query_order",
-        "query_coupon_issue_log",
+        "resolve_compensation_coupon",
         "issue_compensation_coupon",
     ),
 }

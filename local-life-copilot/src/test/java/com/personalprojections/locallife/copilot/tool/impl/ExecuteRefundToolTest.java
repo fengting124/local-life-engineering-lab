@@ -199,9 +199,7 @@ class ExecuteRefundToolTest {
                 any(RbacContext.class)
         );
         verify(guard).complete(claim, refundResult);
-        verify(internalClient, never()).compensateCoupon(
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        verify(internalClient, never()).compensateCoupon(org.mockito.ArgumentMatchers.any());
     }
 
     @Test

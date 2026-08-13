@@ -1,6 +1,7 @@
 package com.personalprojections.locallife.copilot.client;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -93,17 +94,31 @@ public class LocalLifeInternalClient {
      * @param reason             补偿原因
      * @return 补偿结果（含 couponId / status）
      */
-    public Map<String, Object> compensateCoupon(
-            String orderNo, String userId, int compensationAmount,
-            String approvalId, String reason) {
-        String url = localLifeServerUrl + "/internal/orders/" + orderNo + "/compensate-coupon";
-        Map<String, Object> body = Map.of(
-                "userId", userId,
-                "compensationAmount", compensationAmount,
-                "approvalId", approvalId,
-                "reason", reason);
-        log.info("[InternalClient] 调用补偿券 API: orderNo={}, userId={}, amount={}分", orderNo, userId, compensationAmount);
+    public Map<String, Object> compensateCoupon(CompensationCommand command) {
+        String url = localLifeServerUrl + "/internal/orders/" + command.orderNo() + "/compensate-coupon";
+        Map<String, Object> body = objectMapper.convertValue(
+                command, new TypeReference<Map<String, Object>>() { }
+        );
+        body.remove("orderNo");
+        log.info("[InternalClient] 调用补偿券 API: orderNo={}, userId={}, amount={}分",
+                command.orderNo(), command.userId(), command.compensationAmount());
         return post(url, body, "compensate-coupon");
+    }
+
+    public record CompensationCommand(
+            String orderNo,
+            String userId,
+            int compensationAmount,
+            String shopId,
+            String merchantId,
+            String couponTemplateId,
+            String couponDiscountType,
+            int couponMinOrderAmount,
+            int couponValidDays,
+            String couponTermsDigest,
+            String approvalId,
+            String reason
+    ) {
     }
 
     // =========================================================
@@ -210,6 +225,11 @@ public class LocalLifeInternalClient {
             case "PAYMENT_AMOUNT_MISMATCH" ->
                 throw new com.personalprojections.locallife.copilot.tool.McpTool.ToolParameterException(message,
                         "退款金额不能超过实付金额");
+            case "SYS_PARAM_INVALID" ->
+                throw new com.personalprojections.locallife.copilot.tool.McpTool.ToolParameterException(message,
+                        "补偿目标或券条款已变化，请重新解析并审批");
+            case "COUPON_STOCK_EXHAUSTED" ->
+                throw new com.personalprojections.locallife.copilot.tool.McpTool.ToolBusinessException(message);
             default -> throw new RuntimeException("业务错误 [" + code + "]: " + message);
         }
     }

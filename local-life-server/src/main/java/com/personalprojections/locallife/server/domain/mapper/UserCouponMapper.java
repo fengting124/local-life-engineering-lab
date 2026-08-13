@@ -16,7 +16,7 @@ import org.apache.ibatis.annotations.Mapper;
  * </ul>
  *
  * <h2>注意</h2>
- * <p>数据库唯一索引 uk_user_coupon_template (user_id, coupon_template_id) 会在重复 INSERT 时
+ * <p>数据库唯一索引 uk_user_coupon_issuance (issuance_key) 会在重复 INSERT 时
  * 抛出 {@code DuplicateKeyException}，MQ 消费者需要捕获此异常做幂等处理（直接忽略，不重试）。
  */
 @Mapper

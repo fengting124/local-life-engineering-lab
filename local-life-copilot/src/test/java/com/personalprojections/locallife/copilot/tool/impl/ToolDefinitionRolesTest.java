@@ -21,6 +21,8 @@ class ToolDefinitionRolesTest {
                 .containsExactly("admin");
         assertThat(new QueryMqDeadLetterTool(null, objectMapper).getDefinition().getXAllowedRoles())
                 .containsExactly("admin");
+        assertThat(new ResolveCompensationCouponTool(null, objectMapper).getDefinition().getXAllowedRoles())
+                .containsExactly("admin");
     }
 
     @Test

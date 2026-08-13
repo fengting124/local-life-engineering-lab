@@ -15,7 +15,7 @@ import hashlib
 import structlog
 from datetime import datetime, timedelta, timezone
 from typing import NoReturn
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from session.manager import AsyncSessionLocal, _snowflake_id
@@ -319,7 +319,16 @@ class HitlService:
                     HitlApproval.expire_at >= now,
                     HitlApproval.checkpoint_id.is_not(None),
                     HitlApproval.payload_digest.is_not(None),
-                    HitlApproval.payload_version == 1,
+                    or_(
+                        and_(
+                            HitlApproval.payload_version == 1,
+                            HitlApproval.action_type == "execute_refund",
+                        ),
+                        and_(
+                            HitlApproval.payload_version == 2,
+                            HitlApproval.action_type == "issue_compensation_coupon",
+                        ),
+                    ),
                 )
                 .values(
                     status="APPROVED",

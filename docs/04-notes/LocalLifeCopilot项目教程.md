@@ -455,7 +455,8 @@ def is_tool_concurrency_safe(tool_name: str) -> bool:
 ### 7.2 挂起与恢复的完整流程
 
 ```
-Step 1: Agent 决定调用 execute_refund
+Step 1: Agent 决定调用 execute_refund 或 issue_compensation_coupon
+        补偿券先按订单门店 + 明确面值解析唯一模板
         ↓
 Step 2: hitl_node 写规范化载荷和 HMAC 摘要到 hitl_approval（PENDING）
         ↓
@@ -476,8 +477,9 @@ Step 7: Agent Service 从审批记录读取 thread_id + checkpoint_id
         验证 Checkpoint 载荷、身份、商家、角色、权限和 HMAC 后恢复
         ↓
 Step 8: Copilot ApprovalExecutionGuard 再验证并 CAS 获取执行租约
-        ExecuteRefundTool → LocalLifeInternalClient → LocalLife Server
-        POST /internal/orders/{orderNo}/refund
+        ExecuteRefundTool / IssueCompensationCouponTool
+        → LocalLifeInternalClient → LocalLife Server
+        → 退款状态变更，或原子扣券库存 + 写 user_coupon + 完成 ledger
         ↓
 Step 9: SSE 继续推送，最终 final_answer
 ```
@@ -511,6 +513,13 @@ WHERE id = ? AND status = 'PENDING'
 `/chat/resume` 不采用“取 thread 最新 Checkpoint”的模糊恢复。它以审批记录中的 `thread_id + checkpoint_id` 读取唯一快照，并把审批表载荷与快照里的 `pending_action` 逐字段比对。恢复前还会读取同一 thread 最近的 `agent_run`；如果 run 已经是 `COMPLETED` 或 `CANCELED`，接口只返回“已处理”。真正的执行权由 Copilot 的 `APPROVED -> EXECUTING` 条件更新和两分钟租约控制，资金/补券副作用再由 Java 主服务的 `side_effect_ledger` 兜底。
 
 这里要区分三层语义：审批 CAS 只保证状态迁移只有一个赢家；执行租约保证同一时刻最多一个调用者持有执行权；Server 唯一账本处理“业务已提交但网络响应丢失”，使当前退款和补券达到业务效果恰好一次。它不等于所有分布式事件、日志和 SSE 都是全局 exactly-once。
+
+补偿券不是让 LLM 按金额猜模板。`resolve_compensation_coupon` 仅对 admin 开放，
+输入只有业务订单号和明确金额；订单决定用户、门店和商家，
+`UNIQUE(shop_id, face_value_minor)` 决定唯一模板。审批 v2 同时展示并签名绑定
+券类型、使用门槛、有效天数和条款摘要。执行时 Server 再查订单、映射和模板，条款变化
+就拒绝旧审批。库存扣减使用 `remain_stock > 0` 的单条条件更新，数据库唯一
+`COMPENSATION:{approval_id}` 防止一个审批发出两张券。
 
 断线回放入口：
 

@@ -35,7 +35,7 @@ import java.util.concurrent.TimeUnit;
  * <ol>
  *   <li>Redis Set 判重（SISMEMBER）：秒杀入口拦截重复请求，性能优先，发生在最前端</li>
  *   <li>Redis SETNX 幂等消费 Key（本类）：防止 MQ 重复投递导致重复处理，详见下文</li>
- *   <li>user_coupon 唯一索引 uk_user_coupon_template：DB 层最终兜底，
+ *   <li>user_coupon 唯一索引 uk_user_coupon_issuance：DB 层最终兜底，
  *       即使前两层都失效（如 Redis 宕机重启丢数据），也不会产生重复券</li>
  * </ol>
  *
@@ -134,7 +134,7 @@ public class SeckillSuccessConsumer implements RocketMQListener<String> {
     /**
      * 异步写入用户券记录（真正的 INSERT user_coupon，从秒杀主链路解耦出来的部分）。
      *
-     * <p>幂等兜底：捕获 DuplicateKeyException（uk_user_coupon_template 唯一索引冲突），
+     * <p>幂等兜底：捕获 DuplicateKeyException（uk_user_coupon_issuance 唯一索引冲突），
      * 说明该用户已经领过这张券（如 SETNX 幂等 Key 因 Redis 异常失效导致重复消费），
      * 直接忽略，不是真正的错误——三层幂等防线中的最后一道。
      *
@@ -150,6 +150,9 @@ public class SeckillSuccessConsumer implements RocketMQListener<String> {
                 .userId(event.getUserId())
                 .couponTemplateId(event.getCouponTemplateId())
                 .seckillSessionId(event.getSessionId())
+                .sourceType("SECKILL")
+                .sourceApprovalId(null)
+                .issuanceKey("SECKILL:" + event.getUserId() + ":" + event.getCouponTemplateId())
                 .couponStatus("UNUSED")
                 .receivedAt(now)
                 .expireAt(expireAt)

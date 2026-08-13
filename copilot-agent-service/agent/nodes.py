@@ -38,6 +38,7 @@ ORDER_SCOPED_TOOLS = {
     "query_payment",
     "query_coupon_issue_log",
     "query_mq_dead_letter",
+    "resolve_compensation_coupon",
     *HITL_TOOLS,
 }
 
@@ -283,12 +284,16 @@ def _request_binding_error(
     if order_target_hash(args.get("order_id")) != expected_order_hash:
         return "request_target_mismatch"
 
-    if tool_name in HITL_TOOLS:
+    if tool_name in HITL_TOOLS or tool_name == "resolve_compensation_coupon":
         expected_amount = state.get("route_requested_amount_minor")
         amount_key = (
             "amount"
             if tool_name == "execute_refund"
-            else "compensation_amount"
+            else (
+                "compensation_amount"
+                if tool_name == "issue_compensation_coupon"
+                else "amount_minor"
+            )
         )
         actual_amount = args.get(amount_key)
         if (
@@ -346,21 +351,12 @@ def _build_structured_high_risk_proposal(
         return AIMessage(content="订单证据不完整，无法发起人工审批。"), "internal_error"
 
     order_id = order.get("order_no")
-    payment = order.get("payment")
-    paid_amount = (
-        payment.get("paid_amount")
-        if isinstance(payment, Mapping)
-        else None
-    )
     requested_amount = state.get("route_requested_amount_minor")
     expected_order_hash = state.get("route_target_order_hash")
     if (
         not isinstance(order_id, str)
         or not order_id.strip()
         or order_target_hash(order_id) != expected_order_hash
-        or isinstance(paid_amount, bool)
-        or not isinstance(paid_amount, int)
-        or paid_amount <= 0
         or isinstance(requested_amount, bool)
         or not isinstance(requested_amount, int)
         or requested_amount <= 0
@@ -368,6 +364,10 @@ def _build_structured_high_risk_proposal(
         return AIMessage(content="订单证据不完整，无法发起人工审批。"), "internal_error"
 
     if next_tool == "execute_refund":
+        payment = order.get("payment")
+        paid_amount = payment.get("paid_amount") if isinstance(payment, Mapping) else None
+        if isinstance(paid_amount, bool) or not isinstance(paid_amount, int) or paid_amount <= 0:
+            return AIMessage(content="订单证据不完整，无法发起人工审批。"), "internal_error"
         if requested_amount > paid_amount:
             return (
                 AIMessage(content="退款金额超过订单实付金额，无法发起人工审批。"),
@@ -379,29 +379,35 @@ def _build_structured_high_risk_proposal(
             "reason": "订单状态满足退款前置条件，等待人工审批",
         }
     else:
-        coupon_facts = _successful_evidence(state, "query_coupon_issue_log")
-        coupon_result = _latest_tool_payload(
-            state["messages"],
-            "query_coupon_issue_log",
-        )
-        user_id = order.get("user_id")
+        resolver_facts = _successful_evidence(state, "resolve_compensation_coupon")
+        resolution = _latest_tool_payload(state["messages"], "resolve_compensation_coupon")
         if (
-            coupon_facts is None
-            or coupon_facts.get("coupon_issue_status") != "FAILED"
-            or coupon_facts.get("coupon_failure_confirmed") is not True
-            or coupon_result is None
-            or coupon_result.get("order_id") != order_id.strip()
-            or coupon_result.get("order_status") != order_status
-            or isinstance(user_id, bool)
-            or not isinstance(user_id, (str, int))
-            or not str(user_id).strip()
+            resolver_facts is None
+            or resolver_facts.get("compensation_configuration_available") is not True
+            or resolution is None
+            or resolution.get("order_no") != order_id.strip()
+            or resolution.get("amount_minor") != requested_amount
         ):
             return AIMessage(content="补偿证据不完整，无法发起人工审批。"), "internal_error"
+        required = (
+            "target_user_id", "shop_id", "merchant_id", "coupon_template_id",
+            "coupon_discount_type", "coupon_min_order_amount", "coupon_valid_days",
+            "coupon_terms_digest",
+        )
+        if any(key not in resolution for key in required):
+            return AIMessage(content="补偿证据不完整，无法发起人工审批。"), "internal_error"
         args = {
-            "user_id": str(user_id).strip(),
+            "user_id": str(resolution["target_user_id"]).strip(),
             "order_id": order_id.strip(),
             "compensation_amount": requested_amount,
-            "reason": "优惠券发放失败已确认，等待人工审批",
+            "shop_id": str(resolution["shop_id"]).strip(),
+            "merchant_id": str(resolution["merchant_id"]).strip(),
+            "coupon_template_id": str(resolution["coupon_template_id"]).strip(),
+            "coupon_discount_type": resolution["coupon_discount_type"],
+            "coupon_min_order_amount": resolution["coupon_min_order_amount"],
+            "coupon_valid_days": resolution["coupon_valid_days"],
+            "coupon_terms_digest": resolution["coupon_terms_digest"],
+            "reason": "补偿券配置已确定，等待人工审批",
         }
 
     return AIMessage(
@@ -413,6 +419,30 @@ def _build_structured_high_risk_proposal(
             "type": "tool_call",
         }],
     ), None
+
+
+def _build_compensation_resolver_call(state: AgentState) -> AIMessage | None:
+    if (
+        state.get("route_task_type") != "compensation_action"
+        or state.get("route_next_tool") != "resolve_compensation_coupon"
+    ):
+        return None
+    order = _latest_tool_payload(state["messages"], "query_order")
+    amount = state.get("route_requested_amount_minor")
+    if (
+        order is None
+        or order_target_hash(order.get("order_no")) != state.get("route_target_order_hash")
+        or isinstance(amount, bool)
+        or not isinstance(amount, int)
+        or amount <= 0
+    ):
+        return None
+    return AIMessage(content="", tool_calls=[{
+        "name": "resolve_compensation_coupon",
+        "args": {"order_id": order["order_no"], "amount_minor": amount},
+        "id": f"controlled-resolve_compensation_coupon-{state['step_count']}",
+        "type": "tool_call",
+    }])
 
 
 async def llm_node(state: AgentState) -> dict:
@@ -489,6 +519,13 @@ async def llm_node(state: AgentState) -> dict:
                     knowledge_tool.get_knowledge_search_tool_spec(),
                 ]
                 tools = router.route(complete_tool_specs)
+
+                if (
+                    settings.llm_provider.lower() == "deepseek"
+                    and next_tool == "resolve_compensation_coupon"
+                    and tools
+                ):
+                    response = _build_compensation_resolver_call(state)
 
                 if (
                     settings.llm_provider.lower() == "deepseek"
@@ -1432,21 +1469,38 @@ async def hitl_node(state: AgentState) -> dict:
             if action_type == "execute_refund"
             else "compensation_amount"
         )
-        approval_payload = ApprovalPayload(
-            payload_version=1,
-            tool_name=action_type,
-            order_id=action_payload.get("order_id"),
-            amount_minor=action_payload.get(amount_key),
-            target_user_id=(
-                action_payload.get("user_id", "")
-                if action_type == "issue_compensation_coupon"
-                else ""
-            ),
-            merchant_id=merchant_id if merchant_id is not None else "",
-            requested_user_id=state.get("user_id"),
-            requested_role=state.get("user_role"),
-            reason=action_payload.get("reason") or agent_reason,
-        )
+        common_payload = {
+            "tool_name": action_type,
+            "order_id": action_payload.get("order_id"),
+            "amount_minor": action_payload.get(amount_key),
+            "requested_user_id": state.get("user_id"),
+            "requested_role": state.get("user_role"),
+            "reason": action_payload.get("reason") or agent_reason,
+        }
+        if action_type == "issue_compensation_coupon":
+            approval_payload = ApprovalPayload(
+                payload_version=2,
+                target_user_id=action_payload.get("user_id", ""),
+                shop_id=action_payload.get("shop_id", ""),
+                merchant_id=action_payload.get("merchant_id", ""),
+                coupon_template_id=action_payload.get("coupon_template_id", ""),
+                coupon_discount_type=action_payload.get(
+                    "coupon_discount_type", ""
+                ),
+                coupon_min_order_amount=action_payload.get(
+                    "coupon_min_order_amount"
+                ),
+                coupon_valid_days=action_payload.get("coupon_valid_days"),
+                coupon_terms_digest=action_payload.get("coupon_terms_digest", ""),
+                **common_payload,
+            )
+        else:
+            approval_payload = ApprovalPayload(
+                payload_version=1,
+                target_user_id="",
+                merchant_id=merchant_id if merchant_id is not None else "",
+                **common_payload,
+            )
         approval_id = await hitl_service.create_approval(
             session_id=session_id or 0,
             thread_id=thread_id,
@@ -1471,9 +1525,21 @@ async def hitl_node(state: AgentState) -> dict:
         }
 
     # ---- 生成挂起通知消息 ----
+    approval_details = ""
+    if approval_payload.payload_version == 2:
+        approval_details = (
+            f"**订单**：{approval_payload.order_id}\n\n"
+            f"**目标用户**：{approval_payload.target_user_id}\n\n"
+            f"**门店**：{approval_payload.shop_id}\n\n"
+            f"**补偿金额**：{approval_payload.amount_minor / 100:.2f} 元\n\n"
+            f"**券模板**：{approval_payload.coupon_template_id}\n\n"
+            f"**使用门槛**：{approval_payload.coupon_min_order_amount / 100:.2f} 元\n\n"
+            f"**有效期**：{approval_payload.coupon_valid_days} 天\n\n"
+        )
     hitl_message = AIMessage(content=(
         f"此操作（**{action_type}**）涉及高风险，需要人工审批后才能执行。\n\n"
-        f"**申请原因**：{agent_reason}\n\n"
+        f"{approval_details}"
+        f"**申请原因**：{approval_payload.reason}\n\n"
         f"**审批记录 ID**：{approval_id or '写入失败，请联系技术支持'}\n\n"
         f"已提交审批申请，请运营人员在审批工作台处理。"
         f"审批通过后系统将继续执行，拒绝则任务终止。"
@@ -1483,6 +1549,11 @@ async def hitl_node(state: AgentState) -> dict:
         "messages":      [hitl_message],
         "pending_hitl":  True,
         "stop_reason":   "pending_approval",
+        **(
+            {"merchant_id": int(approval_payload.merchant_id)}
+            if approval_payload.payload_version == 2
+            else {}
+        ),
         # 将 approval_id 存入 state，恢复时传给工具作为凭证
         "pending_action": {
             **pending,

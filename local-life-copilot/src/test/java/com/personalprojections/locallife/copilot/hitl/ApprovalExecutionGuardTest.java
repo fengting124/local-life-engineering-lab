@@ -190,6 +190,31 @@ class ApprovalExecutionGuardTest {
         );
     }
 
+    @Test
+    void definiteFailureUsesClaimCasAndSanitizesReason() {
+        ApprovalExecutionGuard.ExecutionClaim claim =
+                new ApprovalExecutionGuard.ExecutionClaim(7001L, "execution-1", "a".repeat(64));
+        when(mapper.failExecution(7001L, "execution-1", "business_rejected: [REDACTED]"))
+                .thenReturn(1);
+
+        guard.failExecution(claim, "business_rejected: secret=internal-value");
+
+        verify(mapper).failExecution(
+                7001L, "execution-1", "business_rejected: [REDACTED]"
+        );
+    }
+
+    @Test
+    void definiteFailureRejectsStaleWorkerCas() {
+        ApprovalExecutionGuard.ExecutionClaim claim =
+                new ApprovalExecutionGuard.ExecutionClaim(7001L, "stale", "a".repeat(64));
+        when(mapper.failExecution(anyLong(), anyString(), anyString())).thenReturn(0);
+
+        assertThatThrownBy(() -> guard.failExecution(claim, "stock exhausted"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("failure was not accepted");
+    }
+
     private ApprovalPayload payload() {
         return new ApprovalPayload(
                 1,

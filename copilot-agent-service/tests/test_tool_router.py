@@ -47,6 +47,17 @@ class TestConcurrencySafety:
 
 
 class TestRolePermissions:
+    @pytest.mark.parametrize("role", ["merchant", "cs"])
+    def test_compensation_resolver_is_hidden_from_unauthorized_roles(self, role):
+        assert tool_router.is_tool_allowed_for_role(
+            "resolve_compensation_coupon", role
+        ) is False
+
+    def test_compensation_resolver_is_admin_only(self):
+        assert tool_router.is_tool_allowed_for_role(
+            "resolve_compensation_coupon", "admin"
+        ) is True
+
     @pytest.mark.parametrize(
         ("tool_name", "role", "expected"),
         [
@@ -265,6 +276,30 @@ def test_strong_high_risk_execution_overrides_policy_semantics(message, task_typ
 
     assert decision.task_type == task_type
     assert decision.next_tool == "query_order"
+
+
+def test_admin_compensation_route_requires_deterministic_resolver_before_hitl():
+    decision = classify_request(
+        "admin", "给订单 202606100001 执行补券 20 元"
+    )
+
+    assert decision.required_tools == (
+        "query_order",
+        "resolve_compensation_coupon",
+        "issue_compensation_coupon",
+    )
+    assert decision.authorized_tools == decision.required_tools
+
+
+def test_cs_compensation_route_stops_before_admin_only_resolver():
+    decision = classify_request("cs", "给订单 202606100001 执行补券 20 元")
+
+    assert decision.required_tools == (
+        "query_order",
+        "resolve_compensation_coupon",
+        "issue_compensation_coupon",
+    )
+    assert decision.authorized_tools == ("query_order", "issue_compensation_coupon")
 
 
 @pytest.mark.parametrize(

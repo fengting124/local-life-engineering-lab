@@ -38,6 +38,7 @@ CONTROLLED_READ_TOOLS = {
     "shop_metrics_query",
     "knowledge_search",
     "coupon_policy_lookup",
+    "resolve_compensation_coupon",
 }
 TEXT_SUCCESS_TOOLS = {
     "execute_refund",
@@ -61,6 +62,7 @@ FACT_KEYS_BY_TOOL = {
     "query_mq_dead_letter": {"found", "mq_dead_letter_present"},
     "knowledge_search": {"knowledge_found"},
     "coupon_policy_lookup": {"policy_available"},
+    "resolve_compensation_coupon": {"compensation_configuration_available"},
     "campaign_draft_generate": {"campaign_draft_generated"},
     "shop_metrics_query": set(),
     "execute_refund": set(),
@@ -79,6 +81,7 @@ BOOLEAN_FACTS = {
     "knowledge_found",
     "policy_available",
     "campaign_draft_generated",
+    "compensation_configuration_available",
 }
 
 
@@ -235,6 +238,33 @@ def _normalize_policy(data: Mapping[str, object]) -> dict[str, object] | None:
     return {"policy_available": count > 0}
 
 
+def _normalize_compensation_resolution(
+    data: Mapping[str, object],
+) -> dict[str, object] | None:
+    required_text = (
+        "order_no", "target_user_id", "shop_id", "merchant_id",
+        "coupon_template_id", "coupon_discount_type", "coupon_terms_digest",
+    )
+    if any(not isinstance(data.get(key), str) or not data[key].strip()
+           for key in required_text):
+        return None
+    if data.get("coupon_discount_type") != "CASH":
+        return None
+    integer_fields = (
+        ("amount_minor", 1),
+        ("coupon_min_order_amount", 0),
+        ("coupon_valid_days", 1),
+    )
+    for key, minimum in integer_fields:
+        value = data.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            return None
+    digest = data.get("coupon_terms_digest")
+    if len(digest) != 64 or any(char not in "0123456789abcdefABCDEF" for char in digest):
+        return None
+    return {"compensation_configuration_available": True}
+
+
 def _normalize_facts(tool_name: str, data: Mapping[str, object]) -> dict[str, object] | None:
     if tool_name == "query_order":
         return _normalize_order(data)
@@ -249,6 +279,8 @@ def _normalize_facts(tool_name: str, data: Mapping[str, object]) -> dict[str, ob
         return {"knowledge_found": found} if isinstance(found, bool) else None
     if tool_name == "coupon_policy_lookup":
         return _normalize_policy(data)
+    if tool_name == "resolve_compensation_coupon":
+        return _normalize_compensation_resolution(data)
     return {}
 
 
@@ -433,11 +465,10 @@ def _allows_next_action(
     if candidate == "execute_refund" and task_type == "refund_action":
         return order_facts.get("order_status") in {"PAID", "COMPLETED"}
     if candidate == "issue_compensation_coupon" and task_type == "compensation_action":
-        coupon_facts = _stored_facts(records, "query_coupon_issue_log")
-        return (
-            coupon_facts.get("coupon_issue_status") == "FAILED"
-            and coupon_facts.get("coupon_failure_confirmed") is True
-        )
+        resolver_facts = _stored_facts(records, "resolve_compensation_coupon")
+        return resolver_facts.get("compensation_configuration_available") is True
+    if candidate == "resolve_compensation_coupon" and task_type == "compensation_action":
+        return order_facts.get("order_status") in {"PAID", "COMPLETED"}
     return True
 
 

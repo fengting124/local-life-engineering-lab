@@ -957,6 +957,13 @@ async def resume(
             "user_id": validated_payload.target_user_id,
             "order_id": validated_payload.order_id,
             "compensation_amount": validated_payload.amount_minor,
+            "shop_id": validated_payload.shop_id,
+            "merchant_id": validated_payload.merchant_id,
+            "coupon_template_id": validated_payload.coupon_template_id,
+            "coupon_discount_type": validated_payload.coupon_discount_type,
+            "coupon_min_order_amount": validated_payload.coupon_min_order_amount,
+            "coupon_valid_days": validated_payload.coupon_valid_days,
+            "coupon_terms_digest": validated_payload.coupon_terms_digest,
             "reason": validated_payload.reason,
         }
 

@@ -49,6 +49,9 @@ class CopilotCouponSchemaContractIntegrationTest {
     private static final long COUPON_TEMPLATE_ID = 940000000001L;
     private static final long SECKILL_SESSION_ID = 950000000001L;
     private static final long USER_COUPON_ID = 960000000001L;
+    private static final long ORDER_ID = 970000000001L;
+    private static final String ORDER_NO = "970000000000000001";
+    private static final long BINDING_ID = 980000000001L;
     private static final int REMAIN_STOCK = 37;
     private static final Path REPOSITORY_ROOT = findRepositoryRoot();
 
@@ -93,6 +96,8 @@ class CopilotCouponSchemaContractIntegrationTest {
         when(rateLimiter.isAllowed(anyString())).thenReturn(true);
 
         jdbcTemplate.update("DELETE FROM user_coupon WHERE id = ?", USER_COUPON_ID);
+        jdbcTemplate.update("DELETE FROM compensation_coupon_binding WHERE id = ?", BINDING_ID);
+        jdbcTemplate.update("DELETE FROM order_info WHERE id = ?", ORDER_ID);
         jdbcTemplate.update("DELETE FROM seckill_session WHERE id = ?", SECKILL_SESSION_ID);
         jdbcTemplate.update("DELETE FROM coupon_template WHERE id = ?", COUPON_TEMPLATE_ID);
         jdbcTemplate.update("DELETE FROM shop WHERE id = ?", SHOP_ID);
@@ -125,9 +130,24 @@ class CopilotCouponSchemaContractIntegrationTest {
         jdbcTemplate.update("""
                 INSERT INTO user_coupon(
                     id, user_id, coupon_template_id, seckill_session_id,
+                    source_type, source_approval_id, issuance_key,
                     coupon_status, received_at, expire_at
-                ) VALUES (?, ?, ?, ?, 'UNUSED', NOW(), NOW() + INTERVAL 7 DAY)
-                """, USER_COUPON_ID, USER_ID, COUPON_TEMPLATE_ID, SECKILL_SESSION_ID);
+                ) VALUES (?, ?, ?, ?, 'SECKILL', NULL, ?,
+                          'UNUSED', NOW(), NOW() + INTERVAL 7 DAY)
+                """, USER_COUPON_ID, USER_ID, COUPON_TEMPLATE_ID, SECKILL_SESSION_ID,
+                "SECKILL:" + USER_ID + ":" + COUPON_TEMPLATE_ID);
+        jdbcTemplate.update("""
+                INSERT INTO order_info(
+                    id, order_no, user_id, shop_id, original_amount,
+                    coupon_discount, order_amount, order_status, remark, expire_at
+                ) VALUES (?, ?, ?, ?, 9900, 0, 9900, 'PAID', '', NOW() + INTERVAL 1 DAY)
+                """, ORDER_ID, ORDER_NO, USER_ID, SHOP_ID);
+        jdbcTemplate.update("""
+                INSERT INTO compensation_coupon_binding(
+                    id, shop_id, merchant_id, face_value_minor,
+                    coupon_template_id, enabled
+                ) VALUES (?, ?, ?, 2000, ?, 1)
+                """, BINDING_ID, SHOP_ID, MERCHANT_ID, COUPON_TEMPLATE_ID);
     }
 
     @AfterEach
@@ -193,6 +213,25 @@ class CopilotCouponSchemaContractIntegrationTest {
         assertThat(payload.path("count").asInt()).isEqualTo(1);
         assertThat(payload.path("coupons").get(0).path("remaining_stock").asInt())
                 .isEqualTo(REMAIN_STOCK);
+    }
+
+    @Test
+    void adminResolverMcpPathReturnsOrderDerivedBindingAndStableDigest() throws Exception {
+        String response = mockMvc.perform(signedMcpRequest(
+                        "admin", null,
+                        """
+                        {"jsonrpc":"2.0","id":"resolver-contract","method":"tools/call","params":{"name":"resolve_compensation_coupon","arguments":{"order_id":"%s","amount_minor":2000}}}
+                        """.formatted(ORDER_NO)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        JsonNode payload = toolPayload(response);
+        assertThat(payload.path("target_user_id").asText()).isEqualTo(String.valueOf(USER_ID));
+        assertThat(payload.path("shop_id").asText()).isEqualTo(String.valueOf(SHOP_ID));
+        assertThat(payload.path("merchant_id").asText()).isEqualTo(String.valueOf(MERCHANT_ID));
+        assertThat(payload.path("coupon_template_id").asText())
+                .isEqualTo(String.valueOf(COUPON_TEMPLATE_ID));
+        assertThat(payload.path("coupon_terms_digest").asText()).hasSize(64);
     }
 
     private Integer columnCount(String columnName) {
