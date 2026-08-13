@@ -480,6 +480,22 @@ def test_route_state_round_trip_is_checkpoint_safe():
     assert restored == original
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "查询订单 202606100001 的状态",
+        "订单 202606100001 支付失败是什么原因？",
+        "订单 202606100001 支付了但没收到券",
+    ],
+)
+def test_supported_controlled_read_binds_hashed_order_target(message):
+    decision = classify_request("admin", message)
+
+    assert decision.target_order_hash == hashlib.sha256(
+        b"202606100001"
+    ).hexdigest()
+
+
 def test_high_risk_route_binds_hashed_order_and_explicit_amount():
     order_id = "202606100001"
 

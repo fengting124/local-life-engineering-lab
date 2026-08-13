@@ -243,13 +243,33 @@ def _scenarios(args: argparse.Namespace) -> list[dict[str, Any]]:
         {"name": "metrics_month", "text": "本月GMV和订单数是多少？", **merchant},
         {"name": "order_lookup", "text": f"查询订单 {args.paid_order} 的状态", **cs},
         {"name": "order_not_found", "text": f"查询订单 {args.missing_order} 的状态", **cs},
-        {"name": "payment_diagnosis", "text": f"订单 {args.payment_order} 显示已支付但状态异常，查明原因", **admin},
-        {"name": "coupon_diagnosis", "text": f"订单 {args.coupon_order} 支付成功但没有发券，查一下", **admin},
+        {"name": "payment_diagnosis", "text": f"订单 {args.payment_order} 支付成功了为什么还是待支付？", **admin},
+        {"name": "coupon_diagnosis", "text": f"订单 {args.coupon_order} 支付成功但没发券，查一下", **admin},
         {"name": "coupon_root_cause", "text": f"订单 {args.coupon_order} 支付成功但没发券，请查根因", **admin},
         {"name": "rag_knowledge", "text": "平台优惠券叠加和过期规则是什么？请引用规则依据", **merchant},
         {"name": "campaign_draft", "text": "为门店设计一个周末优惠券活动草案，不要实际发布", **merchant},
         {"name": "refund_pending", "text": f"给订单 {args.coupon_order} 退款20元", **admin, "expected_pending": True},
         {"name": "compensation_pending", "text": f"给订单 {args.coupon_order} 补发20元优惠券", **admin, "expected_pending": True},
+    ]
+
+
+def build_run_plan(
+    scenarios: list[dict[str, Any]],
+    selected_names: list[str],
+    repeat: int,
+) -> list[dict[str, Any]]:
+    if repeat < 1:
+        raise ValueError("repeat must be positive")
+    known = {scenario["name"] for scenario in scenarios}
+    unknown = sorted(set(selected_names) - known)
+    if unknown:
+        raise ValueError("unknown scenario: " + ", ".join(unknown))
+    selected = set(selected_names) if selected_names else known
+    return [
+        {**scenario, "observation": observation}
+        for scenario in scenarios
+        if scenario["name"] in selected
+        for observation in range(1, repeat + 1)
     ]
 
 
@@ -323,6 +343,7 @@ def _row(scenario: dict[str, Any], events: list[dict[str, Any]], terminal: str, 
     success = terminal_succeeded(terminal, expected_pending)
     return {
         "name": scenario["name"],
+        "observation": int(scenario.get("observation", 1)),
         "role": scenario["role"],
         "route_type": run.get("route_task_type", "unknown"),
         "route_mode": run.get("route_mode", "unknown"),
@@ -349,8 +370,14 @@ def _markdown(artifact: dict[str, Any]) -> str:
     ]
     for row in artifact["scenarios"]:
         tokens = row["usage"]["total_tokens"]
+        observation = row.get("observation", 1)
+        scenario_name = (
+            f"{row['name']}#{observation}"
+            if artifact["metadata"].get("observations_per_scenario", 1) > 1
+            else row["name"]
+        )
         lines.append(
-            f"| {row['name']} | {row['route_mode']} | {row['stop_reason']} | "
+            f"| {scenario_name} | {row['route_mode']} | {row['stop_reason']} | "
             f"{row['stages']['total_ms']} | {row['stages']['llm_ms']} | "
             f"{row['stages']['tool_ms']} | {row['stages']['rag_ms']} | "
             f"{row['usage']['llm_calls']} | {tokens if tokens is not None else 'unknown'} |"
@@ -372,10 +399,21 @@ def main() -> int:
     parser.add_argument("--payment-order", required=True)
     parser.add_argument("--coupon-order", required=True)
     parser.add_argument("--missing-order", required=True)
+    parser.add_argument(
+        "--scenario",
+        action="append",
+        default=[],
+        help="Run only this named scenario; repeat to select more than one.",
+    )
+    parser.add_argument("--repeat", type=int, default=1)
     args = parser.parse_args()
 
     rows = []
-    for scenario in _scenarios(args):
+    try:
+        run_plan = build_run_plan(_scenarios(args), args.scenario, args.repeat)
+    except ValueError as error:
+        parser.error(str(error))
+    for scenario in run_plan:
         trace_id = f"latency-{uuid.uuid4().hex}"
         since = datetime.now(timezone.utc).isoformat()
         terminal, tools = _post_sse(args.url, scenario, trace_id)
@@ -387,7 +425,7 @@ def main() -> int:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "model": args.model,
             "concurrency": 1,
-            "observations_per_scenario": 1,
+            "observations_per_scenario": args.repeat,
             "scenario_count": len(rows),
         },
         "scenarios": rows,

@@ -29,6 +29,18 @@ def test_payment_mismatch_renders_all_required_statuses():
     assert {fact.value for fact in answer.facts} == {"WAIT_PAY", "SUCCESS"}
 
 
+def test_order_query_renders_order_status_without_synthesis_llm():
+    answer = build_evidence_answer(
+        _state(
+            "order_query",
+            {"query_order": _record(order_status="PAID")},
+        )
+    )
+
+    assert answer is not None
+    assert answer.render() == "订单状态：已支付。"
+
+
 def test_failed_payment_preserves_failed_enum_meaning():
     answer = build_evidence_answer(
         _state(

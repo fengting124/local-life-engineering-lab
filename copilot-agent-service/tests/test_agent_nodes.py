@@ -69,8 +69,7 @@ def ai_with_tool_calls(calls):
 
 
 def controlled_state(messages, task, required, authorized, next_tool, **over):
-    return make_state(
-        messages,
+    route = dict(
         route_task_type=task,
         route_mode="controlled",
         route_confidence=100,
@@ -83,8 +82,9 @@ def controlled_state(messages, task, required, authorized, next_tool, **over):
         evidence_complete=False,
         evidence_stop_reason=None,
         synthesis_only=False,
-        **over,
     )
+    route.update(over)
+    return make_state(messages, **route)
 
 
 # =========================================================
@@ -1007,6 +1007,158 @@ class FakeLLM:
 
 class TestLlmNode:
     @pytest.mark.asyncio
+    async def test_order_query_dispatches_bound_tool_without_llm(self, monkeypatch):
+        order_id = "202606100001"
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[
+            {"name": "query_order", "description": "查订单"},
+        ])
+        rejecting_llm = MagicMock()
+        rejecting_llm.bind_tools.return_value = rejecting_llm
+        rejecting_llm.ainvoke = AsyncMock(
+            side_effect=AssertionError("controlled dispatch must not call LLM")
+        )
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", rejecting_llm)
+
+        result = await nodes.llm_node(controlled_state(
+            [HumanMessage(content=f"查询订单 {order_id} 的状态")],
+            "order_query",
+            ["query_order"],
+            ["query_order"],
+            "query_order",
+            route_target_order_hash=order_target_hash(order_id),
+        ))
+
+        call = result["messages"][0].tool_calls[0]
+        assert call["name"] == "query_order"
+        assert call["args"] == {"order_id": order_id}
+        assert result["llm_call_count"] == 0
+        rejecting_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_order_dispatch_never_reuses_binding_from_older_turn(
+        self, monkeypatch
+    ):
+        order_id = "202606100001"
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[
+            {"name": "query_order", "description": "查订单"},
+        ])
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+
+        result = await nodes.llm_node(controlled_state(
+            [
+                HumanMessage(content=f"查询订单 {order_id}"),
+                AIMessage(content="上一轮已结束"),
+                HumanMessage(content="再查一下刚才那笔"),
+            ],
+            "order_query",
+            ["query_order"],
+            ["query_order"],
+            "query_order",
+            route_target_order_hash=order_target_hash(order_id),
+        ))
+
+        assert result["evidence_stop_reason"] == "internal_error"
+        assert result["llm_call_count"] == 0
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("task_type", "required_tools"),
+        [
+            ("refund_action", ["query_order", "execute_refund"]),
+            (
+                "compensation_action",
+                [
+                    "query_order",
+                    "resolve_compensation_coupon",
+                    "issue_compensation_coupon",
+                ],
+            ),
+        ],
+    )
+    def test_high_risk_routes_are_outside_controlled_read_dispatch(
+        self, task_type, required_tools
+    ):
+        response, error = nodes._build_controlled_dispatch(
+            controlled_state(
+                [HumanMessage(content="订单 202606100001")],
+                task_type,
+                required_tools,
+                required_tools,
+                "query_order",
+                route_target_order_hash=order_target_hash("202606100001"),
+            ),
+            [{"name": "query_order", "description": "查订单"}],
+        )
+
+        assert response is None
+        assert error is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("task_type", "next_tool"),
+        [
+            ("payment_diagnosis", "query_payment"),
+            ("coupon_issue", "query_coupon_issue_log"),
+        ],
+    )
+    async def test_later_controlled_read_dispatches_from_order_evidence_without_llm(
+        self, monkeypatch, task_type, next_tool
+    ):
+        order_id = "202606100001"
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[
+            {"name": "query_order", "description": "查订单"},
+            {"name": next_tool, "description": "查后续状态"},
+        ])
+        rejecting_llm = MagicMock()
+        rejecting_llm.bind_tools.return_value = rejecting_llm
+        rejecting_llm.ainvoke = AsyncMock(
+            side_effect=AssertionError("controlled dispatch must not call LLM")
+        )
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", rejecting_llm)
+
+        result = await nodes.llm_node(controlled_state(
+            [
+                HumanMessage(content=f"排查订单 {order_id}"),
+                ai_with_tool_call("query_order", {"order_id": order_id}),
+                ToolMessage(
+                    content=json.dumps({
+                        "order_no": order_id,
+                        "order_status": "PAID",
+                    }),
+                    tool_call_id="c1",
+                    name="query_order",
+                ),
+            ],
+            task_type,
+            ["query_order", next_tool],
+            ["query_order", next_tool],
+            next_tool,
+            user_role="admin",
+            route_target_order_hash=order_target_hash(order_id),
+            evidence_collected={
+                "query_order": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {"found": True, "order_status": "PAID"},
+                }
+            },
+        ))
+
+        call = result["messages"][0].tool_calls[0]
+        assert call["name"] == next_tool
+        assert call["args"] == {"order_id": order_id}
+        assert result["llm_call_count"] == 0
+        rejecting_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_deterministic_answer_marks_llm_as_not_called(self, monkeypatch):
         info = MagicMock()
         monkeypatch.setattr(nodes.log, "info", info)
@@ -1230,7 +1382,7 @@ class TestLlmNode:
         assert llm.tool_choice == "query_order"
 
     @pytest.mark.asyncio
-    async def test_controlled_route_binds_one_named_tool(self, monkeypatch):
+    async def test_complex_controlled_route_keeps_named_llm_tool(self, monkeypatch):
         mock_mcp = MagicMock()
         mock_mcp.list_tools = AsyncMock(return_value=[
             {"name": "query_order", "description": "查订单"},
@@ -1245,10 +1397,11 @@ class TestLlmNode:
 
         result = await nodes.llm_node(make_state(
             [HumanMessage(content="查订单 202606100001")],
-            route_task_type="order_query",
+            user_role="admin",
+            route_task_type="mq_diagnosis",
             route_mode="controlled",
-            route_required_tools=["query_order"],
-            route_authorized_tools=["query_order"],
+            route_required_tools=["query_order", "query_mq_dead_letter"],
+            route_authorized_tools=["query_order", "query_mq_dead_letter"],
             route_next_tool="query_order",
             route_missing_fields=[],
         ))
@@ -1259,10 +1412,32 @@ class TestLlmNode:
         }
         assert names == {"query_order"}
         assert fake_llm.tool_choice == "query_order"
+        assert fake_llm.seen_messages
         assert result["final_answer"] is None
 
     @pytest.mark.asyncio
-    async def test_deepseek_controlled_route_forces_tool_with_thinking_disabled(
+    async def test_general_fallback_still_invokes_react_llm(self, monkeypatch):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[
+            {"name": "query_order", "description": "查订单"},
+        ])
+        fake_llm = FakeLLM(AIMessage(content="需要进一步分析。"))
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="分析支付和优惠券的综合异常")],
+            user_role="admin",
+            route_mode="general_fallback",
+            route_task_type="unknown",
+        ))
+
+        assert fake_llm.seen_messages
+        assert result["llm_call_count"] == 1
+        assert result["final_answer"] == "需要进一步分析。"
+
+    @pytest.mark.asyncio
+    async def test_deepseek_complex_route_forces_tool_with_thinking_disabled(
         self, monkeypatch
     ):
         mock_mcp = MagicMock()
@@ -1281,10 +1456,19 @@ class TestLlmNode:
 
         result = await nodes.llm_node(make_state(
             [HumanMessage(content="查订单 202606100001")],
-            route_task_type="order_query",
+            user_role="admin",
+            route_task_type="coupon_root_cause",
             route_mode="controlled",
-            route_required_tools=["query_order"],
-            route_authorized_tools=["query_order"],
+            route_required_tools=[
+                "query_order",
+                "query_coupon_issue_log",
+                "query_mq_dead_letter",
+            ],
+            route_authorized_tools=[
+                "query_order",
+                "query_coupon_issue_log",
+                "query_mq_dead_letter",
+            ],
             route_next_tool="query_order",
             route_missing_fields=[],
         ))
@@ -1302,7 +1486,7 @@ class TestLlmNode:
         assert result["final_answer"] is None
 
     @pytest.mark.asyncio
-    async def test_later_controlled_turn_keeps_retained_payment_tool(self, monkeypatch):
+    async def test_controlled_dispatch_missing_binding_fails_closed(self, monkeypatch):
         mock_mcp = MagicMock()
         mock_mcp.list_tools = AsyncMock(return_value=[
             {"name": "query_order", "description": "查订单"},
@@ -1333,13 +1517,11 @@ class TestLlmNode:
             route_next_tool="query_payment",
         ))
 
-        names = {
-            tool["name"] if isinstance(tool, dict) else tool.name
-            for tool in fake_llm.bound_tools
-        }
-        assert names == {"query_payment"}
-        assert fake_llm.tool_choice == "query_payment"
-        assert result["messages"][0].tool_calls[0]["name"] == "query_payment"
+        assert result["messages"][0].tool_calls == []
+        assert result["evidence_stop_reason"] == "internal_error"
+        assert result["stop_reason"] == "internal_error"
+        assert fake_llm.bound_tools == []
+        assert result["llm_call_count"] == 0
 
     @pytest.mark.asyncio
     async def test_deepseek_refund_handoff_uses_structured_order_payload(

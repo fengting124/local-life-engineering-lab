@@ -161,7 +161,7 @@ def build_evidence_answer(state: Mapping[str, object]) -> EvidenceAnswer | None:
         if mq_status is None:
             return None
         facts.append(mq_status)
-    else:
+    elif task_type != "order_query":
         return None
 
     return EvidenceAnswer(facts=tuple(facts))

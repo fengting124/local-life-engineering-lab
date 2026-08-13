@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -96,6 +97,64 @@ def test_percentage_math_handles_zero_total():
     profiler = _load()
     assert profiler.percentage(5, 0) == 0.0
     assert profiler.percentage(25, 100) == 25.0
+
+
+def test_run_plan_filters_scenarios_and_repeats_in_stable_order():
+    profiler = _load()
+    scenarios = [
+        {"name": "order_lookup"},
+        {"name": "payment_diagnosis"},
+        {"name": "coupon_diagnosis"},
+    ]
+
+    plan = profiler.build_run_plan(
+        scenarios,
+        ["order_lookup", "coupon_diagnosis"],
+        repeat=3,
+    )
+
+    assert [(row["name"], row["observation"]) for row in plan] == [
+        ("order_lookup", 1),
+        ("order_lookup", 2),
+        ("order_lookup", 3),
+        ("coupon_diagnosis", 1),
+        ("coupon_diagnosis", 2),
+        ("coupon_diagnosis", 3),
+    ]
+
+
+def test_run_plan_defaults_to_all_once_and_rejects_unknown_names():
+    profiler = _load()
+    scenarios = [{"name": "order_lookup"}, {"name": "payment_diagnosis"}]
+
+    assert profiler.build_run_plan(scenarios, [], repeat=1) == [
+        {"name": "order_lookup", "observation": 1},
+        {"name": "payment_diagnosis", "observation": 1},
+    ]
+    with pytest.raises(ValueError, match="unknown scenario"):
+        profiler.build_run_plan(scenarios, ["not_real"], repeat=1)
+    with pytest.raises(ValueError, match="repeat must be positive"):
+        profiler.build_run_plan(scenarios, [], repeat=0)
+
+
+def test_diagnostic_profile_messages_match_the_frozen_router_contract():
+    from agent.tool_router import classify_request
+
+    profiler = _load()
+    args = SimpleNamespace(
+        merchant_user="merchant",
+        merchant_id="merchant-id",
+        admin_user="admin",
+        cs_user="cs",
+        paid_order="202606100001",
+        payment_order="202606100002",
+        coupon_order="202606100003",
+        missing_order="2026999999999999999",
+    )
+    scenarios = {scenario["name"]: scenario for scenario in profiler._scenarios(args)}
+
+    assert classify_request("admin", scenarios["payment_diagnosis"]["text"]).task_type == "payment_diagnosis"
+    assert classify_request("admin", scenarios["coupon_diagnosis"]["text"]).task_type == "coupon_issue"
 
 
 def test_internal_error_is_not_a_successful_terminal():
