@@ -271,6 +271,23 @@ def _row(scenario: dict[str, Any], events: list[dict[str, Any]], terminal: str, 
             f"expected exactly one request.total for {scenario['name']}; got {len(request_spans)}"
         )
     run = runs[0]
+    expected_llm_calls = int(run.get("llm_call_count", 0))
+    measured_llm_calls = sum(
+        event.get("event") == "llm_call_measured" for event in events
+    )
+    spanned_llm_calls = sum(
+        event.get("event") == "genai_span_end"
+        and event.get("span_name") == "llm.invoke"
+        for event in events
+    )
+    if not (
+        expected_llm_calls == measured_llm_calls == spanned_llm_calls
+    ):
+        raise ValueError(
+            "LLM measurement mismatch for "
+            f"{scenario['name']}: summary={expected_llm_calls}, "
+            f"measured={measured_llm_calls}, spans={spanned_llm_calls}"
+        )
     stages = summarize_stages(events)
     expected_pending = bool(scenario.get("expected_pending"))
     success = terminal_succeeded(terminal, expected_pending)

@@ -46,7 +46,7 @@ Fast Path 的今日/本月指标分别为 `152ms` 和 `64ms`，均为 `0` 次 LL
 | 优惠券诊断 | PASS / completed | 15,383ms | 15,172ms | 20ms | 164ms | 2 | 1 | 1,281 |
 | 优惠券根因 | PASS / completed | 12,762ms | 12,592ms | 40ms | 100ms | 2 | 2 | 1,694 |
 | RAG 规则查询 | FAIL / internal_error | 7,726ms | 7,634ms | 0ms | 62ms | 1 | 2 attempted | 787 |
-| 活动草案 | PASS / clarification | 80ms | 0ms | 0ms | 52ms | 0 | 0 | 0 |
+| 活动草案 | PASS / completed | 80ms | 0ms | 0ms | 52ms | 0 | 0 | 0 |
 | 明确金额退款 | PASS / pending_approval | 7,036ms | 6,906ms | 22ms | 68ms | 1 | 2 | 733 |
 | 真实补偿路由 | PASS / pending_approval | 2,707ms | 2,540ms | 39ms | 90ms | 1 | 3 | 736 |
 
@@ -63,7 +63,7 @@ HITL prepare `19ms`（`<0.1%`）、graph overhead `1,080ms`（`1.4%`）。
 1. **P95/P99 是否主要由 LLM 造成：** 是。虽然本轮单样本不能重新估计分位数，
    但全部慢场景的 LLM 占比为 `96.2%-98.8%`，足以定位既有长尾的首要来源。
 2. **调用次数最多：** 单订单查询、支付诊断、优惠券诊断和优惠券根因均为 2 次。
-3. **Token 最多：** 优惠券根因、优惠券诊断、支付诊断。
+3. **Token 最多：** 优惠券根因、单订单查询、优惠券诊断。
 4. **Fast Path 差异：** `64-152ms` 且 0 LLM；普通两次 LLM 路径 `9.1-15.4s`。
 5. **list-tools 固定开销：** 首个 ReAct 缓存未命中为 `25ms`；后续缓存命中低于
    毫秒日志精度，不是显著瓶颈。

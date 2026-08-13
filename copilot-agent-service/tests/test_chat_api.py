@@ -971,6 +971,29 @@ class TestResumeEndpoint:
 
 
 class TestChatRuntimeEvents:
+    @pytest.mark.asyncio
+    async def test_fast_path_disconnect_marks_runtime_failed(self):
+        runtime = AsyncMock()
+        runtime.create_run.return_value = "run-disconnect"
+        with (
+            patch("api.chat.session_manager.create_session", new=AsyncMock(return_value=1001)),
+            patch("api.chat.session_manager.save_message", new=AsyncMock()),
+            patch("api.chat._try_fast_path", new=AsyncMock(return_value="answer")),
+            patch("api.chat.runtime_store", runtime),
+        ):
+            response = await chat_module.chat(
+                chat_module.ChatRequest(message="今天GMV"),
+                x_user_id="9001",
+                x_user_role="merchant",
+                x_merchant_id="8001",
+            )
+            stream = response.body_iterator
+            first = await anext(stream)
+            assert "session_started" in first
+            await stream.aclose()
+
+        statuses = [call.args[1] for call in runtime.mark_run_status.await_args_list]
+        assert statuses == ["RUNNING", "FAILED"]
     def test_fast_path_closes_request_and_session_measurements(self):
         timers = []
 

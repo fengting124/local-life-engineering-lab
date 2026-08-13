@@ -627,6 +627,12 @@ async def chat(
                 terminal_recorded = True
                 yield _sse("final_answer", payload)
             finally:
+                if not terminal_recorded:
+                    await _safe_mark_runtime_status(
+                        run_id,
+                        "FAILED",
+                        error_message="client stream closed before terminal event",
+                    )
                 _finish_request_measurement(
                     request_timer,
                     status="ok" if terminal_recorded else "error",

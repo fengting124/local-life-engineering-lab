@@ -156,3 +156,38 @@ def test_row_rejects_duplicate_run_summaries():
             "completed",
             [],
         )
+
+
+def test_row_rejects_missing_llm_measurement_and_span():
+    profiler = _load()
+    events = [
+        {"event": "agent_run_measured", "stop_reason": "completed", "llm_call_count": 1},
+        {"event": "genai_span_end", "span_name": "request.total", "duration_ms": 10},
+    ]
+
+    with pytest.raises(ValueError, match="LLM measurement mismatch"):
+        profiler._row(
+            {"name": "missing_llm", "role": "cs"},
+            events,
+            "completed",
+            [],
+        )
+
+
+def test_row_accepts_matching_llm_summary_measurement_and_span():
+    profiler = _load()
+    events = [
+        {"event": "agent_run_measured", "stop_reason": "completed", "llm_call_count": 1},
+        {"event": "genai_span_end", "span_name": "request.total", "duration_ms": 10},
+        {"event": "genai_span_end", "span_name": "llm.invoke", "duration_ms": 8},
+        {"event": "llm_call_measured", "usage_status": "reported", "input_tokens": 2, "output_tokens": 1},
+    ]
+
+    row = profiler._row(
+        {"name": "complete_llm", "role": "cs"},
+        events,
+        "completed",
+        [],
+    )
+
+    assert row["usage"]["llm_calls"] == 1
