@@ -119,7 +119,7 @@
 - [x] **Step 2: Run** the representative set once at concurrency one (`11` rows because today/month are separate Fast Path controls); no formal scenario was rerun.
 - [x] **Step 3: Validate** no refund/compensation approval was executed, no raw Prompt/answer/tool payload or credential appears in artifacts, and high-risk scenarios stop at PENDING.
 - [x] **Step 4: Write** the short report answering all eight required questions; do not claim causality or capacity from one observation.
-- [x] **Step 5: Run full gates:** Agent full suite (`767 passed`, coverage `80.13%`), mutation (`843/1188`, `71.0%`, other `0`), docs (`83` files), secret scan, and `git diff --check`.
+- [x] **Step 5: Run full gates:** Agent full suite (`769 passed`, coverage `80.26%`), mutation (`843/1188`, `71.0%`, other `0`), docs (`83` files), secret scan, and `git diff --check`.
 - [x] **Step 6: Commit** report/contract evidence as `docs(perf): report agent stage latency baseline`.
 
 ### Task 6: Independent review and Draft PR

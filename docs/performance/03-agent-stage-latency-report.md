@@ -82,4 +82,3 @@ HITL prepare `33ms`（`<0.1%`）、graph overhead `1,011ms`（`1.4%`）。
 - 原始 artifact 位于被 `.gitignore` 排除的 `artifacts/`，不提交 Prompt、回答、
   工具参数/结果、业务 ID、trace ID 或密钥。
 - 单次观测不能用于容量、稳定分位数或模型质量结论。
-

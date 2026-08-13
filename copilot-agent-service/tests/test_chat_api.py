@@ -1005,6 +1005,7 @@ class TestChatRuntimeEvents:
         measured = [call for call in info.call_args_list if call.args == ("agent_run_measured",)]
         assert len(measured) == 1
         assert measured[0].kwargs["route_mode"] == "fast_path"
+        assert measured[0].kwargs["tool_call_count"] == 1
         assert "content" not in measured[0].kwargs
 
     def test_react_closes_graph_measurement_on_final_answer(self):
@@ -1043,6 +1044,63 @@ class TestChatRuntimeEvents:
         by_name = {timer.name: timer for timer in timers}
         assert "graph.total" in by_name
         by_name["graph.total"].finish.assert_called_once_with(status="ok", stop_reason="completed")
+
+    def test_react_summary_preserves_largest_observed_counters(self):
+        info = MagicMock()
+
+        async def fake_stream(*args, **kwargs):
+            yield {"event": "on_chain_end", "name": "tool_node", "data": {"output": {"tool_call_count": 3, "llm_call_count": 2}}}
+            yield {"event": "on_chain_end", "name": "final_node", "data": {"output": {"final_answer": "done", "stop_reason": "completed", "tool_call_count": 0}}}
+
+        runtime = AsyncMock()
+        runtime.create_run.return_value = "run-counters"
+        with (
+            patch("api.chat.log.info", info),
+            patch("api.chat.session_manager.create_session", new=AsyncMock(return_value=1001)),
+            patch("api.chat.session_manager.save_message", new=AsyncMock()),
+            patch("api.chat._try_fast_path", new=AsyncMock(return_value=None)),
+            patch("api.chat.agent_graph.astream_events", fake_stream),
+            patch("api.chat.runtime_store", runtime),
+        ):
+            response = client.post(
+                "/chat",
+                json={"message": "查询订单 202606100003"},
+                headers={"X-User-Id": "9001", "X-User-Role": "cs"},
+            )
+
+        assert response.status_code == 200
+        measured = next(call for call in info.call_args_list if call.args == ("agent_run_measured",))
+        assert measured.kwargs["tool_call_count"] == 3
+        assert measured.kwargs["llm_call_count"] == 2
+
+    def test_router_exception_closes_request_measurement(self):
+        timers = []
+
+        class FakeTimer:
+            def __init__(self, name, kind, **attrs):
+                self.name = name
+                self.finish = MagicMock(return_value=True)
+                timers.append(self)
+
+        runtime = AsyncMock()
+        runtime.create_run.return_value = "run-router-error"
+        with (
+            patch("api.chat.SpanTimer", FakeTimer),
+            patch("api.chat.session_manager.create_session", new=AsyncMock(return_value=1001)),
+            patch("api.chat.session_manager.save_message", new=AsyncMock()),
+            patch("api.chat._try_fast_path", new=AsyncMock(return_value=None)),
+            patch("agent.tool_router.classify_request", side_effect=RuntimeError("route failed")),
+            patch("api.chat.runtime_store", runtime),
+        ):
+            response = client.post(
+                "/chat",
+                json={"message": "query"},
+                headers={"X-User-Id": "9001", "X-User-Role": "cs"},
+            )
+
+        assert response.status_code == 500
+        request_timer = next(timer for timer in timers if timer.name == "request.total")
+        request_timer.finish.assert_called_once_with(status="error", stop_reason="router_error")
 
     def test_fast_path_records_agent_run_and_events(self):
         runtime = AsyncMock()

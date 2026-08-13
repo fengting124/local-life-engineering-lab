@@ -631,6 +631,7 @@ async def chat(
                 session_id=actual_session_id,
                 thread_id=thread_id,
                 run_id=run_id,
+                output={"tool_call_count": 1},
             )
             yield _sse("final_answer", payload)
 
@@ -645,6 +646,7 @@ async def chat(
         route_decision = classify_request(user_role, request.message)
     except Exception as exc:
         route_timer.finish(status="error", error_type=type(exc).__name__)
+        request_timer.finish(status="error", stop_reason="router_error")
         raise
     else:
         route_timer.finish(status="ok")
@@ -839,7 +841,7 @@ async def chat(
                                     session_id=actual_session_id,
                                     thread_id=thread_id,
                                     run_id=run_id,
-                                    output={**run_totals, **output},
+                                    output={**output, **run_totals},
                                 )
                             yield _sse("final_answer", payload)
                         if output.get("pending_hitl"):
@@ -868,7 +870,7 @@ async def chat(
                                     session_id=actual_session_id,
                                     thread_id=thread_id,
                                     run_id=run_id,
-                                    output={**run_totals, **output},
+                                    output={**output, **run_totals},
                                 )
                             yield _sse("hitl_request", payload)
 
