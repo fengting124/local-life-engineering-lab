@@ -15,34 +15,60 @@ import structlog
 log = structlog.get_logger(__name__)
 
 
-@asynccontextmanager
-async def genai_span(name: str, kind: str, **attrs: Any):
-    span_id = uuid.uuid4().hex[:16]
-    start = time.perf_counter()
-    log.info("genai_span_start", span_id=span_id, span_name=name, span_kind=kind, **attrs)
+def _safe_log(event: str, **attrs: Any) -> None:
     try:
-        yield span_id
-    except Exception as exc:
-        duration_ms = int((time.perf_counter() - start) * 1000)
-        log.info(
-            "genai_span_end",
-            span_id=span_id,
+        log.info(event, **attrs)
+    except Exception:
+        # Instrumentation is observational; logging failure must not alter work.
+        pass
+
+
+class SpanTimer:
+    """Fail-open structured span that can cross an async generator lifetime."""
+
+    def __init__(self, name: str, kind: str, **attrs: Any):
+        self.span_id = uuid.uuid4().hex[:16]
+        self.name = name
+        self.kind = kind
+        self.attrs = attrs
+        self.started_at = time.perf_counter()
+        self._finished = False
+        _safe_log(
+            "genai_span_start",
+            span_id=self.span_id,
             span_name=name,
             span_kind=kind,
+            **attrs,
+        )
+
+    def finish(self, status: str = "ok", **attrs: Any) -> bool:
+        if self._finished:
+            return False
+        self._finished = True
+        duration_ms = int((time.perf_counter() - self.started_at) * 1000)
+        _safe_log(
+            "genai_span_end",
+            span_id=self.span_id,
+            span_name=self.name,
+            span_kind=self.kind,
             duration_ms=duration_ms,
+            status=status,
+            **self.attrs,
+            **attrs,
+        )
+        return True
+
+
+@asynccontextmanager
+async def genai_span(name: str, kind: str, **attrs: Any):
+    timer = SpanTimer(name, kind, **attrs)
+    try:
+        yield timer.span_id
+    except Exception as exc:
+        timer.finish(
             status="error",
             error=str(exc)[:200],
-            **attrs,
         )
         raise
     else:
-        duration_ms = int((time.perf_counter() - start) * 1000)
-        log.info(
-            "genai_span_end",
-            span_id=span_id,
-            span_name=name,
-            span_kind=kind,
-            duration_ms=duration_ms,
-            status="ok",
-            **attrs,
-        )
+        timer.finish()

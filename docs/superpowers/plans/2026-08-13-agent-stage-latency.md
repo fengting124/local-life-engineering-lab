@@ -38,11 +38,11 @@
 - Produces: `SpanTimer(name: str, kind: str, **attrs)`, `finish(status="ok", **attrs)`, and existing `genai_span` backed by that timer.
 - Produces: `record_llm_call(role, input_tokens, output_tokens, duration_seconds) -> bool`, returning false for missing/invalid usage and never raising into business code.
 
-- [ ] **Step 1: Add RED tests** proving span logging failures do not replace business results, duplicate finish is harmless, negative/missing tokens do not mutate counters, unknown roles normalize to `unknown`, and no session/thread/trace labels exist on LLM metrics.
-- [ ] **Step 2: Run** `pytest -q tests/test_trace.py tests/test_metrics.py` and confirm failures identify the missing fail-open timer and validation.
-- [ ] **Step 3: Implement** the minimum timer and safe metric adapter. Keep the current span event names and duration semantics.
-- [ ] **Step 4: Re-run** the focused tests and `git diff --check`.
-- [ ] **Step 5: Commit** as `feat(perf): add fail-open stage measurement primitives` with Goal/Changes/Verification/Risk body.
+- [x] **Step 1: Add RED tests** proving span logging failures do not replace business results, duplicate finish is harmless, negative/missing tokens do not mutate counters, unknown roles normalize to `unknown`, and no session/thread/trace labels exist on LLM metrics.
+- [x] **Step 2: Run** `pytest -q tests/test_trace.py tests/test_metrics.py` and confirm failures identify the missing fail-open timer and validation.
+- [x] **Step 3: Implement** the minimum timer and safe metric adapter. Keep the current span event names and duration semantics.
+- [x] **Step 4: Re-run** the focused tests and `git diff --check`.
+- [x] **Step 5: Commit** as `feat(perf): add fail-open stage measurement primitives` with Goal/Changes/Verification/Risk body.
 
 ### Task 2: Connect real LLM duration and token usage
 
