@@ -139,7 +139,7 @@ async def test_valid_missing_order_stops_after_one_query(monkeypatch):
         side_effect=McpToolError("not_found", "订单不存在")
     )
     monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
-    monkeypatch.setattr(nodes, "_llm", ScriptedLLM([AIMessage(
+    scripted = ScriptedLLM([AIMessage(
         content="",
         tool_calls=[{
             "name": "query_order",
@@ -147,7 +147,8 @@ async def test_valid_missing_order_stops_after_one_query(monkeypatch):
             "id": "call-missing-order",
             "type": "tool_call",
         }],
-    )]))
+    )])
+    monkeypatch.setattr(nodes, "_llm", scripted)
 
     from agent.graph import build_graph
     graph = build_graph()
@@ -161,8 +162,65 @@ async def test_valid_missing_order_stops_after_one_query(monkeypatch):
     )
 
     mock_mcp.call_tool.assert_awaited_once()
+    assert scripted._i == 0
+    assert final_state["llm_call_count"] == 0
     assert final_state["stop_reason"] == "not_found"
     assert "未找到" in final_state["final_answer"]
+
+
+@pytest.mark.asyncio
+async def test_controlled_order_tool_timeout_is_not_reported_as_success(monkeypatch):
+    _force_memory_saver(monkeypatch)
+    mock_mcp = MagicMock()
+    mock_mcp.list_tools = AsyncMock(return_value=[{
+        "name": "query_order",
+        "description": "查询订单",
+    }])
+    mock_mcp.call_tool = AsyncMock(
+        side_effect=McpToolError("tool_timeout", "查询超时")
+    )
+    monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+    scripted = ScriptedLLM([AIMessage(content="不应调用模型。")])
+    monkeypatch.setattr(nodes, "_llm", scripted)
+
+    from agent.graph import build_graph
+    graph = build_graph()
+    message = "查询订单 202606100001 的状态"
+    decision = classify_request("cs", message)
+    final_state = await graph.ainvoke(
+        _initial_state(decision, message, thread_id="e2e-order-timeout"),
+        config={"configurable": {"thread_id": "e2e-order-timeout"}},
+    )
+
+    assert mock_mcp.call_tool.await_count == 2
+    assert scripted._i == 0
+    assert final_state["llm_call_count"] == 0
+    assert final_state["stop_reason"] == "timeout"
+    assert "完成" not in final_state["final_answer"]
+
+
+@pytest.mark.asyncio
+async def test_malformed_order_clarifies_without_llm_or_mcp(monkeypatch):
+    _force_memory_saver(monkeypatch)
+    mcp_factory = MagicMock()
+    fake_llm = MagicMock()
+    fake_llm.ainvoke = AsyncMock()
+    monkeypatch.setattr(nodes, "McpClient", mcp_factory)
+    monkeypatch.setattr(nodes, "_llm", fake_llm)
+
+    from agent.graph import build_graph
+    graph = build_graph()
+    message = "查询订单 ORDER_00000000 的状态"
+    decision = classify_request("cs", message)
+    final_state = await graph.ainvoke(
+        _initial_state(decision, message, thread_id="e2e-malformed-order"),
+        config={"configurable": {"thread_id": "e2e-malformed-order"}},
+    )
+
+    assert final_state["stop_reason"] == "clarification"
+    assert final_state["llm_call_count"] == 0
+    mcp_factory.assert_not_called()
+    fake_llm.ainvoke.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -302,27 +360,7 @@ async def test_payment_diagnosis_uses_two_tools_then_deterministic_answer(
 
     mock_mcp.call_tool = AsyncMock(side_effect=call_tool)
     monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
-    scripted = ScriptedLLM([
-        AIMessage(
-            content="",
-            tool_calls=[{
-                "name": "query_order",
-                "args": {"order_id": "202606100001"},
-                "id": "call-order",
-                "type": "tool_call",
-            }],
-        ),
-        AIMessage(
-            content="",
-            tool_calls=[{
-                "name": "query_payment",
-                "args": {"order_id": "202606100001"},
-                "id": "call-payment",
-                "type": "tool_call",
-            }],
-        ),
-        AIMessage(content="不应调用第三次模型。"),
-    ])
+    scripted = ScriptedLLM([AIMessage(content="不应调用模型。")])
     monkeypatch.setattr(nodes, "_llm", scripted)
 
     from agent.graph import build_graph
@@ -361,9 +399,166 @@ async def test_payment_diagnosis_uses_two_tools_then_deterministic_answer(
         "query_order",
         "query_payment",
     ]
-    assert scripted._i == 2
+    assert scripted._i == 0
+    assert final_state["llm_call_count"] == 0
+    assert final_state["llm_input_tokens"] == 0
+    assert final_state["llm_output_tokens"] == 0
     assert final_state["final_answer"] == (
         "订单状态：待支付；支付状态：支付成功。"
+    )
+    assert final_state["stop_reason"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_order_query_uses_one_tool_and_zero_llm(monkeypatch):
+    _force_memory_saver(monkeypatch)
+    mock_mcp = MagicMock()
+    mock_mcp.list_tools = AsyncMock(return_value=[{
+        "name": "query_order",
+        "description": "查询订单",
+        "inputSchema": {"type": "object", "properties": {}},
+    }])
+    mock_mcp.call_tool = AsyncMock(return_value=(
+        '{"order_no":"202606100001","order_status":"PAID",'
+        '"payment":{"pay_status":"SUCCESS"}}'
+    ))
+    monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+    scripted = ScriptedLLM([AIMessage(content="不应调用模型。")])
+    monkeypatch.setattr(nodes, "_llm", scripted)
+
+    from agent.graph import build_graph
+    graph = build_graph()
+    message = "查询订单 202606100001 的状态"
+    decision = classify_request("cs", message)
+    final_state = await graph.ainvoke(
+        _initial_state(decision, message, thread_id="e2e-order-fast-path"),
+        config={"configurable": {"thread_id": "e2e-order-fast-path"}},
+    )
+
+    assert [call.kwargs["tool_name"] for call in mock_mcp.call_tool.await_args_list] == [
+        "query_order"
+    ]
+    assert mock_mcp.call_tool.await_args.kwargs["arguments"] == {
+        "order_id": "202606100001"
+    }
+    assert scripted._i == 0
+    assert final_state["llm_call_count"] == 0
+    assert final_state["llm_input_tokens"] == 0
+    assert final_state["llm_output_tokens"] == 0
+    assert final_state["final_answer"] == "订单状态：已支付。"
+    assert final_state["stop_reason"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_order_response_for_another_valid_order_fails_closed(monkeypatch):
+    _force_memory_saver(monkeypatch)
+    mock_mcp = MagicMock()
+    mock_mcp.list_tools = AsyncMock(return_value=[{
+        "name": "query_order",
+        "description": "查询订单",
+    }])
+    mock_mcp.call_tool = AsyncMock(return_value=(
+        '{"order_no":"202606100002","order_status":"PAID"}'
+    ))
+    monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+    scripted = ScriptedLLM([AIMessage(content="不应调用模型。")])
+    monkeypatch.setattr(nodes, "_llm", scripted)
+
+    from agent.graph import build_graph
+    graph = build_graph()
+    message = "查询订单 202606100001 的状态"
+    decision = classify_request("cs", message)
+    final_state = await graph.ainvoke(
+        _initial_state(decision, message, thread_id="e2e-order-binding"),
+        config={"configurable": {"thread_id": "e2e-order-binding"}},
+    )
+
+    mock_mcp.call_tool.assert_awaited_once()
+    assert scripted._i == 0
+    assert final_state["stop_reason"] == "internal_error"
+    assert "已支付" not in final_state["final_answer"]
+
+
+@pytest.mark.asyncio
+async def test_cs_coupon_status_stops_before_admin_tool(monkeypatch):
+    _force_memory_saver(monkeypatch)
+    mock_mcp = MagicMock()
+    mock_mcp.list_tools = AsyncMock(return_value=[
+        {"name": "query_order", "description": "查询订单"},
+        {"name": "query_coupon_issue_log", "description": "查询发券日志"},
+    ])
+    mock_mcp.call_tool = AsyncMock(return_value=(
+        '{"order_no":"202606100001","order_status":"PAID"}'
+    ))
+    monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+    scripted = ScriptedLLM([AIMessage(content="不应调用模型。")])
+    monkeypatch.setattr(nodes, "_llm", scripted)
+
+    from agent.graph import build_graph
+    graph = build_graph()
+    message = "订单 202606100001 支付成功但没发券，查一下"
+    decision = classify_request("cs", message)
+    final_state = await graph.ainvoke(
+        _initial_state(decision, message, thread_id="e2e-cs-coupon-fast-path"),
+        config={"configurable": {"thread_id": "e2e-cs-coupon-fast-path"}},
+    )
+
+    assert [call.kwargs["tool_name"] for call in mock_mcp.call_tool.await_args_list] == [
+        "query_order"
+    ]
+    assert scripted._i == 0
+    assert final_state["stop_reason"] == "permission_denied"
+
+
+@pytest.mark.asyncio
+async def test_coupon_diagnosis_uses_two_tools_and_zero_llm(monkeypatch):
+    _force_memory_saver(monkeypatch)
+    mock_mcp = MagicMock()
+    mock_mcp.list_tools = AsyncMock(return_value=[
+        {"name": "query_order", "description": "查询订单"},
+        {"name": "query_coupon_issue_log", "description": "查询发券日志"},
+    ])
+
+    async def call_tool(*, tool_name, arguments, **_context):
+        assert arguments == {"order_id": "202606100001"}
+        if tool_name == "query_order":
+            return '{"order_no":"202606100001","order_status":"PAID"}'
+        if tool_name == "query_coupon_issue_log":
+            return (
+                '{"coupon":{"coupon_status":"UNUSED"},'
+                '"outbox_messages":[{"status":"SENT"}]}'
+            )
+        raise AssertionError(f"unexpected tool: {tool_name}")
+
+    mock_mcp.call_tool = AsyncMock(side_effect=call_tool)
+    monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+    scripted = ScriptedLLM([AIMessage(content="不应调用模型。")])
+    monkeypatch.setattr(nodes, "_llm", scripted)
+
+    from agent.graph import build_graph
+    graph = build_graph()
+    message = "订单 202606100001 支付成功但没发券，查一下"
+    decision = classify_request("admin", message)
+    final_state = await graph.ainvoke(
+        _initial_state(
+            decision,
+            message,
+            role="admin",
+            thread_id="e2e-coupon-fast-path",
+        ),
+        config={"configurable": {"thread_id": "e2e-coupon-fast-path"}},
+    )
+
+    assert [call.kwargs["tool_name"] for call in mock_mcp.call_tool.await_args_list] == [
+        "query_order",
+        "query_coupon_issue_log",
+    ]
+    assert scripted._i == 0
+    assert final_state["llm_call_count"] == 0
+    assert final_state["llm_input_tokens"] == 0
+    assert final_state["llm_output_tokens"] == 0
+    assert final_state["final_answer"] == (
+        "订单状态：已支付；发券状态：已发券；优惠券状态：未使用。"
     )
     assert final_state["stop_reason"] == "completed"
 
@@ -469,7 +664,7 @@ async def test_missing_next_required_tool_finishes_as_internal_error(monkeypatch
 
     assert final_state["evidence_stop_reason"] == "internal_error"
     assert final_state["stop_reason"] == "internal_error"
-    assert scripted._i == 1
+    assert scripted._i == 0
     mock_mcp.call_tool.assert_awaited_once()
 
 

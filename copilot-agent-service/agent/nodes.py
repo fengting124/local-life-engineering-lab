@@ -12,6 +12,7 @@ LangGraph 负责 merge 到完整 state，节点之间通过 state 传递信息�
   final_node     → 生成最终回答，结束循环
 """
 import json
+import re
 import time
 import structlog
 from collections.abc import Mapping
@@ -41,6 +42,11 @@ ORDER_SCOPED_TOOLS = {
     "query_mq_dead_letter",
     "resolve_compensation_coupon",
     *HITL_TOOLS,
+}
+CONTROLLED_DISPATCH_PLANS = {
+    "order_query": ("query_order",),
+    "payment_diagnosis": ("query_order", "query_payment"),
+    "coupon_issue": ("query_order", "query_coupon_issue_log"),
 }
 
 # =========================================================
@@ -446,6 +452,82 @@ def _build_compensation_resolver_call(state: AgentState) -> AIMessage | None:
     }])
 
 
+def _bound_controlled_order_id(
+    state: AgentState,
+    next_tool: str,
+) -> str | None:
+    expected_hash = state.get("route_target_order_hash")
+    if not isinstance(expected_hash, str) or not expected_hash:
+        return None
+
+    if next_tool == "query_order":
+        current_message = next(
+            (
+                message
+                for message in reversed(state.get("messages", []))
+                if isinstance(message, HumanMessage)
+            ),
+            None,
+        )
+        if current_message is None:
+            return None
+        candidates = {
+            candidate
+            for candidate in re.findall(
+                r"(?<!\d)\d{12,}(?!\d)", str(current_message.content)
+            )
+            if order_target_hash(candidate) == expected_hash
+        }
+        return next(iter(candidates)) if len(candidates) == 1 else None
+
+    evidence = state.get("evidence_collected", {}).get("query_order")
+    if not isinstance(evidence, Mapping) or evidence.get("status") != "success":
+        return None
+    facts = evidence.get("facts")
+    if not isinstance(facts, Mapping) or facts.get("found") is not True:
+        return None
+    order = _latest_tool_payload(state.get("messages", []), "query_order")
+    if order is None:
+        return None
+    order_id = order.get("order_no")
+    if not isinstance(order_id, str) or order_target_hash(order_id) != expected_hash:
+        return None
+    return order_id.strip()
+
+
+def _build_controlled_dispatch(
+    state: AgentState,
+    routed_tools: list[dict],
+) -> tuple[AIMessage | None, str | None]:
+    """Build one predetermined ToolCall while retaining tool_node enforcement."""
+    if state.get("route_mode") != "controlled":
+        return None, None
+    task_type = state.get("route_task_type")
+    plan = CONTROLLED_DISPATCH_PLANS.get(task_type)
+    if plan is None:
+        return None, None
+    if tuple(state.get("route_required_tools", ())) != plan:
+        return None, "invalid_controlled_plan"
+
+    next_tool = state.get("route_next_tool")
+    if next_tool not in plan:
+        return None, "invalid_controlled_next_tool"
+    if next_tool not in state.get("route_authorized_tools", ()):
+        return None, "unauthorized_controlled_tool"
+    if next_tool not in {tool.get("name") for tool in routed_tools}:
+        return None, "controlled_tool_not_routed"
+
+    order_id = _bound_controlled_order_id(state, next_tool)
+    if order_id is None:
+        return None, "controlled_order_binding_failed"
+    return AIMessage(content="", tool_calls=[{
+        "name": next_tool,
+        "args": {"order_id": order_id},
+        "id": f"controlled-{next_tool}-{state['step_count']}",
+        "type": "tool_call",
+    }]), None
+
+
 async def llm_node(state: AgentState) -> dict:
     """
     LLM 节点：调用 Claude 决定下一步动作。
@@ -468,6 +550,7 @@ async def llm_node(state: AgentState) -> dict:
         response = None
     high_risk_proposal_stop_reason = None
     controlled_tool_unavailable = False
+    controlled_dispatch_error = None
     if response is None:
         tools = []
         llm_with_tools = _llm
@@ -522,15 +605,26 @@ async def llm_node(state: AgentState) -> dict:
                 ]
                 tools = router.route(complete_tool_specs)
 
+                response, controlled_dispatch_error = _build_controlled_dispatch(
+                    state,
+                    tools,
+                )
+                if controlled_dispatch_error is not None:
+                    response = AIMessage(
+                        content="抱歉，受控查询参数校验失败，无法安全执行该请求。"
+                    )
+
                 if (
-                    settings.llm_provider.lower() == "deepseek"
+                    response is None
+                    and settings.llm_provider.lower() == "deepseek"
                     and next_tool == "resolve_compensation_coupon"
                     and tools
                 ):
                     response = _build_compensation_resolver_call(state)
 
                 if (
-                    settings.llm_provider.lower() == "deepseek"
+                    response is None
+                    and settings.llm_provider.lower() == "deepseek"
                     and next_tool in HITL_TOOLS
                     and tools
                 ):
@@ -732,6 +826,18 @@ async def llm_node(state: AgentState) -> dict:
             "evidence_stop_reason": high_risk_proposal_stop_reason,
         })
     if controlled_tool_unavailable:
+        update.update({
+            "route_next_tool": None,
+            "evidence_stop_reason": "internal_error",
+            "stop_reason": "internal_error",
+        })
+    if controlled_dispatch_error is not None:
+        log.warning(
+            "controlled_dispatch_rejected",
+            reason=controlled_dispatch_error,
+            task_type=state.get("route_task_type"),
+            tool=state.get("route_next_tool"),
+        )
         update.update({
             "route_next_tool": None,
             "evidence_stop_reason": "internal_error",

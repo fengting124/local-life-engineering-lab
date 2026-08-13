@@ -487,6 +487,11 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
                 task_type,
                 diagnostic_scores[task_type],
                 required_tools=TASK_TOOL_PLANS[task_type],
+                target_order_hash=(
+                    order_target_hash(order_ids[0])
+                    if task_type in {"payment_diagnosis", "coupon_issue"}
+                    else None
+                ),
             )
 
     if analytics_intent:
@@ -532,6 +537,7 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
             "order_query",
             80,
             required_tools=TASK_TOOL_PLANS["order_query"],
+            target_order_hash=order_target_hash(order_ids[0]),
         )
 
     has_business_entity = _contains_any(
