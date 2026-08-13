@@ -247,3 +247,14 @@ def record_llm_call(
         return True
     except Exception:
         return False
+
+
+def record_llm_latency(role: str, duration_seconds: float) -> bool:
+    """Record an attempted LLM call when provider usage is unavailable."""
+    if duration_seconds < 0:
+        return False
+    try:
+        llm_latency_seconds.labels(role=_role_label(role)).observe(duration_seconds)
+        return True
+    except Exception:
+        return False

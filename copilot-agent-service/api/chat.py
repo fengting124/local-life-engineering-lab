@@ -728,26 +728,26 @@ async def chat(
             "tool_call_count": 0,
         }
         graph_timer: SpanTimer | None = None
-        await _safe_mark_runtime_status(run_id, "RUNNING")
-        payload = {
-            "session_id": str(actual_session_id),
-            "thread_id":  thread_id,
-            "run_id":     run_id,
-            "trace_id":   request_trace_id,
-        }
-        await _safe_append_runtime_event(
-            run_id=run_id,
-            session_id=actual_session_id,
-            thread_id=thread_id,
-            sequence_index=seq,
-            event_type="session_started",
-            event_name=None,
-            payload=payload,
-            trace_id=request_trace_id,
-        )
-        seq += 1
-        yield _sse("session_started", payload)
         try:
+            await _safe_mark_runtime_status(run_id, "RUNNING")
+            payload = {
+                "session_id": str(actual_session_id),
+                "thread_id":  thread_id,
+                "run_id":     run_id,
+                "trace_id":   request_trace_id,
+            }
+            await _safe_append_runtime_event(
+                run_id=run_id,
+                session_id=actual_session_id,
+                thread_id=thread_id,
+                sequence_index=seq,
+                event_type="session_started",
+                event_name=None,
+                payload=payload,
+                trace_id=request_trace_id,
+            )
+            seq += 1
+            yield _sse("session_started", payload)
             # astream_events 以事件流形式输出每个节点的执行过程
             graph_timer = SpanTimer(
                 "graph.total",

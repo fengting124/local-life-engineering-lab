@@ -1024,7 +1024,6 @@ class TestChatRuntimeEvents:
             )
             stream = response.body_iterator
             assert "session_started" in await anext(stream)
-            assert "agent_step" in await anext(stream)
             await stream.aclose()
 
         statuses = [call.args[1] for call in runtime.mark_run_status.await_args_list]

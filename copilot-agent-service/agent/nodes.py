@@ -1418,16 +1418,38 @@ async def _summarize_messages(
 直接输出摘要正文（纯文本），不要加标题、不要加解释。"""
 
     started_at = time.perf_counter()
-    async with genai_span(
-        "llm.invoke",
-        "llm",
-        provider=settings.llm_provider,
-        model=settings.llm_model or "provider-default",
-        operation="compact",
-        session_id=state.get("session_id"),
-        thread_id=state.get("thread_id"),
-    ):
-        response = await _llm.ainvoke([HumanMessage(content=prompt)])
+    try:
+        async with genai_span(
+            "llm.invoke",
+            "llm",
+            provider=settings.llm_provider,
+            model=settings.llm_model or "provider-default",
+            operation="compact",
+            session_id=state.get("session_id"),
+            thread_id=state.get("thread_id"),
+        ):
+            response = await _llm.ainvoke([HumanMessage(content=prompt)])
+    except Exception:
+        duration_seconds = time.perf_counter() - started_at
+        from agent.metrics import record_llm_latency
+        record_llm_latency(state.get("user_role", "unknown"), duration_seconds)
+        try:
+            log.info(
+                "llm_call_measured",
+                session_id=state.get("session_id"),
+                thread_id=state.get("thread_id"),
+                operation="compact",
+                provider=settings.llm_provider,
+                model=settings.llm_model or "provider-default",
+                duration_ms=int(duration_seconds * 1000),
+                input_tokens=None,
+                output_tokens=None,
+                total_tokens=None,
+                usage_status="missing",
+            )
+        except Exception:
+            pass
+        raise
     duration_seconds = time.perf_counter() - started_at
     usage = getattr(response, "usage_metadata", {}) or {}
     input_tokens = usage.get("input_tokens") if isinstance(usage, Mapping) else None
@@ -1519,7 +1541,13 @@ async def compact_node(state: AgentState) -> dict:
         failures = state.get("compact_failures", 0) + 1
         log.warning("compact_summarize_failed", error=str(e), consecutive_failures=failures)
         record_compact_event("failed")
-        return {"compact_failures": failures}
+        return {
+            "compact_failures": failures,
+            "llm_call_count": state.get("llm_call_count", 0) + 1,
+            "llm_input_tokens": state.get("llm_input_tokens", 0),
+            "llm_output_tokens": state.get("llm_output_tokens", 0),
+            "llm_usage_missing_count": state.get("llm_usage_missing_count", 0) + 1,
+        }
 
     # 用 RemoveMessage 从 state 中删除被摘要的旧消息（add_messages reducer 按 id 匹配删除）
     removals = [RemoveMessage(id=m.id) for m in to_summarize if getattr(m, "id", None)]

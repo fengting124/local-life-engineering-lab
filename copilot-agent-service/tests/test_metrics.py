@@ -51,6 +51,15 @@ def test_record_llm_call_normalizes_role_and_never_raises(monkeypatch):
     assert metrics.record_llm_call("merchant", 1, 1, 0.1) is False
 
 
+def test_record_llm_latency_records_failed_attempt_without_tokens(monkeypatch):
+    latency = FakeMetric()
+    monkeypatch.setattr(metrics, "llm_latency_seconds", latency)
+
+    assert metrics.record_llm_latency("merchant", 1.25) is True
+    assert latency.label_calls == [{"role": "merchant"}]
+    assert latency.values == [1.25]
+
+
 def test_llm_metrics_have_only_low_cardinality_labels():
     assert metrics.llm_tokens_total._labelnames == ("role", "token_type")
     assert metrics.llm_latency_seconds._labelnames == ("role",)

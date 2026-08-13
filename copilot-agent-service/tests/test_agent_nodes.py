@@ -1152,6 +1152,39 @@ class TestLlmNode:
         assert measured[0].kwargs["operation"] == "compact"
 
     @pytest.mark.asyncio
+    async def test_failed_compaction_counts_attempt_without_inventing_tokens(
+        self, monkeypatch
+    ):
+        from agent import metrics
+
+        fake_llm = AsyncMock()
+        fake_llm.ainvoke.side_effect = RuntimeError("provider unavailable")
+        info = MagicMock()
+        latency = MagicMock(return_value=True)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.log, "info", info)
+        monkeypatch.setattr(metrics, "record_llm_latency", latency)
+
+        messages = [HumanMessage(content=f"message {index}", id=str(index)) for index in range(8)]
+        result = await nodes.compact_node(make_state(
+            messages,
+            llm_call_count=2,
+            llm_input_tokens=20,
+            llm_output_tokens=5,
+            llm_usage_missing_count=0,
+        ))
+
+        assert result["compact_failures"] == 1
+        assert result["llm_call_count"] == 3
+        assert result["llm_input_tokens"] == 20
+        assert result["llm_output_tokens"] == 5
+        assert result["llm_usage_missing_count"] == 1
+        latency.assert_called_once()
+        measured = [call for call in info.call_args_list if call.args == ("llm_call_measured",)]
+        assert len(measured) == 1
+        assert measured[0].kwargs["usage_status"] == "missing"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("usage", [None, {}, {"input_tokens": -1, "output_tokens": 2}])
     async def test_missing_or_invalid_llm_usage_stays_unknown(
         self, monkeypatch, usage
