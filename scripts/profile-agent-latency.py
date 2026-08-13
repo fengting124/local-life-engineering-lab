@@ -101,7 +101,8 @@ def summarize_stages(events: list[dict[str, Any]]) -> dict[str, int]:
         )
     graph_children = llm + tool + rag + list_tools + hitl
     graph_overhead = max(0, graph - graph_children)
-    other = max(0, total - session - router - graph)
+    direct_children = (llm + tool + rag + list_tools + hitl) if graph == 0 else 0
+    other = max(0, total - session - router - graph - direct_children)
     return {
         "total_ms": total,
         "session_ms": session,
@@ -135,8 +136,31 @@ def summarize_usage(events: list[dict[str, Any]]) -> dict[str, int | None]:
     }
 
 
+def summarize_tool_names(
+    events: list[dict[str, Any]], sse_tools: list[str]
+) -> list[str]:
+    names = list(sse_tools)
+    for event in events:
+        span_name = str(event.get("span_name", ""))
+        if event.get("event") != "genai_span_end" or not span_name.startswith("tool."):
+            continue
+        name = span_name.removeprefix("tool.")
+        if SAFE_TOOL_NAME.fullmatch(name):
+            names.append(name)
+    return list(dict.fromkeys(names))
+
+
 def percentage(value: int, total: int) -> float:
     return round(value * 100 / total, 1) if total > 0 else 0.0
+
+
+def terminal_succeeded(stop_reason: str, expected_pending: bool) -> bool:
+    if expected_pending:
+        return stop_reason in {"hitl_request", "pending_approval"}
+    return stop_reason not in {
+        "error", "stream_closed", "internal_error", "transport_failure",
+        "timeout", "protocol_error",
+    }
 
 
 def validate_artifact(value: Any, path: str = "root") -> None:
@@ -214,7 +238,7 @@ def _row(scenario: dict[str, Any], events: list[dict[str, Any]], terminal: str, 
     run = next((event for event in reversed(events) if event.get("event") == "agent_run_measured"), {})
     stages = summarize_stages(events)
     expected_pending = bool(scenario.get("expected_pending"))
-    success = terminal == "hitl_request" if expected_pending else terminal not in {"error", "stream_closed"}
+    success = terminal_succeeded(terminal, expected_pending)
     return {
         "name": scenario["name"],
         "role": scenario["role"],
@@ -222,7 +246,7 @@ def _row(scenario: dict[str, Any], events: list[dict[str, Any]], terminal: str, 
         "route_mode": run.get("route_mode", "unknown"),
         "stop_reason": run.get("stop_reason", terminal),
         "success": success,
-        "tools": tools,
+        "tools": summarize_tool_names(events, tools),
         "stages": stages,
         "stage_shares": {key: percentage(stages[key], stages["total_ms"]) for key in NON_OVERLAPPING_STAGE_KEYS},
         "usage": summarize_usage(events),

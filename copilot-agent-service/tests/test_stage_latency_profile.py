@@ -49,6 +49,20 @@ def test_stage_math_does_not_double_count_nested_mcp():
     assert stages["other_ms"] == 40
 
 
+def test_fast_path_direct_mcp_is_not_also_counted_as_other():
+    profiler = _load()
+    stages = profiler.summarize_stages([
+        {"event": "genai_span_end", "span_name": "request.total", "duration_ms": 100},
+        {"event": "genai_span_end", "span_name": "session.prepare", "duration_ms": 20},
+        {"event": "genai_span_end", "span_name": "router.classify", "duration_ms": 1},
+        {"event": "genai_span_end", "span_name": "mcp.rpc", "rpc_method": "tools/call", "duration_ms": 60},
+    ])
+
+    assert stages["tool_ms"] == 60
+    assert stages["other_ms"] == 19
+    assert sum(stages[key] for key in profiler.NON_OVERLAPPING_STAGE_KEYS) == 100
+
+
 def test_missing_usage_remains_null():
     profiler = _load()
     usage = profiler.summarize_usage([
@@ -82,3 +96,19 @@ def test_percentage_math_handles_zero_total():
     profiler = _load()
     assert profiler.percentage(5, 0) == 0.0
     assert profiler.percentage(25, 100) == 25.0
+
+
+def test_internal_error_is_not_a_successful_terminal():
+    profiler = _load()
+    assert profiler.terminal_succeeded("completed", expected_pending=False)
+    assert profiler.terminal_succeeded("hitl_request", expected_pending=True)
+    assert not profiler.terminal_succeeded("internal_error", expected_pending=False)
+
+
+def test_tool_names_fall_back_to_sanitized_span_names():
+    profiler = _load()
+    assert profiler.summarize_tool_names([
+        {"event": "genai_span_end", "span_name": "tool.query_order"},
+        {"event": "genai_span_end", "span_name": "tool.query_order"},
+        {"event": "genai_span_end", "span_name": "tool.BAD-NAME"},
+    ], []) == ["query_order"]
