@@ -34,7 +34,7 @@ from agent.evidence_gate import (
     normalize_tool_outcome,
 )
 from agent.state import AgentState
-from agent.tool_router import order_target_hash
+from agent.tool_router import extract_order_ids, order_target_hash
 from mcp.mcp_client import McpClient, McpToolError
 from config.settings import settings
 
@@ -480,9 +480,7 @@ def _bound_controlled_order_id(
             return None
         candidates = {
             candidate
-            for candidate in re.findall(
-                r"(?<!\d)\d{12,}(?!\d)", str(current_message.content)
-            )
+            for candidate in extract_order_ids(str(current_message.content))
             if order_target_hash(candidate) == expected_hash
         }
         return next(iter(candidates)) if len(candidates) == 1 else None
