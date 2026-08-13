@@ -101,6 +101,15 @@ _CURRENCY_AMOUNT_PATTERN = re.compile(
 )
 
 
+def _state_string_tuple(value: object) -> tuple[str, ...]:
+    """Return only well-formed string sequences from persisted route state."""
+    if not isinstance(value, (list, tuple)):
+        return ()
+    if not all(isinstance(item, str) for item in value):
+        return ()
+    return tuple(value)
+
+
 @dataclass(frozen=True)
 class RouteDecision:
     task_type: str
@@ -135,10 +144,12 @@ class RouteDecision:
             task_type=str(state.get("route_task_type", "unknown")),
             route_mode=route_mode,
             confidence=int(state.get("route_confidence", 0)),
-            required_tools=tuple(state.get("route_required_tools", ())),
-            authorized_tools=tuple(state.get("route_authorized_tools", ())),
+            required_tools=_state_string_tuple(state.get("route_required_tools")),
+            authorized_tools=_state_string_tuple(
+                state.get("route_authorized_tools")
+            ),
             next_tool=state.get("route_next_tool"),
-            missing_fields=tuple(state.get("route_missing_fields", ())),
+            missing_fields=_state_string_tuple(state.get("route_missing_fields")),
             target_order_hash=state.get("route_target_order_hash"),
             requested_amount_minor=state.get("route_requested_amount_minor"),
         )

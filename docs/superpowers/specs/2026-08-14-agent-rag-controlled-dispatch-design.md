@@ -56,4 +56,3 @@ through the existing `not_found` path without fabrication.
 - Docker Lite runs normal policy x3, no-hit x2, merchant-private x2 and
   permission-negative x2. Duplicate calls, internal errors and permission leaks
   must remain zero, and RAG must actually execute when authorized.
-

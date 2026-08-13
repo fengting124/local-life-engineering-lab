@@ -538,19 +538,30 @@ def _build_controlled_knowledge_dispatch(
         or state.get("route_task_type") != "knowledge"
     ):
         return None, None
-    if tuple(state.get("route_required_tools", ())) != ("knowledge_search",):
+    required_tools = state.get("route_required_tools")
+    if not isinstance(required_tools, (list, tuple)) or tuple(required_tools) != (
+        "knowledge_search",
+    ):
         return None, "invalid_controlled_knowledge_plan"
     if state.get("route_next_tool") != "knowledge_search":
         return None, "invalid_controlled_knowledge_next_tool"
-    if "knowledge_search" not in state.get("route_authorized_tools", ()):
+    authorized_tools = state.get("route_authorized_tools")
+    if not isinstance(authorized_tools, (list, tuple)) or tuple(
+        authorized_tools
+    ) != ("knowledge_search",):
         return None, "unauthorized_controlled_knowledge_tool"
-    if "knowledge_search" not in {tool.get("name") for tool in routed_tools}:
+    if not isinstance(routed_tools, list) or tuple(
+        tool.get("name") for tool in routed_tools if isinstance(tool, Mapping)
+    ) != ("knowledge_search",):
         return None, "controlled_knowledge_tool_not_routed"
 
+    messages = state.get("messages")
+    if not isinstance(messages, (list, tuple)):
+        return None, "controlled_knowledge_query_missing"
     current_message = next(
         (
             message
-            for message in reversed(state.get("messages", []))
+            for message in reversed(messages)
             if isinstance(message, HumanMessage)
         ),
         None,
@@ -560,7 +571,7 @@ def _build_controlled_knowledge_dispatch(
         return None, "controlled_knowledge_query_missing"
     return AIMessage(content="", tool_calls=[{
         "name": "knowledge_search",
-        "args": {"query": query.strip()},
+        "args": {"query": query},
         "id": f"controlled-knowledge_search-{state['step_count']}",
         "type": "tool_call",
     }]), None
