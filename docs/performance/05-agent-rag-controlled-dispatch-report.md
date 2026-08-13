@@ -5,7 +5,7 @@
 - Owners: Agent maintainers
 - Last verified: 2026-08-14
 - Source of truth: `agent/nodes.py`, Docker Lite structured traces, and the ignored one-shot artifact
-- Runtime source: `ff87be8`
+- Runtime source: `48433a9`
 - Environment: Docker Lite, DeepSeek V4 Flash, concurrency 1
 
 ## 结论
@@ -23,6 +23,7 @@ PR #39 中的重复 `knowledge_search` 已消失。公开政策 3 次、无命�
 | --- | --- |
 | Public-path Agent image | `sha256:3215656930e62e48584865efecba1cd2fa4f4452532272f8d891b31e83ef46eb` |
 | Clean final Agent image | `sha256:2cc7f1d34d8328dc033eb697295f56e81b2f27be74d7342ca4340bfa75227997` |
+| Post-review Agent image | `sha256:cdf37b754fbe72873e8ce3548a95ac9ebdd299e4029a181b562b4046d6c6ecdc` |
 | Runtime user | `appuser` |
 | Services | MySQL、Redis、Server、Copilot、Agent、Embedding、Reranker healthy |
 | Milvus Lite | `/app/data/local_life_kb.db`, volume `infra_agent_rag_data`, owner `appuser:appgroup` |
@@ -52,13 +53,20 @@ PR #39 中的重复 `knowledge_search` 已消失。公开政策 3 次、无命�
 | 门禁 | 结果 |
 | --- | --- |
 | 路由/RAG/Evidence Gate 组合回归 | 379 passed |
-| Agent full suite | 811 passed |
-| Coverage | 81.23%（门槛 45%） |
-| Mutation | 856/1201 killed，71.3%，other=0（门槛 50%） |
+| Post-review controlled knowledge regression | 11 passed（6 RED failures before fix） |
+| Agent full suite | 817 passed |
+| Coverage | 82.19%（门槛 45%） |
+| Mutation | 860/1205 killed，71.4%，other=0（门槛 50%） |
 | Docs / whitespace | passed |
 | Duplicate controlled calls | 0 |
 | Internal errors | 0 |
 | Permission leakage | 0 |
+
+独立审查发现并修复了三个合同边界：授权/路由工具超集、`None` 等畸形持久化状态、
+以及查询首尾空白被改写。修复后的真实 Docker 回归中，授权路径为 `completed`，
+`knowledge_search` x1、RAG x1、LLM x1；CS 负例为 `permission_denied`，工具、RAG、
+LLM 均为 0。首次重建误注入了占位 API Key，DeepSeek 合成返回 401；恢复仓库外私密
+配置后同一当前源码镜像通过，失败记录未被当作产品结果。
 
 ## 已知限制
 
