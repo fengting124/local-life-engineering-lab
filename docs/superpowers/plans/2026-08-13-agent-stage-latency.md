@@ -115,12 +115,12 @@
 - Consumes: current-source Agent image, current Lite fixtures, DeepSeek V4 Flash, and Task 4 collector.
 - Produces: one committed aggregate report with scenario table, stage/token shares, bottlenecks, next Fast Path candidates, graph-overhead decision, and limitations.
 
-- [ ] **Step 1: Rebuild** the Agent image from this worktree and verify its source/image SHA plus MySQL, Redis, Server, Copilot, Agent, Embedding, and Reranker health required by the selected scenarios.
-- [ ] **Step 2: Run** the ten scenarios once at concurrency one. If one trace is incomplete, diagnose and at most rerun only that scenario once, recording both attempts.
-- [ ] **Step 3: Validate** no refund/compensation approval was executed, no raw Prompt/answer/tool payload or credential appears in artifacts, and high-risk scenarios stop at PENDING.
-- [ ] **Step 4: Write** the short report answering all eight required questions; do not claim causality or capacity from one observation.
-- [ ] **Step 5: Run full gates:** Agent full suite, coverage gate, existing mutation workflow command, docs check, secret scan, and `git diff --check`.
-- [ ] **Step 6: Commit** report/contract evidence as `docs(perf): report agent stage latency baseline`.
+- [x] **Step 1: Rebuild** the Agent image from this worktree and verify its source/image SHA plus MySQL, Redis, Server, Copilot, Agent, Embedding, and Reranker health required by the selected scenarios.
+- [x] **Step 2: Run** the representative set once at concurrency one (`11` rows because today/month are separate Fast Path controls); no formal scenario was rerun.
+- [x] **Step 3: Validate** no refund/compensation approval was executed, no raw Prompt/answer/tool payload or credential appears in artifacts, and high-risk scenarios stop at PENDING.
+- [x] **Step 4: Write** the short report answering all eight required questions; do not claim causality or capacity from one observation.
+- [x] **Step 5: Run full gates:** Agent full suite (`767 passed`, coverage `80.13%`), mutation (`843/1188`, `71.0%`, other `0`), docs (`83` files), secret scan, and `git diff --check`.
+- [x] **Step 6: Commit** report/contract evidence as `docs(perf): report agent stage latency baseline`.
 
 ### Task 6: Independent review and Draft PR
 

@@ -112,3 +112,15 @@ def test_tool_names_fall_back_to_sanitized_span_names():
         {"event": "genai_span_end", "span_name": "tool.query_order"},
         {"event": "genai_span_end", "span_name": "tool.BAD-NAME"},
     ], []) == ["query_order"]
+
+
+def test_row_keeps_real_tool_call_count_from_run_summary():
+    profiler = _load()
+    row = profiler._row(
+        {"name": "multi", "role": "admin"},
+        [{"event": "agent_run_measured", "stop_reason": "completed", "tool_call_count": 3}],
+        "completed",
+        ["query_order"],
+    )
+
+    assert row["tool_call_count"] == 3
