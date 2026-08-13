@@ -96,11 +96,11 @@
 - Produces: sanitized JSON schema with runtime metadata, scenario rows, non-overlapping stage totals/shares, nullable token totals, safe tool names, and no-rerun disclosure.
 - Produces: Markdown table and the eight required analysis answers from the same in-memory result.
 
-- [ ] **Step 1: Add RED tests** for span parsing, trace filtering, nested-span non-double-counting, missing token preservation, percentage math, allowed artifact keys, and forbidden content rejection.
-- [ ] **Step 2: Run** `pytest -q tests/test_stage_latency_profile.py` and confirm the collector is absent.
-- [ ] **Step 3: Implement** the standard-library/httpx collector with ten fixture-backed scenario descriptors; never approve HITL and never persist request/answer text.
-- [ ] **Step 4: Run** collector unit tests, `python3 -m py_compile scripts/profile-agent-latency.py`, and `git diff --check`.
-- [ ] **Step 5: Commit** as `test(perf): add sanitized agent latency profiler`.
+- [x] **Step 1: Add RED tests** for span parsing, trace filtering, nested-span non-double-counting, missing token preservation, percentage math, allowed artifact keys, and forbidden content rejection.
+- [x] **Step 2: Run** `pytest -q tests/test_stage_latency_profile.py` and confirm the collector is absent (`5 failed`).
+- [x] **Step 3: Implement** the standard-library collector with fixture-backed scenario descriptors; never approve HITL and never persist request/answer text.
+- [x] **Step 4: Run** collector unit tests (`5 passed`), `python3 -m py_compile scripts/profile-agent-latency.py`, and `git diff --check`.
+- [x] **Step 5: Commit** as `test(perf): add sanitized agent latency profiler`.
 
 ### Task 5: Docker measurement, report, and full gates
 
