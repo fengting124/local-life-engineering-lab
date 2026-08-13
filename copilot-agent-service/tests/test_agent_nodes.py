@@ -2413,6 +2413,8 @@ class TestLlmNode:
             ({"route_next_tool": None}, "next_tool"),
             ({"messages": [HumanMessage(content="   ")]}, "query"),
             ({"messages": None}, "malformed messages"),
+            ({"messages": [HumanMessage(content="旧问题"), None]}, "malformed message item"),
+            ({"messages": [HumanMessage(content="旧问题"), {"type": "human", "content": "当前问题"}]}, "stale query"),
         ],
     )
     async def test_controlled_knowledge_invalid_state_fails_closed(
@@ -2455,6 +2457,32 @@ class TestLlmNode:
                 {"name": "knowledge_search"},
                 {"name": "coupon_policy_lookup"},
             ],
+        )
+
+        assert response is None
+        assert error == "controlled_knowledge_tool_not_routed"
+
+    @pytest.mark.parametrize(
+        "routed_tools",
+        [
+            [{"name": "knowledge_search"}, None],
+            [None, {"name": "knowledge_search"}],
+            [{"name": "knowledge_search"}, "malformed"],
+        ],
+    )
+    def test_controlled_knowledge_rejects_malformed_routed_tool_items(
+        self, routed_tools
+    ):
+        response, error = nodes._build_controlled_knowledge_dispatch(
+            make_state(
+                [HumanMessage(content="平台规则是什么")],
+                route_task_type="knowledge",
+                route_mode="controlled",
+                route_required_tools=["knowledge_search"],
+                route_authorized_tools=["knowledge_search"],
+                route_next_tool="knowledge_search",
+            ),
+            routed_tools,
         )
 
         assert response is None

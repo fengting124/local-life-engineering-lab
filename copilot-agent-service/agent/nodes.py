@@ -16,7 +16,14 @@ import re
 import time
 import structlog
 from collections.abc import Mapping
-from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage, RemoveMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    RemoveMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from agent.trace import SpanTimer, genai_span
 from langchain_core.language_models import BaseChatModel
 
@@ -550,13 +557,19 @@ def _build_controlled_knowledge_dispatch(
         authorized_tools
     ) != ("knowledge_search",):
         return None, "unauthorized_controlled_knowledge_tool"
-    if not isinstance(routed_tools, list) or tuple(
-        tool.get("name") for tool in routed_tools if isinstance(tool, Mapping)
-    ) != ("knowledge_search",):
+    if (
+        not isinstance(routed_tools, list)
+        or len(routed_tools) != 1
+        or not isinstance(routed_tools[0], Mapping)
+        or routed_tools[0].get("name") != "knowledge_search"
+    ):
         return None, "controlled_knowledge_tool_not_routed"
 
     messages = state.get("messages")
-    if not isinstance(messages, (list, tuple)):
+    if (
+        not isinstance(messages, (list, tuple))
+        or not all(isinstance(message, BaseMessage) for message in messages)
+    ):
         return None, "controlled_knowledge_query_missing"
     current_message = next(
         (
