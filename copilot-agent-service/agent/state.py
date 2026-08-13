@@ -37,6 +37,13 @@ class AgentState(TypedDict):
     # 当前会话已消耗 token 数（控制 token 预算终止条件）
     token_count: int
 
+    # Reliable provider-reported usage for this run. Missing usage is counted
+    # separately and never estimated from characters.
+    llm_call_count: int
+    llm_input_tokens: int
+    llm_output_tokens: int
+    llm_usage_missing_count: int
+
     # 已通过策略预检的工具调用计数。失败调用也保留，防止重试绕过预算。
     tool_call_count: int
     tool_call_counts: dict[str, int]

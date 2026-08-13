@@ -12,9 +12,11 @@ LangGraph 负责 merge 到完整 state，节点之间通过 state 传递信息�
   final_node     → 生成最终回答，结束循环
 """
 import json
+import time
 import structlog
 from collections.abc import Mapping
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage, RemoveMessage
+from agent.trace import SpanTimer, genai_span
 from langchain_core.language_models import BaseChatModel
 
 from agent.answer_facts import build_evidence_answer, validate_or_fallback
@@ -25,7 +27,6 @@ from agent.evidence_gate import (
 )
 from agent.state import AgentState
 from agent.tool_router import order_target_hash
-from agent.trace import genai_span
 from mcp.mcp_client import McpClient, McpToolError
 from config.settings import settings
 
@@ -452,6 +453,7 @@ async def llm_node(state: AgentState) -> dict:
     输入：完整消息历史 + 系统提示
     输出：新的 assistant 消息（含 tool_calls 或 Final Answer）
     """
+    llm_duration_seconds: float | None = None
     direct_answer = _direct_route_answer(state)
     evidence_answer = (
         build_evidence_answer(state) if direct_answer is None else None
@@ -586,6 +588,7 @@ async def llm_node(state: AgentState) -> dict:
             )
             messages = [system_msg] + state["messages"]
 
+            llm_started_at = time.perf_counter()
             async with genai_span(
                 "llm.invoke",
                 "llm",
@@ -596,6 +599,7 @@ async def llm_node(state: AgentState) -> dict:
                 thread_id=state.get("thread_id"),
             ):
                 response = await llm_with_tools.ainvoke(messages)
+            llm_duration_seconds = time.perf_counter() - llm_started_at
 
     usage = getattr(response, "usage_metadata", {}) or {}
     synthesis_tool_call_rejected = bool(
@@ -614,15 +618,59 @@ async def llm_node(state: AgentState) -> dict:
             content="依赖工具返回异常，本次任务未生成未经证实的结论。"
         )
 
+    input_tokens = usage.get("input_tokens") if isinstance(usage, Mapping) else None
+    output_tokens = usage.get("output_tokens") if isinstance(usage, Mapping) else None
+    usage_reported = (
+        llm_duration_seconds is not None
+        and isinstance(input_tokens, int)
+        and not isinstance(input_tokens, bool)
+        and input_tokens >= 0
+        and isinstance(output_tokens, int)
+        and not isinstance(output_tokens, bool)
+        and output_tokens >= 0
+    )
+    total_tokens = input_tokens + output_tokens if usage_reported else None
+    if llm_duration_seconds is not None:
+        if usage_reported:
+            from agent.metrics import record_llm_call
+            record_llm_call(
+                state.get("user_role", "unknown"),
+                input_tokens,
+                output_tokens,
+                llm_duration_seconds,
+            )
+        try:
+            log.info(
+                "llm_call_measured",
+                session_id=state.get("session_id"),
+                thread_id=state.get("thread_id"),
+                step=state["step_count"],
+                provider=settings.llm_provider,
+                model=settings.llm_model or "provider-default",
+                duration_ms=int(llm_duration_seconds * 1000),
+                input_tokens=input_tokens if usage_reported else None,
+                output_tokens=output_tokens if usage_reported else None,
+                total_tokens=total_tokens,
+                usage_status="reported" if usage_reported else "missing",
+            )
+        except Exception:
+            pass
+
+    usage_status = (
+        "reported" if usage_reported
+        else "missing" if llm_duration_seconds is not None
+        else "not_called"
+    )
     log.info(
         "llm_response",
         step=state["step_count"],
         has_tool_calls=bool(getattr(response, "tool_calls", None)),
-        token_usage=usage,
+        usage_status=usage_status,
     )
 
-    # 更新 token 计数
-    new_tokens = usage.get("total_tokens", 0)
+    # Preserve the pre-instrumentation context-budget behavior. Provider total
+    # may include cached/system tokens that are not equal to input + output.
+    new_tokens = usage.get("total_tokens", 0) if isinstance(usage, Mapping) else 0
 
     # 检查是否是 Final Answer（无 tool_calls）
     final_answer = None
@@ -657,6 +705,18 @@ async def llm_node(state: AgentState) -> dict:
         "messages": [response],
         "step_count": state["step_count"] + 1,
         "token_count": state["token_count"] + new_tokens,
+        "llm_call_count": state.get("llm_call_count", 0) + (
+            1 if llm_duration_seconds is not None else 0
+        ),
+        "llm_input_tokens": state.get("llm_input_tokens", 0) + (
+            input_tokens if usage_reported else 0
+        ),
+        "llm_output_tokens": state.get("llm_output_tokens", 0) + (
+            output_tokens if usage_reported else 0
+        ),
+        "llm_usage_missing_count": state.get("llm_usage_missing_count", 0) + (
+            1 if llm_duration_seconds is not None and not usage_reported else 0
+        ),
         "final_answer": final_answer,
         "last_tool_failed": False,  # 重置
         "needs_reflection": False,  # 重置
@@ -1321,7 +1381,11 @@ def _render_messages_for_summary(messages: list) -> str:
     return "\n".join(lines)
 
 
-async def _summarize_messages(messages: list, previous_summary: str | None) -> str:
+async def _summarize_messages(
+    messages: list,
+    previous_summary: str | None,
+    state: AgentState,
+) -> tuple[str, dict]:
     """
     调用 LLM 为待压缩的消息生成累积式摘要。
 
@@ -1353,9 +1417,81 @@ async def _summarize_messages(messages: list, previous_summary: str | None) -> s
 
 直接输出摘要正文（纯文本），不要加标题、不要加解释。"""
 
-    response = await _llm.ainvoke([HumanMessage(content=prompt)])
+    started_at = time.perf_counter()
+    try:
+        async with genai_span(
+            "llm.invoke",
+            "llm",
+            provider=settings.llm_provider,
+            model=settings.llm_model or "provider-default",
+            operation="compact",
+            session_id=state.get("session_id"),
+            thread_id=state.get("thread_id"),
+        ):
+            response = await _llm.ainvoke([HumanMessage(content=prompt)])
+    except Exception:
+        duration_seconds = time.perf_counter() - started_at
+        from agent.metrics import record_llm_latency
+        record_llm_latency(state.get("user_role", "unknown"), duration_seconds)
+        try:
+            log.info(
+                "llm_call_measured",
+                session_id=state.get("session_id"),
+                thread_id=state.get("thread_id"),
+                operation="compact",
+                provider=settings.llm_provider,
+                model=settings.llm_model or "provider-default",
+                duration_ms=int(duration_seconds * 1000),
+                input_tokens=None,
+                output_tokens=None,
+                total_tokens=None,
+                usage_status="missing",
+            )
+        except Exception:
+            pass
+        raise
+    duration_seconds = time.perf_counter() - started_at
+    usage = getattr(response, "usage_metadata", {}) or {}
+    input_tokens = usage.get("input_tokens") if isinstance(usage, Mapping) else None
+    output_tokens = usage.get("output_tokens") if isinstance(usage, Mapping) else None
+    usage_reported = (
+        isinstance(input_tokens, int)
+        and not isinstance(input_tokens, bool)
+        and input_tokens >= 0
+        and isinstance(output_tokens, int)
+        and not isinstance(output_tokens, bool)
+        and output_tokens >= 0
+    )
+    if usage_reported:
+        from agent.metrics import record_llm_call
+        record_llm_call(
+            state.get("user_role", "unknown"),
+            input_tokens,
+            output_tokens,
+            duration_seconds,
+        )
+    try:
+        log.info(
+            "llm_call_measured",
+            session_id=state.get("session_id"),
+            thread_id=state.get("thread_id"),
+            operation="compact",
+            provider=settings.llm_provider,
+            model=settings.llm_model or "provider-default",
+            duration_ms=int(duration_seconds * 1000),
+            input_tokens=input_tokens if usage_reported else None,
+            output_tokens=output_tokens if usage_reported else None,
+            total_tokens=(input_tokens + output_tokens) if usage_reported else None,
+            usage_status="reported" if usage_reported else "missing",
+        )
+    except Exception:
+        pass
     summary = response.content if isinstance(response.content, str) else str(response.content)
-    return summary.strip()
+    return summary.strip(), {
+        "input_tokens": input_tokens if usage_reported else 0,
+        "output_tokens": output_tokens if usage_reported else 0,
+        "usage_missing": 0 if usage_reported else 1,
+    }
 
 
 async def compact_node(state: AgentState) -> dict:
@@ -1396,12 +1532,22 @@ async def compact_node(state: AgentState) -> dict:
              token_count=state["token_count"])
 
     try:
-        summary_text = await _summarize_messages(to_summarize, state.get("conversation_summary"))
+        summary_text, compact_usage = await _summarize_messages(
+            to_summarize,
+            state.get("conversation_summary"),
+            state,
+        )
     except Exception as e:
         failures = state.get("compact_failures", 0) + 1
         log.warning("compact_summarize_failed", error=str(e), consecutive_failures=failures)
         record_compact_event("failed")
-        return {"compact_failures": failures}
+        return {
+            "compact_failures": failures,
+            "llm_call_count": state.get("llm_call_count", 0) + 1,
+            "llm_input_tokens": state.get("llm_input_tokens", 0),
+            "llm_output_tokens": state.get("llm_output_tokens", 0),
+            "llm_usage_missing_count": state.get("llm_usage_missing_count", 0) + 1,
+        }
 
     # 用 RemoveMessage 从 state 中删除被摘要的旧消息（add_messages reducer 按 id 匹配删除）
     removals = [RemoveMessage(id=m.id) for m in to_summarize if getattr(m, "id", None)]
@@ -1424,6 +1570,10 @@ async def compact_node(state: AgentState) -> dict:
         "conversation_summary": summary_text,
         "compact_failures": 0,        # 成功后重置熔断计数
         "token_count": new_token_count,
+        "llm_call_count": state.get("llm_call_count", 0) + 1,
+        "llm_input_tokens": state.get("llm_input_tokens", 0) + compact_usage["input_tokens"],
+        "llm_output_tokens": state.get("llm_output_tokens", 0) + compact_usage["output_tokens"],
+        "llm_usage_missing_count": state.get("llm_usage_missing_count", 0) + compact_usage["usage_missing"],
     }
 
 
@@ -1451,6 +1601,13 @@ async def hitl_node(state: AgentState) -> dict:
     agent_reason = pending.get("reason", "Agent 认为需要执行此高风险动作")
     session_id   = state.get("session_id")
     thread_id    = state.get("thread_id", "")
+    stage_timer = SpanTimer(
+        "hitl.prepare",
+        "hitl",
+        action_type=action_type,
+        session_id=session_id,
+        thread_id=thread_id,
+    )
 
     log.info(
         "hitl_requested",
@@ -1515,6 +1672,7 @@ async def hitl_node(state: AgentState) -> dict:
         )
         log.info("hitl_approval_written", approval_id=approval_id)
     except Exception as e:
+        stage_timer.finish(status="error", error_type=type(e).__name__)
         log.error("hitl_approval_write_failed", error_type=type(e).__name__)
         return {
             "pending_hitl": False,
@@ -1544,6 +1702,7 @@ async def hitl_node(state: AgentState) -> dict:
         f"已提交审批申请，请运营人员在审批工作台处理。"
         f"审批通过后系统将继续执行，拒绝则任务终止。"
     ))
+    stage_timer.finish(status="ok")
 
     return {
         "messages":      [hitl_message],

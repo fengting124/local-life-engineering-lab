@@ -3,7 +3,7 @@
 - Status: Active
 - Type: Reference
 - Owners: Project maintainers
-- Last verified: 2026-07-26
+- Last verified: 2026-08-13
 - Source of truth: `performance-tests/`, `copilot-agent-service/evals/`, `scripts/run-backend-perf-baseline.sh`
 
 > 本文定义后端与 Agent 第一轮性能基线统一指标。所有指标禁止包含 API Key、完整手机号、完整订单敏感信息、完整 Prompt、未脱敏工具返回和用户私密数据。
@@ -104,6 +104,12 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `time_to_first_sse_ms` | `/chat` 请求到首条 SSE 行的时间；不是模型首 Token 延迟 | ms | SSE client | category | Agent baseline runner | 是 | 是 |
 | `end_to_end_latency_ms` | `/chat` 请求到 final/error/HITL 结束 | ms | SSE client | category, concurrency | Agent baseline runner | 是 | 是 |
+| `request_total_duration_ms` | 已接受 `/chat` 到 terminal SSE/HITL/error；Fast Path 也覆盖 | ms | structured span | 无 Prometheus 高基数字段 | `request.total` | 是 | 是 |
+| `session_prepare_duration_ms` | session、输入消息和 runtime run 准备 | ms | structured span | status | `session.prepare` | 是 | 是 |
+| `router_classify_duration_ms` | Fast Path 纯规则判断或 ReAct 合同分类，不含工具执行 | ms | structured span | route_candidate | `router.classify` | 是 | 是 |
+| `graph_total_duration_ms` | `agent_graph.astream_events` 生命周期 | ms | structured span | status | `graph.total` | 是 | 是 |
+| `mcp_list_tools_duration_ms` | 工具发现，包含缓存命中和未命中 | ms | structured span | cache_status | `mcp.list_tools` | 是 | 是 |
+| `hitl_prepare_duration_ms` | 审批 payload、签名、持久化和展示卡准备 | ms | structured span | action_type, status | `hitl.prepare` | 是 | 是 |
 | `guardrail_duration_ms` | 输入安全检查耗时 | ms | span/log | status | Agent API | 部分 | 是 |
 | `llm_duration_ms` | 单次 LLM 调用耗时 | ms | `genai_span` | provider, model | `agent.trace` | 是 | 否 |
 | `embedding_duration_ms` | embedding 调用耗时 | ms | span/log | status | RAG pipeline/client | 部分 | 是 |
@@ -118,14 +124,14 @@
 | `event_persist_duration_ms` | agent_event 写入耗时 | ms | runtime_store span/log | event_type | Agent session | 部分 | 是 |
 | `sse_duration_ms` | SSE 流持续时间 | ms | SSE client/API | category | Agent baseline runner | 否 | 是 |
 | `retry_count` | 重试次数 | count | Runner/log | stage, reason | Agent baseline runner | 部分 | 是 |
-| `model_call_count` | 模型调用次数 | count | Span/runtime | provider, model | Agent logs | 部分 | 是 |
+| `model_call_count` | 模型调用次数 | count | Span/runtime | provider, model | Agent logs | 是 | 是 |
 | `tool_call_count` | 工具调用次数 | count | SSE/eval | tool_name | Agent eval | 是 | 否 |
 | `agent_tool_policy_denied_total` | 执行阶段因角色无权或工具未登记而拒绝的调用批次数 | count | Prometheus Counter | tool, role | `agent.metrics` / `/metrics` | 是 | 是 |
 | `agent_tool_budget_exhausted_total` | 因单轮、总量、单工具或同签名预算而整批拒绝的次数 | count | Prometheus Counter | reason, tool | `agent.metrics` / `/metrics` | 是 | 是 |
 | `agent_tool_calls_per_run` | 每次 Agent 运行中通过策略预检的工具调用数分布；执行失败仍计数 | count histogram | Prometheus Histogram | 无 | `agent.metrics` / `/metrics` | 是 | 是 |
-| `input_tokens` | 输入 token 数 | tokens | LLM usage metadata | provider, model | `llm_response` | 部分 | 是 |
-| `output_tokens` | 输出 token 数 | tokens | LLM usage metadata | provider, model | `llm_response` | 部分 | 是 |
-| `total_tokens` | 输入+输出 token 数 | tokens | LLM usage metadata | provider, model | Eval report | 部分 | 是 |
+| `input_tokens` | 输入 token 数；provider 缺失时为 unknown，不估算 | tokens | LLM usage metadata | provider/model 仅结构化日志；Prometheus 只用 role | `llm_call_measured` / metrics | 是 | 是 |
+| `output_tokens` | 输出 token 数；provider 缺失时为 unknown，不估算 | tokens | LLM usage metadata | provider/model 仅结构化日志；Prometheus 只用 role | `llm_call_measured` / metrics | 是 | 是 |
+| `total_tokens` | 可靠输入+输出 token；任一缺失时为 unknown | tokens | LLM usage metadata | provider/model 仅结构化日志 | run summary / profile | 是 | 是 |
 | `estimated_cost` | 估算费用；无可靠单价时为 null | currency | 单价配置 + token | provider, model | baseline summary | 否 | 是 |
 
 ## 采集禁区
@@ -136,3 +142,5 @@
 - 不保存完整 Prompt 和完整 Agent 响应正文到性能汇总。
 - 不把未脱敏工具返回写入报告。
 - 不把真实 Key 注入 GitHub Actions、`.env.example`、Compose 文件或测试数据。
+- `session_id`、`thread_id`、`trace_id` 只用于结构化日志关联，不得成为 Prometheus label。
+- 性能 profile 只提交聚合报告；包含运行关联和业务 fixture 的原始 artifact 保持在忽略目录。

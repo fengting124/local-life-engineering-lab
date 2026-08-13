@@ -218,8 +218,43 @@ def record_tool_calls_per_run(count: int):
     agent_tool_calls_per_run.observe(count)
 
 
-def record_llm_call(role: str, input_tokens: int, output_tokens: int, duration_seconds: float):
-    """LLM 调用完成时统一调用。"""
-    llm_tokens_total.labels(role=role, token_type="input").inc(input_tokens)
-    llm_tokens_total.labels(role=role, token_type="output").inc(output_tokens)
-    llm_latency_seconds.labels(role=role).observe(duration_seconds)
+def record_llm_call(
+    role: str,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    duration_seconds: float,
+) -> bool:
+    """Record reliable provider usage without allowing metrics to break a run."""
+    valid_tokens = (
+        isinstance(input_tokens, int)
+        and not isinstance(input_tokens, bool)
+        and input_tokens >= 0
+        and isinstance(output_tokens, int)
+        and not isinstance(output_tokens, bool)
+        and output_tokens >= 0
+    )
+    if not valid_tokens or duration_seconds < 0:
+        return False
+    try:
+        normalized_role = _role_label(role)
+        llm_tokens_total.labels(
+            role=normalized_role, token_type="input"
+        ).inc(input_tokens)
+        llm_tokens_total.labels(
+            role=normalized_role, token_type="output"
+        ).inc(output_tokens)
+        llm_latency_seconds.labels(role=normalized_role).observe(duration_seconds)
+        return True
+    except Exception:
+        return False
+
+
+def record_llm_latency(role: str, duration_seconds: float) -> bool:
+    """Record an attempted LLM call when provider usage is unavailable."""
+    if duration_seconds < 0:
+        return False
+    try:
+        llm_latency_seconds.labels(role=_role_label(role)).observe(duration_seconds)
+        return True
+    except Exception:
+        return False

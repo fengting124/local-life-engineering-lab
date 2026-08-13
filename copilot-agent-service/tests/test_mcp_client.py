@@ -13,6 +13,7 @@ AsyncClient，完全隔离网络，只验证协议解析和错误处理逻辑。
 import hashlib
 import hmac
 import time
+from contextlib import asynccontextmanager
 import pytest
 import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -258,6 +259,33 @@ class TestMcpClientCallTool:
 # =========================================================
 
 class TestListToolsCache:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cached", [False, True])
+    async def test_list_tools_records_cache_boundary(self, cached):
+        spans = []
+
+        @asynccontextmanager
+        async def capture(name, kind, **attrs):
+            spans.append((name, kind, attrs))
+            yield "span"
+
+        if cached:
+            mcp_module._tools_cache = [{"name": "cached_tool"}]
+            mcp_module._tools_cache_time = time.time()
+        client = McpClient(user_id=1, user_role="admin")
+        body = {
+            "jsonrpc": "2.0", "id": "x",
+            "result": {"tools": [{"name": "query_order"}]},
+        }
+        with patch("mcp.mcp_client.genai_span", capture), \
+             patch("httpx.AsyncClient") as mock_cls:
+            mock_cls.return_value = _make_async_client_mock(body)
+            await client.list_tools()
+
+        boundary = [span for span in spans if span[0] == "mcp.list_tools"]
+        assert len(boundary) == 1
+        assert boundary[0][2]["cache_status"] == ("hit" if cached else "miss")
+
     @pytest.mark.asyncio
     async def test_cache_miss_fetches_from_server(self):
         tools_body = {
