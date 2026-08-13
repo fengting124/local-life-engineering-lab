@@ -981,6 +981,97 @@ class FakeLLM:
 
 
 class TestLlmNode:
+    @pytest.mark.asyncio
+    async def test_deterministic_answer_marks_llm_as_not_called(self, monkeypatch):
+        info = MagicMock()
+        monkeypatch.setattr(nodes.log, "info", info)
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="hello")],
+            route_mode="clarification",
+            route_task_type="clarification",
+            route_confidence=1.0,
+            route_reason="missing target",
+            route_missing_fields=["target"],
+        ))
+
+        assert result["llm_call_count"] == 0
+        response_log = next(
+            call for call in info.call_args_list
+            if call.args == ("llm_response",)
+        )
+        assert response_log.kwargs["usage_status"] == "not_called"
+
+    @pytest.mark.asyncio
+    async def test_real_llm_usage_updates_sanitized_totals_and_metrics(
+        self, monkeypatch
+    ):
+        from agent import metrics
+
+        response = AIMessage(
+            content="safe answer",
+            usage_metadata={
+                "input_tokens": 11,
+                "output_tokens": 4,
+                "total_tokens": 15,
+            },
+        )
+        fake_llm = FakeLLM(response)
+        record = MagicMock(return_value=True)
+        info = MagicMock()
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
+        monkeypatch.setattr(nodes.settings, "llm_model", "test-model")
+        monkeypatch.setattr(metrics, "record_llm_call", record)
+        monkeypatch.setattr(nodes.log, "info", info)
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="private prompt")],
+            llm_call_count=2,
+            llm_input_tokens=20,
+            llm_output_tokens=5,
+            llm_usage_missing_count=0,
+        ))
+
+        record.assert_called_once()
+        assert record.call_args.args[:3] == ("merchant", 11, 4)
+        assert result["llm_call_count"] == 3
+        assert result["llm_input_tokens"] == 31
+        assert result["llm_output_tokens"] == 9
+        assert result["llm_usage_missing_count"] == 0
+        measured = next(
+            call for call in info.call_args_list
+            if call.args == ("llm_call_measured",)
+        )
+        assert measured.kwargs["usage_status"] == "reported"
+        encoded = json.dumps(measured.kwargs)
+        assert "private prompt" not in encoded
+        assert "safe answer" not in encoded
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("usage", [None, {}, {"input_tokens": -1, "output_tokens": 2}])
+    async def test_missing_or_invalid_llm_usage_stays_unknown(
+        self, monkeypatch, usage
+    ):
+        from agent import metrics
+
+        response = AIMessage(content="answer")
+        response.usage_metadata = usage
+        fake_llm = FakeLLM(response)
+        record = MagicMock()
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
+        monkeypatch.setattr(metrics, "record_llm_call", record)
+
+        result = await nodes.llm_node(make_state([HumanMessage(content="q")]))
+
+        record.assert_not_called()
+        assert result["llm_call_count"] == 1
+        assert result["llm_input_tokens"] == 0
+        assert result["llm_output_tokens"] == 0
+        assert result["llm_usage_missing_count"] == 1
+        assert result["token_count"] == 100
+
     def test_chat_openai_binding_keeps_named_choice(self, monkeypatch):
         import langchain_openai
 

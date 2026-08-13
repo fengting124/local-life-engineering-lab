@@ -411,6 +411,10 @@ class TestChatInitialRouteState:
         assert captured["evidence_collected"] == {}
         assert captured["evidence_complete"] is False
         assert captured["synthesis_only"] is False
+        assert captured["llm_call_count"] == 0
+        assert captured["llm_input_tokens"] == 0
+        assert captured["llm_output_tokens"] == 0
+        assert captured["llm_usage_missing_count"] == 0
 
     def test_guardrails_block_cn_injection(self):
         resp = client.post(

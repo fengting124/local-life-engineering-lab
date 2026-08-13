@@ -58,11 +58,11 @@
 - Produces: sanitized `llm_call_measured` log fields `step`, `provider`, `model`, `duration_ms`, nullable token counts, and `usage_status`.
 - Produces: state totals `llm_call_count`, `llm_input_tokens`, `llm_output_tokens`, and `llm_usage_missing_count` for request summaries.
 
-- [ ] **Step 1: Add RED tests** for valid usage, absent usage, malformed/negative usage, structured correlation fields, and absence of Prompt/response/tool payload in measurement logs.
-- [ ] **Step 2: Run** the exact new node/chat tests and confirm `record_llm_call` is not yet called and missing usage is currently coerced to zero.
-- [ ] **Step 3: Measure** only the real `ainvoke` call with `perf_counter`; normalize token usage without character estimation; update state totals only from reliable integers; emit no raw metadata object.
-- [ ] **Step 4: Run** `pytest -q tests/test_agent_nodes.py tests/test_chat_api.py tests/test_metrics.py tests/test_trace.py`.
-- [ ] **Step 5: Commit** as `feat(perf): record real llm latency and usage` with before/after evidence.
+- [x] **Step 1: Add RED tests** for valid usage, absent usage, malformed/negative usage, structured correlation fields, and absence of Prompt/response/tool payload in measurement logs.
+- [x] **Step 2: Run** the exact new node/chat tests and confirm `record_llm_call` is not yet called and missing usage is currently coerced to zero.
+- [x] **Step 3: Measure** only the real `ainvoke` call with `perf_counter`; normalize token usage without character estimation; update state totals only from reliable integers; emit no raw metadata object.
+- [x] **Step 4: Run** `pytest -q tests/test_agent_nodes.py tests/test_chat_api.py tests/test_metrics.py tests/test_trace.py` (`130 passed`).
+- [x] **Step 5: Commit** as `feat(perf): record real llm latency and usage` with before/after evidence.
 
 ### Task 3: Add missing request and stage boundaries
 

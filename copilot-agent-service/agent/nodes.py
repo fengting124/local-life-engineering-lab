@@ -12,6 +12,7 @@ LangGraph 负责 merge 到完整 state，节点之间通过 state 传递信息�
   final_node     → 生成最终回答，结束循环
 """
 import json
+import time
 import structlog
 from collections.abc import Mapping
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage, RemoveMessage
@@ -452,6 +453,7 @@ async def llm_node(state: AgentState) -> dict:
     输入：完整消息历史 + 系统提示
     输出：新的 assistant 消息（含 tool_calls 或 Final Answer）
     """
+    llm_duration_seconds: float | None = None
     direct_answer = _direct_route_answer(state)
     evidence_answer = (
         build_evidence_answer(state) if direct_answer is None else None
@@ -586,6 +588,7 @@ async def llm_node(state: AgentState) -> dict:
             )
             messages = [system_msg] + state["messages"]
 
+            llm_started_at = time.perf_counter()
             async with genai_span(
                 "llm.invoke",
                 "llm",
@@ -596,6 +599,7 @@ async def llm_node(state: AgentState) -> dict:
                 thread_id=state.get("thread_id"),
             ):
                 response = await llm_with_tools.ainvoke(messages)
+            llm_duration_seconds = time.perf_counter() - llm_started_at
 
     usage = getattr(response, "usage_metadata", {}) or {}
     synthesis_tool_call_rejected = bool(
@@ -614,15 +618,54 @@ async def llm_node(state: AgentState) -> dict:
             content="依赖工具返回异常，本次任务未生成未经证实的结论。"
         )
 
+    input_tokens = usage.get("input_tokens") if isinstance(usage, Mapping) else None
+    output_tokens = usage.get("output_tokens") if isinstance(usage, Mapping) else None
+    usage_reported = (
+        llm_duration_seconds is not None
+        and isinstance(input_tokens, int)
+        and not isinstance(input_tokens, bool)
+        and input_tokens >= 0
+        and isinstance(output_tokens, int)
+        and not isinstance(output_tokens, bool)
+        and output_tokens >= 0
+    )
+    total_tokens = input_tokens + output_tokens if usage_reported else None
+    if llm_duration_seconds is not None:
+        if usage_reported:
+            from agent.metrics import record_llm_call
+            record_llm_call(
+                state.get("user_role", "unknown"),
+                input_tokens,
+                output_tokens,
+                llm_duration_seconds,
+            )
+        log.info(
+            "llm_call_measured",
+            session_id=state.get("session_id"),
+            thread_id=state.get("thread_id"),
+            step=state["step_count"],
+            provider=settings.llm_provider,
+            model=settings.llm_model or "provider-default",
+            duration_ms=int(llm_duration_seconds * 1000),
+            input_tokens=input_tokens if usage_reported else None,
+            output_tokens=output_tokens if usage_reported else None,
+            total_tokens=total_tokens,
+            usage_status="reported" if usage_reported else "missing",
+        )
+
+    usage_status = (
+        "reported" if usage_reported
+        else "missing" if llm_duration_seconds is not None
+        else "not_called"
+    )
     log.info(
         "llm_response",
         step=state["step_count"],
         has_tool_calls=bool(getattr(response, "tool_calls", None)),
-        token_usage=usage,
+        usage_status=usage_status,
     )
 
-    # 更新 token 计数
-    new_tokens = usage.get("total_tokens", 0)
+    new_tokens = total_tokens or 0
 
     # 检查是否是 Final Answer（无 tool_calls）
     final_answer = None
@@ -657,6 +700,18 @@ async def llm_node(state: AgentState) -> dict:
         "messages": [response],
         "step_count": state["step_count"] + 1,
         "token_count": state["token_count"] + new_tokens,
+        "llm_call_count": state.get("llm_call_count", 0) + (
+            1 if llm_duration_seconds is not None else 0
+        ),
+        "llm_input_tokens": state.get("llm_input_tokens", 0) + (
+            input_tokens if usage_reported else 0
+        ),
+        "llm_output_tokens": state.get("llm_output_tokens", 0) + (
+            output_tokens if usage_reported else 0
+        ),
+        "llm_usage_missing_count": state.get("llm_usage_missing_count", 0) + (
+            1 if llm_duration_seconds is not None and not usage_reported else 0
+        ),
         "final_answer": final_answer,
         "last_tool_failed": False,  # 重置
         "needs_reflection": False,  # 重置
