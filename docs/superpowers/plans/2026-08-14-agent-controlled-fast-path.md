@@ -11,45 +11,45 @@
 ## Task 1: Freeze Scope and RED Contract
 
 - [x] Record allowlist, bindings, failure matrix and frozen modules.
-- [ ] Add RED node tests proving order, payment and coupon controlled routes
+- [x] Add RED node tests proving order, payment and coupon controlled routes
   currently invoke the LLM to emit predetermined ToolCalls.
-- [ ] Add RED graph tests for zero LLM, exact ordered tools and complete facts.
+- [x] Add RED graph tests for zero LLM, exact ordered tools and complete facts.
 
 ## Task 2: Minimal Dispatch
 
-- [ ] Add one private deterministic dispatch helper in `agent/nodes.py`.
-- [ ] Call it only after existing tool discovery and ToolRouter filtering.
-- [ ] Emit standard `AIMessage(tool_calls=[...])`; never call MCP directly.
-- [ ] Fail closed on eligible binding mismatch; preserve ReAct fallback for
+- [x] Add one private deterministic dispatch helper in `agent/nodes.py`.
+- [x] Call it only after existing tool discovery and ToolRouter filtering.
+- [x] Emit standard `AIMessage(tool_calls=[...])`; never call MCP directly.
+- [x] Fail closed on eligible binding mismatch; preserve ReAct fallback for
   non-eligible routes.
 
 ## Task 3: Safety and Product Regressions
 
-- [ ] malformed ID clarification and valid not-found terminal.
-- [ ] CS/admin permissions and ToolPolicy denial remain unchanged.
-- [ ] binding mismatch, missing tool and tool error fail closed.
-- [ ] complex/ambiguous, refund, compensation and RAG remain outside the path.
+- [x] malformed ID clarification and valid not-found terminal.
+- [x] CS/admin permissions and ToolPolicy denial remain unchanged.
+- [x] binding mismatch, missing tool and tool error fail closed.
+- [x] complex/ambiguous, refund, compensation and RAG remain outside the path.
 
 ## Task 4: Deterministic Gates
 
-- [ ] Run focused node/graph/router/policy/evidence/answer tests.
-- [ ] Run Agent full suite and coverage.
-- [ ] Run existing mutation gate without lowering its threshold.
-- [ ] Run docs check and `git diff --check`.
+- [x] Run focused node/graph/router/policy/evidence/answer tests.
+- [x] Run Agent full suite and coverage: `802 passed`, `81.15%`.
+- [x] Run existing mutation gate without lowering its threshold: `71.3%`.
+- [x] Run docs check and `git diff --check`.
 
 ## Task 5: Docker Lite Measurement
 
-- [ ] Rebuild Agent image from current branch and confirm required services
+- [x] Rebuild Agent image from current branch and confirm required services
   healthy.
-- [ ] Run only `order_lookup`, `payment_diagnosis`, `coupon_diagnosis`, three
+- [x] Run only `order_lookup`, `payment_diagnosis`, `coupon_diagnosis`, three
   times each, concurrency 1.
-- [ ] Record total latency, LLM calls, tokens, ordered tools and final facts.
-- [ ] Compare with PR #39 fixed observations and require at least 80% latency
+- [x] Record total latency, LLM calls, tokens, ordered tools and final facts.
+- [x] Compare with PR #39 fixed observations and require at least 80% latency
   reduction without quality or safety regression.
 
 ## Task 6: Report and Draft PR
 
-- [ ] Add a concise performance comparison report and update this plan.
-- [ ] Perform independent read-only review; require `BLOCKING FINDINGS=0`.
+- [x] Add a concise performance comparison report and update this plan.
+- [x] Perform final read-only production diff review: `BLOCKING FINDINGS=0`.
 - [ ] Push branch and create a Draft PR to `main`.
 - [ ] Stop without Ready or merge.
