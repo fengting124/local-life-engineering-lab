@@ -119,7 +119,7 @@
 - [x] **Step 2: Run** the representative set once at concurrency one (`11` rows because today/month are separate Fast Path controls). Independent review invalidated the first whole profile's timing contract; one complete replacement was run from `8a96bb3` and both attempts are disclosed.
 - [x] **Step 3: Validate** no refund/compensation approval was executed, no raw Prompt/answer/tool payload or credential appears in artifacts, and high-risk scenarios stop at PENDING.
 - [x] **Step 4: Write** the short report answering all eight required questions; do not claim causality or capacity from one observation.
-- [x] **Step 5: Run full gates:** Agent full suite (`776 passed`, coverage `80.27%`), mutation (`843/1188`, `71.0%`, other `0`), docs (`83` files), secret scan, and `git diff --check`.
+- [x] **Step 5: Run full gates:** Agent full suite (`780 passed`, coverage `81.16%`), mutation (`843/1188`, `71.0%`, other `0`), docs (`83` files), secret scan, and `git diff --check`.
 - [x] **Step 6: Commit** report/contract evidence as `docs(perf): report agent stage latency baseline`.
 
 ### Task 6: Independent review and Draft PR

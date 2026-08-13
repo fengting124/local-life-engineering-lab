@@ -161,7 +161,14 @@ def test_row_rejects_duplicate_run_summaries():
 def test_row_rejects_missing_llm_measurement_and_span():
     profiler = _load()
     events = [
-        {"event": "agent_run_measured", "stop_reason": "completed", "llm_call_count": 1},
+        {
+            "event": "agent_run_measured",
+            "stop_reason": "completed",
+            "llm_call_count": 1,
+            "llm_input_tokens": 2,
+            "llm_output_tokens": 1,
+            "llm_usage_missing_count": 0,
+        },
         {"event": "genai_span_end", "span_name": "request.total", "duration_ms": 10},
     ]
 
@@ -177,7 +184,14 @@ def test_row_rejects_missing_llm_measurement_and_span():
 def test_row_accepts_matching_llm_summary_measurement_and_span():
     profiler = _load()
     events = [
-        {"event": "agent_run_measured", "stop_reason": "completed", "llm_call_count": 1},
+        {
+            "event": "agent_run_measured",
+            "stop_reason": "completed",
+            "llm_call_count": 1,
+            "llm_input_tokens": 2,
+            "llm_output_tokens": 1,
+            "llm_usage_missing_count": 0,
+        },
         {"event": "genai_span_end", "span_name": "request.total", "duration_ms": 10},
         {"event": "genai_span_end", "span_name": "llm.invoke", "duration_ms": 8},
         {"event": "llm_call_measured", "usage_status": "reported", "input_tokens": 2, "output_tokens": 1},
@@ -191,3 +205,34 @@ def test_row_accepts_matching_llm_summary_measurement_and_span():
     )
 
     assert row["usage"]["llm_calls"] == 1
+
+
+def test_row_rejects_token_aggregation_mismatch():
+    profiler = _load()
+    events = [
+        {
+            "event": "agent_run_measured",
+            "stop_reason": "completed",
+            "llm_call_count": 1,
+            "llm_input_tokens": 999,
+            "llm_output_tokens": 999,
+            "llm_usage_missing_count": 0,
+        },
+        {"event": "genai_span_end", "span_name": "request.total", "duration_ms": 10},
+        {"event": "genai_span_end", "span_name": "llm.invoke", "duration_ms": 8},
+        {"event": "llm_call_measured", "usage_status": "reported", "input_tokens": 2, "output_tokens": 1},
+    ]
+
+    with pytest.raises(ValueError, match="LLM token mismatch"):
+        profiler._row({"name": "bad_tokens", "role": "cs"}, events, "completed", [])
+
+
+def test_row_rejects_terminal_summary_mismatch():
+    profiler = _load()
+    events = [
+        {"event": "agent_run_measured", "stop_reason": "completed"},
+        {"event": "genai_span_end", "span_name": "request.total", "duration_ms": 10},
+    ]
+
+    with pytest.raises(ValueError, match="terminal mismatch"):
+        profiler._row({"name": "bad_terminal", "role": "cs"}, events, "internal_error", [])

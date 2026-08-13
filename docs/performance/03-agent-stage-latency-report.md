@@ -10,7 +10,7 @@
 
 本轮只做观测，不修改 Prompt、路由、工具权限、HITL、RAG 或评测合同。基于
 Docker Lite、DeepSeek V4 Flash、并发 1 的 11 个单次观测，LLM 占全部请求时间
-`97.7%`，在受控 ReAct 请求中占 `97.8%`。20 秒级长尾首先应减少不必要的模型
+`97.7%`，在受控 ReAct 请求中占 `98.1%`。20 秒级长尾首先应减少不必要的模型
 调用，而不是优化 MySQL、MCP 或 Checkpoint。
 
 Fast Path 的今日/本月指标分别为 `152ms` 和 `64ms`，均为 `0` 次 LLM。相对地，

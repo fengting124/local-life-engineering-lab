@@ -288,6 +288,36 @@ def _row(scenario: dict[str, Any], events: list[dict[str, Any]], terminal: str, 
             f"{scenario['name']}: summary={expected_llm_calls}, "
             f"measured={measured_llm_calls}, spans={spanned_llm_calls}"
         )
+    usage = summarize_usage(events)
+    reported_calls = [
+        event for event in events
+        if event.get("event") == "llm_call_measured"
+        and event.get("usage_status") == "reported"
+    ]
+    measured_usage = (
+        sum(int(event["input_tokens"]) for event in reported_calls),
+        sum(int(event["output_tokens"]) for event in reported_calls),
+        int(usage["usage_missing_calls"] or 0),
+    )
+    summary_usage = (
+        int(run.get("llm_input_tokens", 0)),
+        int(run.get("llm_output_tokens", 0)),
+        int(run.get("llm_usage_missing_count", 0)),
+    )
+    if summary_usage != measured_usage:
+        raise ValueError(
+            f"LLM token mismatch for {scenario['name']}: "
+            f"summary={summary_usage}, measured={measured_usage}"
+        )
+    normalized_terminal = {
+        "hitl_request": "pending_approval",
+        "error": "stream_error",
+    }.get(terminal, terminal)
+    if str(run.get("stop_reason", terminal)) != normalized_terminal:
+        raise ValueError(
+            f"terminal mismatch for {scenario['name']}: "
+            f"summary={run.get('stop_reason')}, sse={terminal}"
+        )
     stages = summarize_stages(events)
     expected_pending = bool(scenario.get("expected_pending"))
     success = terminal_succeeded(terminal, expected_pending)
@@ -302,7 +332,7 @@ def _row(scenario: dict[str, Any], events: list[dict[str, Any]], terminal: str, 
         "tool_call_count": int(run.get("tool_call_count", 0)),
         "stages": stages,
         "stage_shares": {key: percentage(stages[key], stages["total_ms"]) for key in NON_OVERLAPPING_STAGE_KEYS},
-        "usage": summarize_usage(events),
+        "usage": usage,
     }
 
 

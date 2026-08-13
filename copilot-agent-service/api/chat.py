@@ -656,7 +656,21 @@ async def chat(
         route_decision = classify_request(user_role, request.message)
     except Exception as exc:
         route_timer.finish(status="error", error_type=type(exc).__name__)
-        request_timer.finish(status="error", stop_reason="router_error")
+        await _safe_mark_runtime_status(
+            run_id,
+            "FAILED",
+            error_message="router classification failed",
+        )
+        _finish_request_measurement(
+            request_timer,
+            status="error",
+            route_mode="react",
+            route_task_type="unknown",
+            stop_reason="router_error",
+            session_id=actual_session_id,
+            thread_id=thread_id,
+            run_id=run_id,
+        )
         raise
     else:
         route_timer.finish(status="ok")
@@ -892,6 +906,12 @@ async def chat(
             await _safe_mark_runtime_status(run_id, "FAILED", error_message=str(e))
             yield _sse("error", payload)
         finally:
+            if not terminal_recorded:
+                await _safe_mark_runtime_status(
+                    run_id,
+                    "FAILED",
+                    error_message="client stream closed before terminal event",
+                )
             if graph_timer is not None:
                 graph_timer.finish(
                     status=terminal_status,

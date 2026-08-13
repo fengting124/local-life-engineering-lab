@@ -1117,6 +1117,41 @@ class TestLlmNode:
         assert result["token_count"] == 107
 
     @pytest.mark.asyncio
+    async def test_compaction_llm_updates_sanitized_measurement_totals(
+        self, monkeypatch
+    ):
+        from agent import metrics
+
+        response = AIMessage(
+            content="summary",
+            usage_metadata={"input_tokens": 9, "output_tokens": 3, "total_tokens": 12},
+        )
+        info = MagicMock()
+        record = MagicMock(return_value=True)
+        monkeypatch.setattr(nodes, "_llm", FakeLLM(response))
+        monkeypatch.setattr(nodes.log, "info", info)
+        monkeypatch.setattr(metrics, "record_llm_call", record)
+
+        messages = [HumanMessage(content=f"message {index}", id=str(index)) for index in range(8)]
+        result = await nodes.compact_node(make_state(
+            messages,
+            token_count=1000,
+            llm_call_count=2,
+            llm_input_tokens=20,
+            llm_output_tokens=5,
+            llm_usage_missing_count=0,
+        ))
+
+        assert result["llm_call_count"] == 3
+        assert result["llm_input_tokens"] == 29
+        assert result["llm_output_tokens"] == 8
+        assert result["llm_usage_missing_count"] == 0
+        record.assert_called_once()
+        measured = [call for call in info.call_args_list if call.args == ("llm_call_measured",)]
+        assert len(measured) == 1
+        assert measured[0].kwargs["operation"] == "compact"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("usage", [None, {}, {"input_tokens": -1, "output_tokens": 2}])
     async def test_missing_or_invalid_llm_usage_stays_unknown(
         self, monkeypatch, usage

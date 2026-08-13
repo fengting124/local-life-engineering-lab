@@ -1381,7 +1381,11 @@ def _render_messages_for_summary(messages: list) -> str:
     return "\n".join(lines)
 
 
-async def _summarize_messages(messages: list, previous_summary: str | None) -> str:
+async def _summarize_messages(
+    messages: list,
+    previous_summary: str | None,
+    state: AgentState,
+) -> tuple[str, dict]:
     """
     调用 LLM 为待压缩的消息生成累积式摘要。
 
@@ -1413,9 +1417,59 @@ async def _summarize_messages(messages: list, previous_summary: str | None) -> s
 
 直接输出摘要正文（纯文本），不要加标题、不要加解释。"""
 
-    response = await _llm.ainvoke([HumanMessage(content=prompt)])
+    started_at = time.perf_counter()
+    async with genai_span(
+        "llm.invoke",
+        "llm",
+        provider=settings.llm_provider,
+        model=settings.llm_model or "provider-default",
+        operation="compact",
+        session_id=state.get("session_id"),
+        thread_id=state.get("thread_id"),
+    ):
+        response = await _llm.ainvoke([HumanMessage(content=prompt)])
+    duration_seconds = time.perf_counter() - started_at
+    usage = getattr(response, "usage_metadata", {}) or {}
+    input_tokens = usage.get("input_tokens") if isinstance(usage, Mapping) else None
+    output_tokens = usage.get("output_tokens") if isinstance(usage, Mapping) else None
+    usage_reported = (
+        isinstance(input_tokens, int)
+        and not isinstance(input_tokens, bool)
+        and input_tokens >= 0
+        and isinstance(output_tokens, int)
+        and not isinstance(output_tokens, bool)
+        and output_tokens >= 0
+    )
+    if usage_reported:
+        from agent.metrics import record_llm_call
+        record_llm_call(
+            state.get("user_role", "unknown"),
+            input_tokens,
+            output_tokens,
+            duration_seconds,
+        )
+    try:
+        log.info(
+            "llm_call_measured",
+            session_id=state.get("session_id"),
+            thread_id=state.get("thread_id"),
+            operation="compact",
+            provider=settings.llm_provider,
+            model=settings.llm_model or "provider-default",
+            duration_ms=int(duration_seconds * 1000),
+            input_tokens=input_tokens if usage_reported else None,
+            output_tokens=output_tokens if usage_reported else None,
+            total_tokens=(input_tokens + output_tokens) if usage_reported else None,
+            usage_status="reported" if usage_reported else "missing",
+        )
+    except Exception:
+        pass
     summary = response.content if isinstance(response.content, str) else str(response.content)
-    return summary.strip()
+    return summary.strip(), {
+        "input_tokens": input_tokens if usage_reported else 0,
+        "output_tokens": output_tokens if usage_reported else 0,
+        "usage_missing": 0 if usage_reported else 1,
+    }
 
 
 async def compact_node(state: AgentState) -> dict:
@@ -1456,7 +1510,11 @@ async def compact_node(state: AgentState) -> dict:
              token_count=state["token_count"])
 
     try:
-        summary_text = await _summarize_messages(to_summarize, state.get("conversation_summary"))
+        summary_text, compact_usage = await _summarize_messages(
+            to_summarize,
+            state.get("conversation_summary"),
+            state,
+        )
     except Exception as e:
         failures = state.get("compact_failures", 0) + 1
         log.warning("compact_summarize_failed", error=str(e), consecutive_failures=failures)
@@ -1484,6 +1542,10 @@ async def compact_node(state: AgentState) -> dict:
         "conversation_summary": summary_text,
         "compact_failures": 0,        # 成功后重置熔断计数
         "token_count": new_token_count,
+        "llm_call_count": state.get("llm_call_count", 0) + 1,
+        "llm_input_tokens": state.get("llm_input_tokens", 0) + compact_usage["input_tokens"],
+        "llm_output_tokens": state.get("llm_output_tokens", 0) + compact_usage["output_tokens"],
+        "llm_usage_missing_count": state.get("llm_usage_missing_count", 0) + compact_usage["usage_missing"],
     }
 
 

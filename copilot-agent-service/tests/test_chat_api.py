@@ -11,6 +11,7 @@ FastAPI TestClient 说明：
   TestClient 内部使用 anyio 驱动异步端点，支持测试 StreamingResponse。
   对于 SSE 端点，TestClient.post() 会收集完整响应体。
 """
+import asyncio
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -994,6 +995,40 @@ class TestChatRuntimeEvents:
 
         statuses = [call.args[1] for call in runtime.mark_run_status.await_args_list]
         assert statuses == ["RUNNING", "FAILED"]
+
+    @pytest.mark.asyncio
+    async def test_react_disconnect_marks_runtime_failed(self):
+        runtime = AsyncMock()
+        runtime.create_run.return_value = "run-react-disconnect"
+
+        async def fake_stream(*args, **kwargs):
+            yield {
+                "event": "on_chain_start",
+                "name": "llm_node",
+                "data": {"input": {"step_count": 0}},
+            }
+            await asyncio.sleep(3600)
+
+        with (
+            patch("api.chat.session_manager.create_session", new=AsyncMock(return_value=1001)),
+            patch("api.chat.session_manager.save_message", new=AsyncMock()),
+            patch("api.chat._try_fast_path", new=AsyncMock(return_value=None)),
+            patch("api.chat.agent_graph.astream_events", fake_stream),
+            patch("api.chat.runtime_store", runtime),
+        ):
+            response = await chat_module.chat(
+                chat_module.ChatRequest(message="查询订单 202606100003"),
+                x_user_id="9001",
+                x_user_role="cs",
+                x_merchant_id=None,
+            )
+            stream = response.body_iterator
+            assert "session_started" in await anext(stream)
+            assert "agent_step" in await anext(stream)
+            await stream.aclose()
+
+        statuses = [call.args[1] for call in runtime.mark_run_status.await_args_list]
+        assert statuses == ["RUNNING", "FAILED"]
     def test_fast_path_closes_request_and_session_measurements(self):
         timers = []
 
@@ -1098,6 +1133,7 @@ class TestChatRuntimeEvents:
 
     def test_router_exception_closes_request_measurement(self):
         timers = []
+        info = MagicMock()
 
         class FakeTimer:
             def __init__(self, name, kind, **attrs):
@@ -1109,6 +1145,7 @@ class TestChatRuntimeEvents:
         runtime.create_run.return_value = "run-router-error"
         with (
             patch("api.chat.SpanTimer", FakeTimer),
+            patch("api.chat.log.info", info),
             patch("api.chat.session_manager.create_session", new=AsyncMock(return_value=1001)),
             patch("api.chat.session_manager.save_message", new=AsyncMock()),
             patch("api.chat._try_fast_path", new=AsyncMock(return_value=None)),
@@ -1123,7 +1160,12 @@ class TestChatRuntimeEvents:
 
         assert response.status_code == 500
         request_timer = next(timer for timer in timers if timer.name == "request.total")
-        request_timer.finish.assert_called_once_with(status="error", stop_reason="router_error")
+        request_timer.finish.assert_called_once()
+        measured = [call for call in info.call_args_list if call.args == ("agent_run_measured",)]
+        assert len(measured) == 1
+        assert measured[0].kwargs["stop_reason"] == "router_error"
+        statuses = [call.args[1] for call in runtime.mark_run_status.await_args_list]
+        assert statuses == ["FAILED"]
 
     def test_fast_path_records_agent_run_and_events(self):
         runtime = AsyncMock()
