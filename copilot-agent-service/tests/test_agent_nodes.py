@@ -93,6 +93,31 @@ def controlled_state(messages, task, required, authorized, next_tool, **over):
 
 class TestHitlNode:
     @pytest.mark.asyncio
+    async def test_hitl_preparation_records_stage_boundary(self, monkeypatch):
+        import session.hitl as hitl_module
+
+        timers = []
+        timer = MagicMock()
+        timer.finish.return_value = True
+        monkeypatch.setattr(nodes, "SpanTimer", MagicMock(side_effect=lambda *a, **k: timers.append((a, k)) or timer))
+        service = MagicMock()
+        service.create_approval = AsyncMock(return_value=1001)
+        monkeypatch.setattr(hitl_module, "hitl_service", service)
+
+        await nodes.hitl_node(make_state(
+            [HumanMessage(content="refund")],
+            user_role="admin",
+            pending_action={
+                "action_type": "execute_refund",
+                "payload": {"order_id": "O-1", "amount": 100},
+                "reason": "approved evidence",
+            },
+        ))
+
+        assert timers[0][0] == ("hitl.prepare", "hitl")
+        timer.finish.assert_called_once_with(status="ok")
+
+    @pytest.mark.asyncio
     async def test_compensation_card_displays_only_signed_v2_terms(self, monkeypatch):
         import session.hitl as hitl_module
 

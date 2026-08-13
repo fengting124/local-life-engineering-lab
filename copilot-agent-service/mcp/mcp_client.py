@@ -120,18 +120,26 @@ class McpClient:
         """
         global _tools_cache, _tools_cache_time
         now = time.time()
-        if _tools_cache is not None and (now - _tools_cache_time) < _TOOLS_CACHE_TTL_SECONDS:
-            log.debug("mcp_tools_cache_hit", cached_at=_tools_cache_time, count=len(_tools_cache))
-            return _tools_cache
+        cache_hit = (
+            _tools_cache is not None
+            and (now - _tools_cache_time) < _TOOLS_CACHE_TTL_SECONDS
+        )
+        async with genai_span(
+            "mcp.list_tools",
+            "mcp",
+            cache_status="hit" if cache_hit else "miss",
+        ):
+            if cache_hit:
+                log.debug("mcp_tools_cache_hit", cached_at=_tools_cache_time, count=len(_tools_cache))
+                return _tools_cache
 
-        result = await self._rpc("tools/list", {}, None, None)
-        tools = result.get("tools", [])
-        # 更新缓存
-        _tools_cache = tools
-        _tools_cache_time = now
-        log.info("mcp_tools_fetched_and_cached", count=len(tools),
-                 ttl_seconds=_TOOLS_CACHE_TTL_SECONDS)
-        return tools
+            result = await self._rpc("tools/list", {}, None, None)
+            tools = result.get("tools", [])
+            _tools_cache = tools
+            _tools_cache_time = now
+            log.info("mcp_tools_fetched_and_cached", count=len(tools),
+                     ttl_seconds=_TOOLS_CACHE_TTL_SECONDS)
+            return tools
 
     async def call_tool(
         self,

@@ -78,11 +78,11 @@
 - Produces spans: `request.total`, `session.prepare`, `router.classify`, `graph.total`, `mcp.list_tools`, and `hitl.prepare`.
 - Produces sanitized terminal `agent_run_measured` with correlation, route, totals, tool count, stop reason, and total duration.
 
-- [ ] **Step 1: Add RED tests** for Fast Path and ReAct request timing, normal/error/HITL closure, cache hit/miss list-tools timing, HITL preparation timing, and instrumentation-log failure isolation.
-- [ ] **Step 2: Run** the focused tests and confirm the six spans/summary are absent.
-- [ ] **Step 3: Implement** stage boundaries around existing calls without moving business decisions. Extract only a pure Fast Path classification helper if required to avoid including MCP execution in router time.
-- [ ] **Step 4: Re-run** focused tests and verify no request content, answer, tool values, or business identifiers enter measurement fields.
-- [ ] **Step 5: Commit** as `feat(perf): trace agent request stages`.
+- [x] **Step 1: Add RED tests** for Fast Path and ReAct request timing, normal/error/HITL closure, cache hit/miss list-tools timing, HITL preparation timing, and instrumentation-log failure isolation.
+- [x] **Step 2: Run** the focused tests and confirm the six spans/summary are absent (`6` focused assertions failed before implementation).
+- [x] **Step 3: Implement** stage boundaries around existing calls without moving business decisions. Extract only a pure Fast Path classification helper if required to avoid including MCP execution in router time.
+- [x] **Step 4: Re-run** focused tests and verify no request content, answer, tool values, or business identifiers enter measurement fields (`158 passed`).
+- [x] **Step 5: Commit** as `feat(perf): trace agent request stages`.
 
 ### Task 4: Build the sanitized Docker collector
 

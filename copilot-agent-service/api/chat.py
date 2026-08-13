@@ -34,6 +34,7 @@ from session.hitl import HitlResumeError, hitl_service
 from session.manager import AsyncSessionLocal, session_manager
 from session.models import AgentSession
 from session.runtime import runtime_store
+from agent.trace import SpanTimer
 
 log = structlog.get_logger(__name__)
 
@@ -95,6 +96,42 @@ def _safe_hitl_request_event(thread_id: str, pending_action: Any) -> dict:
     }
 
 
+def _finish_request_measurement(
+    timer: SpanTimer,
+    *,
+    status: str,
+    route_mode: str,
+    route_task_type: str,
+    stop_reason: str,
+    session_id: int,
+    thread_id: str,
+    run_id: str | None,
+    output: dict[str, Any] | None = None,
+) -> None:
+    """Close one request measurement and emit a payload-free run summary."""
+    state = output or {}
+    duration_ms = getattr(timer, "elapsed_ms", 0)
+    attrs = {
+        "route_mode": route_mode,
+        "route_task_type": route_task_type,
+        "stop_reason": stop_reason,
+        "session_id": session_id,
+        "thread_id": thread_id,
+        "run_id": run_id,
+        "llm_call_count": state.get("llm_call_count", 0),
+        "llm_input_tokens": state.get("llm_input_tokens", 0),
+        "llm_output_tokens": state.get("llm_output_tokens", 0),
+        "llm_usage_missing_count": state.get("llm_usage_missing_count", 0),
+        "tool_call_count": state.get("tool_call_count", 0),
+    }
+    if not timer.finish(status=status, **attrs):
+        return
+    try:
+        log.info("agent_run_measured", duration_ms=duration_ms, status=status, **attrs)
+    except Exception:
+        pass
+
+
 # =========================================================
 # Fast Path：简单确定性查询直接调工具，跳过 LLM 推理
 # =========================================================
@@ -118,6 +155,41 @@ def _business_today(now: datetime | None = None) -> date:
     if instant.tzinfo is None:
         instant = instant.replace(tzinfo=timezone.utc)
     return instant.astimezone(_BUSINESS_TIMEZONE).date()
+
+
+def _classify_fast_path(
+    message: str,
+    user_role: str,
+    merchant_id: int | None,
+    today: date | None = None,
+) -> tuple[dict[str, str], str] | None:
+    """Return deterministic analytics arguments without performing I/O."""
+    timer = SpanTimer("router.classify", "router", route_candidate="fast_path")
+    status = "ok"
+    error_type = None
+    try:
+        if user_role != "merchant" or merchant_id is None:
+            return None
+        msg = message.strip()
+        if not _METRIC_WORDS.search(msg):
+            return None
+        if _MONTH_TO_DATE_RE.search(msg):
+            current_date = today or _business_today()
+            return {
+                "start_date": current_date.replace(day=1).isoformat(),
+                "end_date": current_date.isoformat(),
+            }, "本月"
+        if _TODAY_RE.search(msg):
+            return {"date": "today"}, "今天"
+        if _YESTERDAY_RE.search(msg):
+            return {"date": "yesterday"}, "昨天"
+        return None
+    except Exception as exc:
+        status = "error"
+        error_type = type(exc).__name__
+        raise
+    finally:
+        timer.finish(status=status, **({"error_type": error_type} if error_type else {}))
 
 
 async def _try_fast_path(
@@ -146,32 +218,12 @@ async def _try_fast_path(
 
     :return: 格式化的回答字符串，None 表示不走 Fast Path
     """
-    # 只有 merchant 角色的简单数据查询才走 Fast Path
-    if user_role != "merchant" or merchant_id is None:
+    decision = _classify_fast_path(
+        message, user_role, merchant_id, today=today
+    )
+    if decision is None:
         return None
-
-    msg = message.strip()
-
-    # 检查是否包含指标关键词
-    if not _METRIC_WORDS.search(msg):
-        return None
-
-    # 确定日期或月到今日范围
-    if _MONTH_TO_DATE_RE.search(msg):
-        current_date = today or _business_today()
-        arguments = {
-            "start_date": current_date.replace(day=1).isoformat(),
-            "end_date": current_date.isoformat(),
-        }
-        date_label = "本月"
-    elif _TODAY_RE.search(msg):
-        arguments = {"date": "today"}
-        date_label = "今天"
-    elif _YESTERDAY_RE.search(msg):
-        arguments = {"date": "yesterday"}
-        date_label = "昨天"
-    else:
-        return None  # 没有明确时间词，fallback 到 ReAct
+    arguments, date_label = decision
 
     # 直接调 MCP 工具
     try:
@@ -464,45 +516,58 @@ async def chat(
             },
         )
 
+    request_timer = SpanTimer(
+        "request.total",
+        "server",
+        user_role=user_role,
+        trace_id=request_trace_id,
+    )
+    session_timer = SpanTimer("session.prepare", "session")
+
     # ---- Session 自动创建（session_id=0 表示新对话）----
     # 前端可以直接调 /chat 而不必先调 /sessions，更友好
     actual_session_id = request.session_id
-    if actual_session_id == 0:
-        actual_session_id = await session_manager.create_session(
-            user_id=user_id,
-            user_role=user_role,
-            merchant_id=merchant_id,
-            first_message=request.message,
-        )
-        log.info("session_auto_created", session_id=actual_session_id)
-    else:
-        await _assert_session_owned_by_user(actual_session_id, user_id)
+    try:
+        if actual_session_id == 0:
+            actual_session_id = await session_manager.create_session(
+                user_id=user_id,
+                user_role=user_role,
+                merchant_id=merchant_id,
+                first_message=request.message,
+            )
+            log.info("session_auto_created", session_id=actual_session_id)
+        else:
+            await _assert_session_owned_by_user(actual_session_id, user_id)
 
     # ---- Session 持久化：保存用户输入消息（异步，不阻塞 SSE 启动）----
     # 写 agent_message 表（role=user, step_index=0），方便后续会话回放和评测
-    try:
-        await session_manager.save_message(
-            session_id=actual_session_id,
-            role="user",
-            content=request.message,
-            step_index=0,
-        )
-    except Exception as e:
-        # DB 不可用时不阻塞主流程，仅日志告警
-        log.warning("session_save_failed", error=str(e))
+        try:
+            await session_manager.save_message(
+                session_id=actual_session_id,
+                role="user",
+                content=request.message,
+                step_index=0,
+            )
+        except Exception as e:
+            log.warning("session_save_failed", error=str(e))
 
     # 初始化 thread/run：thread_id 给 LangGraph；run_id 给企业运行时排障入口
-    import uuid
-    thread_id = request.thread_id or str(uuid.uuid4())
-    run_id = await _safe_create_runtime_run(
-        session_id=actual_session_id,
-        thread_id=thread_id,
-        user_id=user_id,
-        user_role=user_role,
-        merchant_id=merchant_id,
-        input_message=request.message,
-        trace_id=request_trace_id,
-    )
+        import uuid
+        thread_id = request.thread_id or str(uuid.uuid4())
+        run_id = await _safe_create_runtime_run(
+            session_id=actual_session_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            user_role=user_role,
+            merchant_id=merchant_id,
+            input_message=request.message,
+            trace_id=request_trace_id,
+        )
+    except Exception as exc:
+        session_timer.finish(status="error", error_type=type(exc).__name__)
+        request_timer.finish(status="error", stop_reason="setup_error")
+        raise
+    session_timer.finish(status="ok")
 
     # ---- Fast Path 路由：简单确定性查询跳过 ReAct 完整循环 ----
     # 动机（面试说法）：「简单指标查询（今天/昨天/本月 + 销售额/订单数）
@@ -557,6 +622,16 @@ async def chat(
                 trace_id=request_trace_id,
             )
             await _safe_mark_runtime_status(run_id, "COMPLETED")
+            _finish_request_measurement(
+                request_timer,
+                status="ok",
+                route_mode="fast_path",
+                route_task_type="analytics_query",
+                stop_reason="fast_path",
+                session_id=actual_session_id,
+                thread_id=thread_id,
+                run_id=run_id,
+            )
             yield _sse("final_answer", payload)
 
         return StreamingResponse(fast_stream(), media_type="text/event-stream",
@@ -565,7 +640,14 @@ async def chat(
     from agent.evidence_gate import initial_evidence_state
     from agent.tool_router import classify_request
 
-    route_decision = classify_request(user_role, request.message)
+    route_timer = SpanTimer("router.classify", "router", route_candidate="react")
+    try:
+        route_decision = classify_request(user_role, request.message)
+    except Exception as exc:
+        route_timer.finish(status="error", error_type=type(exc).__name__)
+        raise
+    else:
+        route_timer.finish(status="ok")
     route_state = route_decision.to_state()
     evidence_state = initial_evidence_state(route_decision)
 
@@ -608,6 +690,17 @@ async def chat(
         """LangGraph astream_events 转换为 SSE 格式。"""
         # 立即推送 session_id 和 thread_id（前端记录，方便后续 /chat/resume）
         seq = 0
+        terminal_recorded = False
+        run_totals = {
+            "llm_call_count": 0,
+            "llm_input_tokens": 0,
+            "llm_output_tokens": 0,
+            "llm_usage_missing_count": 0,
+            "tool_call_count": 0,
+        }
+        graph_timer = SpanTimer(
+            "graph.total", "graph", session_id=actual_session_id, thread_id=thread_id
+        )
         await _safe_mark_runtime_status(run_id, "RUNNING")
         payload = {
             "session_id": str(actual_session_id),
@@ -711,6 +804,10 @@ async def chat(
                 elif event_type == "on_chain_end":
                     output = event_data.get("output", {})
                     if isinstance(output, dict):
+                        for counter in run_totals:
+                            value = output.get(counter)
+                            if isinstance(value, int) and not isinstance(value, bool):
+                                run_totals[counter] = max(run_totals[counter], value)
                         if output.get("final_answer"):
                             payload = {
                                 "content": output["final_answer"],
@@ -729,6 +826,21 @@ async def chat(
                             )
                             seq += 1
                             await _safe_mark_runtime_status(run_id, "COMPLETED")
+                            if not terminal_recorded:
+                                terminal_recorded = True
+                                stop_reason = output.get("stop_reason", "completed")
+                                graph_timer.finish(status="ok", stop_reason=stop_reason)
+                                _finish_request_measurement(
+                                    request_timer,
+                                    status="ok",
+                                    route_mode=output.get("route_mode", route_state.get("route_mode", "react")),
+                                    route_task_type=route_state.get("route_task_type", "unknown"),
+                                    stop_reason=stop_reason,
+                                    session_id=actual_session_id,
+                                    thread_id=thread_id,
+                                    run_id=run_id,
+                                    output={**run_totals, **output},
+                                )
                             yield _sse("final_answer", payload)
                         if output.get("pending_hitl"):
                             payload = _safe_hitl_request_event(thread_id, output.get("pending_action", {}))
@@ -744,9 +856,35 @@ async def chat(
                             )
                             seq += 1
                             await _safe_mark_runtime_status(run_id, "WAITING_APPROVAL")
+                            if not terminal_recorded:
+                                terminal_recorded = True
+                                graph_timer.finish(status="ok", stop_reason="pending_approval")
+                                _finish_request_measurement(
+                                    request_timer,
+                                    status="ok",
+                                    route_mode=output.get("route_mode", route_state.get("route_mode", "react")),
+                                    route_task_type=route_state.get("route_task_type", "unknown"),
+                                    stop_reason="pending_approval",
+                                    session_id=actual_session_id,
+                                    thread_id=thread_id,
+                                    run_id=run_id,
+                                    output={**run_totals, **output},
+                                )
                             yield _sse("hitl_request", payload)
 
         except Exception as e:
+            terminal_recorded = True
+            graph_timer.finish(status="error", stop_reason="stream_error")
+            _finish_request_measurement(
+                request_timer,
+                status="error",
+                route_mode=route_state.get("route_mode", "react"),
+                route_task_type=route_state.get("route_task_type", "unknown"),
+                stop_reason="stream_error",
+                session_id=actual_session_id,
+                thread_id=thread_id,
+                run_id=run_id,
+            )
             log.error("agent_stream_error", error=str(e), exc_info=True)
             payload = _safe_error_event(e)
             await _safe_append_runtime_event(
@@ -761,6 +899,19 @@ async def chat(
             )
             await _safe_mark_runtime_status(run_id, "FAILED", error_message=str(e))
             yield _sse("error", payload)
+        finally:
+            if not terminal_recorded:
+                graph_timer.finish(status="error", stop_reason="incomplete_stream")
+                _finish_request_measurement(
+                    request_timer,
+                    status="error",
+                    route_mode=route_state.get("route_mode", "react"),
+                    route_task_type=route_state.get("route_task_type", "unknown"),
+                    stop_reason="incomplete_stream",
+                    session_id=actual_session_id,
+                    thread_id=thread_id,
+                    run_id=run_id,
+                )
 
     return StreamingResponse(
         event_stream(),

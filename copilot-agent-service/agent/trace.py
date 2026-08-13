@@ -41,11 +41,15 @@ class SpanTimer:
             **attrs,
         )
 
+    @property
+    def elapsed_ms(self) -> int:
+        return int((time.perf_counter() - self.started_at) * 1000)
+
     def finish(self, status: str = "ok", **attrs: Any) -> bool:
         if self._finished:
             return False
         self._finished = True
-        duration_ms = int((time.perf_counter() - self.started_at) * 1000)
+        duration_ms = self.elapsed_ms
         _safe_log(
             "genai_span_end",
             span_id=self.span_id,

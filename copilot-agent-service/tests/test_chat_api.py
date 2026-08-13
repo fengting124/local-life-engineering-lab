@@ -16,9 +16,10 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import api.chat as chat_module
 from starlette.testclient import TestClient
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -192,6 +193,16 @@ class TestSafeSseEvents:
 # =========================================================
 
 class TestTryFastPath:
+    def test_fast_path_classification_is_pure(self):
+        decision = chat_module._classify_fast_path(
+            "本月GMV", "merchant", 42, today=date(2026, 8, 11)
+        )
+
+        assert decision == (
+            {"start_date": "2026-08-01", "end_date": "2026-08-11"},
+            "本月",
+        )
+
     def test_business_today_uses_shanghai_calendar_at_utc_month_boundary(self):
         utc_time = datetime(2026, 7, 31, 16, 30, tzinfo=timezone.utc)
 
@@ -960,6 +971,79 @@ class TestResumeEndpoint:
 
 
 class TestChatRuntimeEvents:
+    def test_fast_path_closes_request_and_session_measurements(self):
+        timers = []
+
+        class FakeTimer:
+            def __init__(self, name, kind, **attrs):
+                self.name = name
+                self.finish = MagicMock(return_value=True)
+                timers.append(self)
+
+        runtime = AsyncMock()
+        runtime.create_run.return_value = "run-measured"
+        info = MagicMock()
+        with (
+            patch("api.chat.SpanTimer", FakeTimer),
+            patch("api.chat.log.info", info),
+            patch("api.chat.session_manager.create_session", new=AsyncMock(return_value=1001)),
+            patch("api.chat.session_manager.save_message", new=AsyncMock()),
+            patch("api.chat._try_fast_path", new=AsyncMock(return_value="今天 GMV 为 500 元")),
+            patch("api.chat.runtime_store", runtime),
+        ):
+            resp = client.post(
+                "/chat",
+                json={"message": "今天销售额是多少"},
+                headers={"X-User-Id": "9001", "X-User-Role": "merchant", "X-Merchant-Id": "8001"},
+            )
+
+        assert resp.status_code == 200
+        by_name = {timer.name: timer for timer in timers}
+        assert {"request.total", "session.prepare"} <= set(by_name)
+        by_name["session.prepare"].finish.assert_called_once_with(status="ok")
+        by_name["request.total"].finish.assert_called_once()
+        measured = [call for call in info.call_args_list if call.args == ("agent_run_measured",)]
+        assert len(measured) == 1
+        assert measured[0].kwargs["route_mode"] == "fast_path"
+        assert "content" not in measured[0].kwargs
+
+    def test_react_closes_graph_measurement_on_final_answer(self):
+        timers = []
+
+        class FakeTimer:
+            def __init__(self, name, kind, **attrs):
+                self.name = name
+                self.finish = MagicMock(return_value=True)
+                timers.append(self)
+
+        async def fake_stream(*args, **kwargs):
+            yield {
+                "event": "on_chain_end",
+                "name": "final_node",
+                "data": {"output": {"final_answer": "done", "stop_reason": "completed"}},
+            }
+
+        runtime = AsyncMock()
+        runtime.create_run.return_value = "run-react"
+        with (
+            patch("api.chat.SpanTimer", FakeTimer),
+            patch("api.chat.session_manager.create_session", new=AsyncMock(return_value=1001)),
+            patch("api.chat.session_manager.save_message", new=AsyncMock()),
+            patch("api.chat._try_fast_path", new=AsyncMock(return_value=None)),
+            patch("api.chat.agent_graph.astream_events", fake_stream),
+            patch("api.chat.runtime_store", runtime),
+        ):
+            resp = client.post(
+                "/chat",
+                json={"message": "查询订单 202606100003"},
+                headers={"X-User-Id": "9001", "X-User-Role": "cs"},
+            )
+
+        assert resp.status_code == 200
+        by_name = {timer.name: timer for timer in timers}
+        assert "graph.total" in by_name
+        by_name["graph.total"].finish.assert_called_once_with(status="ok", stop_reason="completed")
+
     def test_fast_path_records_agent_run_and_events(self):
         runtime = AsyncMock()
         runtime.create_run.return_value = "run-001"

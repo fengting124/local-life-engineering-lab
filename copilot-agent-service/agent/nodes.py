@@ -16,6 +16,7 @@ import time
 import structlog
 from collections.abc import Mapping
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage, RemoveMessage
+from agent.trace import SpanTimer, genai_span
 from langchain_core.language_models import BaseChatModel
 
 from agent.answer_facts import build_evidence_answer, validate_or_fallback
@@ -26,7 +27,6 @@ from agent.evidence_gate import (
 )
 from agent.state import AgentState
 from agent.tool_router import order_target_hash
-from agent.trace import genai_span
 from mcp.mcp_client import McpClient, McpToolError
 from config.settings import settings
 
@@ -1506,6 +1506,13 @@ async def hitl_node(state: AgentState) -> dict:
     agent_reason = pending.get("reason", "Agent 认为需要执行此高风险动作")
     session_id   = state.get("session_id")
     thread_id    = state.get("thread_id", "")
+    stage_timer = SpanTimer(
+        "hitl.prepare",
+        "hitl",
+        action_type=action_type,
+        session_id=session_id,
+        thread_id=thread_id,
+    )
 
     log.info(
         "hitl_requested",
@@ -1570,6 +1577,7 @@ async def hitl_node(state: AgentState) -> dict:
         )
         log.info("hitl_approval_written", approval_id=approval_id)
     except Exception as e:
+        stage_timer.finish(status="error", error_type=type(e).__name__)
         log.error("hitl_approval_write_failed", error_type=type(e).__name__)
         return {
             "pending_hitl": False,
@@ -1599,6 +1607,7 @@ async def hitl_node(state: AgentState) -> dict:
         f"已提交审批申请，请运营人员在审批工作台处理。"
         f"审批通过后系统将继续执行，拒绝则任务终止。"
     ))
+    stage_timer.finish(status="ok")
 
     return {
         "messages":      [hitl_message],
