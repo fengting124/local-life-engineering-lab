@@ -169,6 +169,137 @@ async def test_valid_missing_order_stops_after_one_query(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_knowledge_route_searches_once_then_synthesizes(monkeypatch):
+    from rag import knowledge_tool
+
+    _force_memory_saver(monkeypatch)
+    monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
+    mock_mcp = MagicMock()
+    mock_mcp.list_tools = AsyncMock(return_value=[])
+    monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+    native_tool = MagicMock()
+    native_tool.ainvoke = AsyncMock(return_value=(
+        '{"found":true,"context":"活动券过期后不可使用",'
+        '"sources":[{"doc_id":"platform-rules"}],"doc_count":1}'
+    ))
+    native_factory = MagicMock(return_value=native_tool)
+    monkeypatch.setattr(
+        knowledge_tool,
+        "make_knowledge_search_tool",
+        native_factory,
+    )
+    scripted = ScriptedLLM([AIMessage(content="活动券过期后不可使用。[platform-rules]")])
+    monkeypatch.setattr(nodes, "_llm", scripted)
+
+    from agent.graph import build_graph
+    graph = build_graph()
+    message = "平台优惠券过期规则是什么？请引用规则依据"
+    decision = classify_request("merchant", message)
+    final_state = await graph.ainvoke(
+        _initial_state(
+            decision,
+            message,
+            role="merchant",
+            thread_id="e2e-rag-controlled",
+        ),
+        config={"configurable": {"thread_id": "e2e-rag-controlled"}},
+    )
+
+    native_factory.assert_called_once_with(merchant_id=42)
+    native_tool.ainvoke.assert_awaited_once_with({"query": message})
+    assert scripted._i == 1
+    assert scripted.invocation_bindings == [((), None)]
+    assert final_state["llm_call_count"] == 1
+    assert final_state["tool_call_count"] == 1
+    assert final_state["stop_reason"] == "completed"
+    assert final_state["final_answer"] == "活动券过期后不可使用。[platform-rules]"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_no_hit_stops_without_llm_synthesis(monkeypatch):
+    from rag import knowledge_tool
+
+    _force_memory_saver(monkeypatch)
+    mock_mcp = MagicMock()
+    mock_mcp.list_tools = AsyncMock(return_value=[])
+    monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+    native_tool = MagicMock()
+    native_tool.ainvoke = AsyncMock(return_value=(
+        '{"found":false,"message":"未找到相关文档","sources":[]}'
+    ))
+    monkeypatch.setattr(
+        knowledge_tool,
+        "make_knowledge_search_tool",
+        MagicMock(return_value=native_tool),
+    )
+    rejecting_llm = MagicMock()
+    rejecting_llm.ainvoke = AsyncMock(
+        side_effect=AssertionError("no-hit must not call synthesis LLM")
+    )
+    monkeypatch.setattr(nodes, "_llm", rejecting_llm)
+
+    from agent.graph import build_graph
+    graph = build_graph()
+    message = "平台有没有火星门店传送规则？"
+    decision = classify_request("merchant", message)
+    final_state = await graph.ainvoke(
+        _initial_state(
+            decision,
+            message,
+            role="merchant",
+            thread_id="e2e-rag-no-hit",
+        ),
+        config={"configurable": {"thread_id": "e2e-rag-no-hit"}},
+    )
+
+    native_tool.ainvoke.assert_awaited_once_with({"query": message})
+    rejecting_llm.ainvoke.assert_not_awaited()
+    assert final_state["llm_call_count"] == 0
+    assert final_state["tool_call_count"] == 1
+    assert final_state["stop_reason"] == "not_found"
+    assert "未找到" in final_state["final_answer"]
+
+
+@pytest.mark.asyncio
+async def test_cs_knowledge_route_denies_before_native_rag(monkeypatch):
+    from rag import knowledge_tool
+
+    _force_memory_saver(monkeypatch)
+    mock_mcp = MagicMock()
+    mock_mcp.list_tools = AsyncMock(return_value=[])
+    monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+    native_factory = MagicMock()
+    monkeypatch.setattr(
+        knowledge_tool,
+        "make_knowledge_search_tool",
+        native_factory,
+    )
+    rejecting_llm = MagicMock()
+    rejecting_llm.ainvoke = AsyncMock()
+    monkeypatch.setattr(nodes, "_llm", rejecting_llm)
+
+    from agent.graph import build_graph
+    graph = build_graph()
+    message = "平台退款规则是什么？"
+    decision = classify_request("cs", message)
+    final_state = await graph.ainvoke(
+        _initial_state(
+            decision,
+            message,
+            role="cs",
+            thread_id="e2e-rag-cs-denied",
+        ),
+        config={"configurable": {"thread_id": "e2e-rag-cs-denied"}},
+    )
+
+    assert final_state["stop_reason"] == "permission_denied"
+    assert final_state.get("tool_call_count", 0) == 0
+    assert final_state["llm_call_count"] == 0
+    native_factory.assert_not_called()
+    rejecting_llm.ainvoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_controlled_order_tool_timeout_is_not_reported_as_success(monkeypatch):
     _force_memory_saver(monkeypatch)
     mock_mcp = MagicMock()

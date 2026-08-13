@@ -2297,13 +2297,15 @@ class TestLlmNode:
 
         mock_mcp = MagicMock()
         mock_mcp.list_tools = AsyncMock(side_effect=Exception("MCP down"))
-        fake_llm = FakeLLM(ai_with_tool_call("knowledge_search", {"query": "规则"}))
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock(
+            side_effect=AssertionError("controlled knowledge dispatch must not call LLM")
+        )
         native_tool = SimpleNamespace(name="knowledge_search")
         native_factory = MagicMock(return_value=native_tool)
         monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
         monkeypatch.setattr(nodes, "_llm", fake_llm)
         monkeypatch.setattr(knowledge_tool, "make_knowledge_search_tool", native_factory)
-        monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
 
         result = await nodes.llm_node(make_state(
             [HumanMessage(content="平台规则是什么")],
@@ -2314,9 +2316,213 @@ class TestLlmNode:
             route_next_tool="knowledge_search",
         ))
 
-        assert fake_llm.bound_tools == [native_tool]
-        assert fake_llm.tool_choice == "knowledge_search"
+        assert result["messages"][0].tool_calls[0]["name"] == "knowledge_search"
+        assert result["messages"][0].tool_calls[0]["args"] == {
+            "query": "平台规则是什么"
+        }
+        assert result["llm_call_count"] == 0
+        fake_llm.ainvoke.assert_not_awaited()
         assert result["final_answer"] is None
+
+    @pytest.mark.asyncio
+    async def test_controlled_knowledge_dispatches_current_query_without_llm(
+        self, monkeypatch
+    ):
+        from rag import knowledge_tool
+
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[])
+        rejecting_llm = MagicMock()
+        rejecting_llm.ainvoke = AsyncMock(
+            side_effect=AssertionError("controlled knowledge dispatch must not call LLM")
+        )
+        native_tool = SimpleNamespace(name="knowledge_search")
+        native_factory = MagicMock(return_value=native_tool)
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", rejecting_llm)
+        monkeypatch.setattr(knowledge_tool, "make_knowledge_search_tool", native_factory)
+
+        query = "平台优惠券叠加和过期规则是什么？请引用规则依据"
+        result = await nodes.llm_node(make_state(
+            [
+                HumanMessage(content="上一轮的退款规则是什么？"),
+                AIMessage(content="上一轮已结束。"),
+                HumanMessage(content=query),
+            ],
+            user_role="merchant",
+            route_task_type="knowledge",
+            route_mode="controlled",
+            route_required_tools=["knowledge_search"],
+            route_authorized_tools=["knowledge_search"],
+            route_next_tool="knowledge_search",
+        ))
+
+        assert result["messages"][0].tool_calls == [{
+            "name": "knowledge_search",
+            "args": {"query": query},
+            "id": "controlled-knowledge_search-1",
+            "type": "tool_call",
+        }]
+        assert result["llm_call_count"] == 0
+        rejecting_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_controlled_knowledge_preserves_exact_query_whitespace(
+        self, monkeypatch
+    ):
+        from rag import knowledge_tool
+
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[])
+        rejecting_llm = MagicMock()
+        rejecting_llm.ainvoke = AsyncMock(
+            side_effect=AssertionError("controlled knowledge dispatch must not call LLM")
+        )
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", rejecting_llm)
+        monkeypatch.setattr(
+            knowledge_tool,
+            "make_knowledge_search_tool",
+            MagicMock(return_value=SimpleNamespace(name="knowledge_search")),
+        )
+
+        query = "  平台规则是什么？  "
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content=query)],
+            user_role="merchant",
+            route_task_type="knowledge",
+            route_mode="controlled",
+            route_required_tools=["knowledge_search"],
+            route_authorized_tools=["knowledge_search"],
+            route_next_tool="knowledge_search",
+        ))
+
+        assert result["messages"][0].tool_calls[0]["args"] == {"query": query}
+        assert result["llm_call_count"] == 0
+        rejecting_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("state_overrides", "reason"),
+        [
+            ({"route_required_tools": ["knowledge_search", "coupon_policy_lookup"]}, "plan"),
+            ({"route_authorized_tools": []}, "unauthorized"),
+            ({"route_authorized_tools": ["knowledge_search", "coupon_policy_lookup"]}, "authorization"),
+            ({"route_required_tools": None}, "malformed required tools"),
+            ({"route_authorized_tools": None}, "malformed authorized tools"),
+            ({"route_next_tool": None}, "next_tool"),
+            ({"messages": [HumanMessage(content="   ")]}, "query"),
+            ({"messages": None}, "malformed messages"),
+            ({"messages": [HumanMessage(content="旧问题"), None]}, "malformed message item"),
+            ({"messages": [HumanMessage(content="旧问题"), {"type": "human", "content": "当前问题"}]}, "stale query"),
+        ],
+    )
+    async def test_controlled_knowledge_invalid_state_fails_closed(
+        self, monkeypatch, state_overrides, reason
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[])
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        state = make_state(
+            [HumanMessage(content="平台规则是什么")],
+            route_task_type="knowledge",
+            route_mode="controlled",
+            route_required_tools=["knowledge_search"],
+            route_authorized_tools=["knowledge_search"],
+            route_next_tool="knowledge_search",
+        )
+        state.update(state_overrides)
+
+        result = await nodes.llm_node(state)
+
+        assert result["stop_reason"] == "internal_error", reason
+        assert result["evidence_stop_reason"] == "internal_error"
+        assert result["llm_call_count"] == 0
+        fake_llm.ainvoke.assert_not_awaited()
+
+    def test_controlled_knowledge_rejects_routed_tool_superset(self):
+        response, error = nodes._build_controlled_knowledge_dispatch(
+            make_state(
+                [HumanMessage(content="平台规则是什么")],
+                route_task_type="knowledge",
+                route_mode="controlled",
+                route_required_tools=["knowledge_search"],
+                route_authorized_tools=["knowledge_search"],
+                route_next_tool="knowledge_search",
+            ),
+            [
+                {"name": "knowledge_search"},
+                {"name": "coupon_policy_lookup"},
+            ],
+        )
+
+        assert response is None
+        assert error == "controlled_knowledge_tool_not_routed"
+
+    @pytest.mark.parametrize(
+        "routed_tools",
+        [
+            [{"name": "knowledge_search"}, None],
+            [None, {"name": "knowledge_search"}],
+            [{"name": "knowledge_search"}, "malformed"],
+        ],
+    )
+    def test_controlled_knowledge_rejects_malformed_routed_tool_items(
+        self, routed_tools
+    ):
+        response, error = nodes._build_controlled_knowledge_dispatch(
+            make_state(
+                [HumanMessage(content="平台规则是什么")],
+                route_task_type="knowledge",
+                route_mode="controlled",
+                route_required_tools=["knowledge_search"],
+                route_authorized_tools=["knowledge_search"],
+                route_next_tool="knowledge_search",
+            ),
+            routed_tools,
+        )
+
+        assert response is None
+        assert error == "controlled_knowledge_tool_not_routed"
+
+    @pytest.mark.asyncio
+    async def test_policy_configuration_keeps_original_llm_tool_decision(
+        self, monkeypatch
+    ):
+        from rag import knowledge_tool
+
+        monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[{
+            "name": "coupon_policy_lookup",
+            "description": "查询券配置",
+        }])
+        expected = ai_with_tool_call("knowledge_search", {"query": "优惠券门槛"})
+        fake_llm = FakeLLM(expected)
+        native_tool = SimpleNamespace(name="knowledge_search")
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(
+            knowledge_tool,
+            "make_knowledge_search_tool",
+            MagicMock(return_value=native_tool),
+        )
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="优惠券最低使用门槛怎么设置？")],
+            route_task_type="policy_configuration",
+            route_mode="controlled",
+            route_required_tools=["knowledge_search", "coupon_policy_lookup"],
+            route_authorized_tools=["knowledge_search", "coupon_policy_lookup"],
+            route_next_tool="knowledge_search",
+        ))
+
+        assert fake_llm.seen_messages
+        assert result["llm_call_count"] == 1
+        assert result["messages"][0] == expected
 
     @pytest.mark.asyncio
     async def test_cs_prompt_and_bindings_exclude_native_knowledge_tool(
