@@ -528,6 +528,44 @@ def _build_controlled_dispatch(
     }]), None
 
 
+def _build_controlled_knowledge_dispatch(
+    state: AgentState,
+    routed_tools: list[dict],
+) -> tuple[AIMessage | None, str | None]:
+    """Build the single native RAG call from the current user request."""
+    if (
+        state.get("route_mode") != "controlled"
+        or state.get("route_task_type") != "knowledge"
+    ):
+        return None, None
+    if tuple(state.get("route_required_tools", ())) != ("knowledge_search",):
+        return None, "invalid_controlled_knowledge_plan"
+    if state.get("route_next_tool") != "knowledge_search":
+        return None, "invalid_controlled_knowledge_next_tool"
+    if "knowledge_search" not in state.get("route_authorized_tools", ()):
+        return None, "unauthorized_controlled_knowledge_tool"
+    if "knowledge_search" not in {tool.get("name") for tool in routed_tools}:
+        return None, "controlled_knowledge_tool_not_routed"
+
+    current_message = next(
+        (
+            message
+            for message in reversed(state.get("messages", []))
+            if isinstance(message, HumanMessage)
+        ),
+        None,
+    )
+    query = current_message.content if current_message is not None else None
+    if not isinstance(query, str) or not query.strip():
+        return None, "controlled_knowledge_query_missing"
+    return AIMessage(content="", tool_calls=[{
+        "name": "knowledge_search",
+        "args": {"query": query.strip()},
+        "id": f"controlled-knowledge_search-{state['step_count']}",
+        "type": "tool_call",
+    }]), None
+
+
 async def llm_node(state: AgentState) -> dict:
     """
     LLM 节点：调用 Claude 决定下一步动作。
@@ -609,6 +647,10 @@ async def llm_node(state: AgentState) -> dict:
                     state,
                     tools,
                 )
+                if response is None and controlled_dispatch_error is None:
+                    response, controlled_dispatch_error = (
+                        _build_controlled_knowledge_dispatch(state, tools)
+                    )
                 if controlled_dispatch_error is not None:
                     response = AIMessage(
                         content="抱歉，受控查询参数校验失败，无法安全执行该请求。"
