@@ -116,10 +116,10 @@
 - Produces: one committed aggregate report with scenario table, stage/token shares, bottlenecks, next Fast Path candidates, graph-overhead decision, and limitations.
 
 - [x] **Step 1: Rebuild** the Agent image from this worktree and verify its source/image SHA plus MySQL, Redis, Server, Copilot, Agent, Embedding, and Reranker health required by the selected scenarios.
-- [x] **Step 2: Run** the representative set once at concurrency one (`11` rows because today/month are separate Fast Path controls); no formal scenario was rerun.
+- [x] **Step 2: Run** the representative set once at concurrency one (`11` rows because today/month are separate Fast Path controls). Independent review invalidated the first whole profile's timing contract; one complete replacement was run from `8a96bb3` and both attempts are disclosed.
 - [x] **Step 3: Validate** no refund/compensation approval was executed, no raw Prompt/answer/tool payload or credential appears in artifacts, and high-risk scenarios stop at PENDING.
 - [x] **Step 4: Write** the short report answering all eight required questions; do not claim causality or capacity from one observation.
-- [x] **Step 5: Run full gates:** Agent full suite (`769 passed`, coverage `80.26%`), mutation (`843/1188`, `71.0%`, other `0`), docs (`83` files), secret scan, and `git diff --check`.
+- [x] **Step 5: Run full gates:** Agent full suite (`773 passed`, coverage `80.25%`), mutation (`843/1188`, `71.0%`, other `0`), docs (`83` files), secret scan, and `git diff --check`.
 - [x] **Step 6: Commit** report/contract evidence as `docs(perf): report agent stage latency baseline`.
 
 ### Task 6: Independent review and Draft PR
