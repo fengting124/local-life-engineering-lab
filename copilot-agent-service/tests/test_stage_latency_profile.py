@@ -118,9 +118,41 @@ def test_row_keeps_real_tool_call_count_from_run_summary():
     profiler = _load()
     row = profiler._row(
         {"name": "multi", "role": "admin"},
-        [{"event": "agent_run_measured", "stop_reason": "completed", "tool_call_count": 3}],
+        [
+            {"event": "agent_run_measured", "stop_reason": "completed", "tool_call_count": 3},
+            {"event": "genai_span_end", "span_name": "request.total", "duration_ms": 1},
+        ],
         "completed",
         ["query_order"],
     )
 
     assert row["tool_call_count"] == 3
+
+
+def test_row_rejects_missing_correlated_measurements():
+    profiler = _load()
+
+    with pytest.raises(ValueError, match="missing agent_run_measured"):
+        profiler._row(
+            {"name": "missing", "role": "cs"},
+            [],
+            "completed",
+            [],
+        )
+
+
+def test_row_rejects_duplicate_run_summaries():
+    profiler = _load()
+    events = [
+        {"event": "agent_run_measured", "stop_reason": "completed"},
+        {"event": "agent_run_measured", "stop_reason": "completed"},
+        {"event": "genai_span_end", "span_name": "request.total", "duration_ms": 1},
+    ]
+
+    with pytest.raises(ValueError, match="expected exactly one agent_run_measured"):
+        profiler._row(
+            {"name": "duplicate", "role": "cs"},
+            events,
+            "completed",
+            [],
+        )

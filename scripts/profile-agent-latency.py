@@ -215,6 +215,25 @@ def _docker_logs(container: str, since: str) -> str:
     return result.stdout + result.stderr
 
 
+def _collect_trace_events(
+    container: str, since: str, trace_id: str, attempts: int = 10
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for attempt in range(attempts):
+        events = parse_trace_events(_docker_logs(container, since), trace_id)
+        has_run = sum(event.get("event") == "agent_run_measured" for event in events) == 1
+        has_request = sum(
+            event.get("event") == "genai_span_end"
+            and event.get("span_name") == "request.total"
+            for event in events
+        ) == 1
+        if has_run and has_request:
+            return events
+        if attempt + 1 < attempts:
+            time.sleep(0.2)
+    return events
+
+
 def _scenarios(args: argparse.Namespace) -> list[dict[str, Any]]:
     merchant = {"role": "merchant", "user_id": args.merchant_user, "merchant_id": args.merchant_id}
     admin = {"role": "admin", "user_id": args.admin_user, "merchant_id": None}
@@ -235,7 +254,23 @@ def _scenarios(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 
 def _row(scenario: dict[str, Any], events: list[dict[str, Any]], terminal: str, tools: list[str]) -> dict[str, Any]:
-    run = next((event for event in reversed(events) if event.get("event") == "agent_run_measured"), {})
+    runs = [event for event in events if event.get("event") == "agent_run_measured"]
+    if not runs:
+        raise ValueError(f"missing agent_run_measured for {scenario['name']}")
+    if len(runs) != 1:
+        raise ValueError(
+            f"expected exactly one agent_run_measured for {scenario['name']}; got {len(runs)}"
+        )
+    request_spans = [
+        event for event in events
+        if event.get("event") == "genai_span_end"
+        and event.get("span_name") == "request.total"
+    ]
+    if len(request_spans) != 1:
+        raise ValueError(
+            f"expected exactly one request.total for {scenario['name']}; got {len(request_spans)}"
+        )
+    run = runs[0]
     stages = summarize_stages(events)
     expected_pending = bool(scenario.get("expected_pending"))
     success = terminal_succeeded(terminal, expected_pending)
@@ -297,8 +332,7 @@ def main() -> int:
         trace_id = f"latency-{uuid.uuid4().hex}"
         since = datetime.now(timezone.utc).isoformat()
         terminal, tools = _post_sse(args.url, scenario, trace_id)
-        time.sleep(0.2)
-        events = parse_trace_events(_docker_logs(args.container, since), trace_id)
+        events = _collect_trace_events(args.container, since, trace_id)
         rows.append(_row(scenario, events, terminal, tools))
 
     artifact = {

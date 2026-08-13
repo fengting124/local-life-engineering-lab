@@ -1074,6 +1074,49 @@ class TestLlmNode:
         assert "safe answer" not in encoded
 
     @pytest.mark.asyncio
+    async def test_measurement_does_not_change_provider_token_budget_semantics(
+        self, monkeypatch
+    ):
+        response = AIMessage(
+            content="answer",
+            usage_metadata={
+                "input_tokens": 4,
+                "output_tokens": 3,
+                "total_tokens": 99,
+            },
+        )
+        monkeypatch.setattr(nodes, "_llm", FakeLLM(response))
+
+        result = await nodes.llm_node(make_state([HumanMessage(content="q")]))
+
+        assert result["token_count"] == 199
+        assert result["llm_input_tokens"] == 4
+        assert result["llm_output_tokens"] == 3
+
+    @pytest.mark.asyncio
+    async def test_measurement_log_failure_does_not_drop_llm_response(
+        self, monkeypatch
+    ):
+        response = AIMessage(
+            content="answer",
+            usage_metadata={"input_tokens": 4, "output_tokens": 3, "total_tokens": 7},
+        )
+        monkeypatch.setattr(nodes, "_llm", FakeLLM(response))
+        original_info = nodes.log.info
+
+        def fail_only_measurement(event, **kwargs):
+            if event == "llm_call_measured":
+                raise RuntimeError("observability unavailable")
+            return original_info(event, **kwargs)
+
+        monkeypatch.setattr(nodes.log, "info", fail_only_measurement)
+
+        result = await nodes.llm_node(make_state([HumanMessage(content="q")]))
+
+        assert result["final_answer"] == "answer"
+        assert result["token_count"] == 107
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("usage", [None, {}, {"input_tokens": -1, "output_tokens": 2}])
     async def test_missing_or_invalid_llm_usage_stays_unknown(
         self, monkeypatch, usage

@@ -586,54 +586,58 @@ async def chat(
     if fast_path_result is not None:
         async def fast_stream():
             seq = 0
-            await _safe_mark_runtime_status(run_id, "RUNNING")
-            payload = {
-                "session_id": str(actual_session_id),
-                "thread_id":  thread_id,
-                "run_id":     run_id,
-                "trace_id":   request_trace_id,
-            }
-            await _safe_append_runtime_event(
-                run_id=run_id,
-                session_id=actual_session_id,
-                thread_id=thread_id,
-                sequence_index=seq,
-                event_type="session_started",
-                event_name=None,
-                payload=payload,
-                trace_id=request_trace_id,
-            )
-            seq += 1
-            yield _sse("session_started", payload)
+            terminal_recorded = False
+            try:
+                await _safe_mark_runtime_status(run_id, "RUNNING")
+                payload = {
+                    "session_id": str(actual_session_id),
+                    "thread_id":  thread_id,
+                    "run_id":     run_id,
+                    "trace_id":   request_trace_id,
+                }
+                await _safe_append_runtime_event(
+                    run_id=run_id,
+                    session_id=actual_session_id,
+                    thread_id=thread_id,
+                    sequence_index=seq,
+                    event_type="session_started",
+                    event_name=None,
+                    payload=payload,
+                    trace_id=request_trace_id,
+                )
+                seq += 1
+                yield _sse("session_started", payload)
 
-            payload = {
-                "content":    fast_path_result,
-                "stop_reason": "fast_path",
-                "thread_id":   thread_id,
-            }
-            await _safe_append_runtime_event(
-                run_id=run_id,
-                session_id=actual_session_id,
-                thread_id=thread_id,
-                sequence_index=seq,
-                event_type="final_answer",
-                event_name=None,
-                payload=payload,
-                trace_id=request_trace_id,
-            )
-            await _safe_mark_runtime_status(run_id, "COMPLETED")
-            _finish_request_measurement(
-                request_timer,
-                status="ok",
-                route_mode="fast_path",
-                route_task_type="analytics_query",
-                stop_reason="fast_path",
-                session_id=actual_session_id,
-                thread_id=thread_id,
-                run_id=run_id,
-                output={"tool_call_count": 1},
-            )
-            yield _sse("final_answer", payload)
+                payload = {
+                    "content":    fast_path_result,
+                    "stop_reason": "fast_path",
+                    "thread_id":   thread_id,
+                }
+                await _safe_append_runtime_event(
+                    run_id=run_id,
+                    session_id=actual_session_id,
+                    thread_id=thread_id,
+                    sequence_index=seq,
+                    event_type="final_answer",
+                    event_name=None,
+                    payload=payload,
+                    trace_id=request_trace_id,
+                )
+                await _safe_mark_runtime_status(run_id, "COMPLETED")
+                terminal_recorded = True
+                yield _sse("final_answer", payload)
+            finally:
+                _finish_request_measurement(
+                    request_timer,
+                    status="ok" if terminal_recorded else "error",
+                    route_mode="fast_path",
+                    route_task_type="analytics_query",
+                    stop_reason="fast_path" if terminal_recorded else "incomplete_stream",
+                    session_id=actual_session_id,
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    output={"tool_call_count": 1},
+                )
 
         return StreamingResponse(fast_stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -693,6 +697,9 @@ async def chat(
         # 立即推送 session_id 和 thread_id（前端记录，方便后续 /chat/resume）
         seq = 0
         terminal_recorded = False
+        terminal_status = "error"
+        terminal_stop_reason = "incomplete_stream"
+        terminal_output: dict[str, Any] = {}
         run_totals = {
             "llm_call_count": 0,
             "llm_input_tokens": 0,
@@ -700,9 +707,7 @@ async def chat(
             "llm_usage_missing_count": 0,
             "tool_call_count": 0,
         }
-        graph_timer = SpanTimer(
-            "graph.total", "graph", session_id=actual_session_id, thread_id=thread_id
-        )
+        graph_timer: SpanTimer | None = None
         await _safe_mark_runtime_status(run_id, "RUNNING")
         payload = {
             "session_id": str(actual_session_id),
@@ -724,6 +729,12 @@ async def chat(
         yield _sse("session_started", payload)
         try:
             # astream_events 以事件流形式输出每个节点的执行过程
+            graph_timer = SpanTimer(
+                "graph.total",
+                "graph",
+                session_id=actual_session_id,
+                thread_id=thread_id,
+            )
             async for event in agent_graph.astream_events(
                 initial_state, config=config, version="v2"
             ):
@@ -830,19 +841,9 @@ async def chat(
                             await _safe_mark_runtime_status(run_id, "COMPLETED")
                             if not terminal_recorded:
                                 terminal_recorded = True
-                                stop_reason = output.get("stop_reason", "completed")
-                                graph_timer.finish(status="ok", stop_reason=stop_reason)
-                                _finish_request_measurement(
-                                    request_timer,
-                                    status="ok",
-                                    route_mode=output.get("route_mode", route_state.get("route_mode", "react")),
-                                    route_task_type=route_state.get("route_task_type", "unknown"),
-                                    stop_reason=stop_reason,
-                                    session_id=actual_session_id,
-                                    thread_id=thread_id,
-                                    run_id=run_id,
-                                    output={**output, **run_totals},
-                                )
+                                terminal_status = "ok"
+                                terminal_stop_reason = output.get("stop_reason", "completed")
+                                terminal_output = output
                             yield _sse("final_answer", payload)
                         if output.get("pending_hitl"):
                             payload = _safe_hitl_request_event(thread_id, output.get("pending_action", {}))
@@ -860,33 +861,16 @@ async def chat(
                             await _safe_mark_runtime_status(run_id, "WAITING_APPROVAL")
                             if not terminal_recorded:
                                 terminal_recorded = True
-                                graph_timer.finish(status="ok", stop_reason="pending_approval")
-                                _finish_request_measurement(
-                                    request_timer,
-                                    status="ok",
-                                    route_mode=output.get("route_mode", route_state.get("route_mode", "react")),
-                                    route_task_type=route_state.get("route_task_type", "unknown"),
-                                    stop_reason="pending_approval",
-                                    session_id=actual_session_id,
-                                    thread_id=thread_id,
-                                    run_id=run_id,
-                                    output={**output, **run_totals},
-                                )
+                                terminal_status = "ok"
+                                terminal_stop_reason = "pending_approval"
+                                terminal_output = output
                             yield _sse("hitl_request", payload)
 
         except Exception as e:
             terminal_recorded = True
-            graph_timer.finish(status="error", stop_reason="stream_error")
-            _finish_request_measurement(
-                request_timer,
-                status="error",
-                route_mode=route_state.get("route_mode", "react"),
-                route_task_type=route_state.get("route_task_type", "unknown"),
-                stop_reason="stream_error",
-                session_id=actual_session_id,
-                thread_id=thread_id,
-                run_id=run_id,
-            )
+            terminal_status = "error"
+            terminal_stop_reason = "stream_error"
+            terminal_output = {}
             log.error("agent_stream_error", error=str(e), exc_info=True)
             payload = _safe_error_event(e)
             await _safe_append_runtime_event(
@@ -902,18 +886,24 @@ async def chat(
             await _safe_mark_runtime_status(run_id, "FAILED", error_message=str(e))
             yield _sse("error", payload)
         finally:
-            if not terminal_recorded:
-                graph_timer.finish(status="error", stop_reason="incomplete_stream")
-                _finish_request_measurement(
-                    request_timer,
-                    status="error",
-                    route_mode=route_state.get("route_mode", "react"),
-                    route_task_type=route_state.get("route_task_type", "unknown"),
-                    stop_reason="incomplete_stream",
-                    session_id=actual_session_id,
-                    thread_id=thread_id,
-                    run_id=run_id,
+            if graph_timer is not None:
+                graph_timer.finish(
+                    status=terminal_status,
+                    stop_reason=terminal_stop_reason,
                 )
+            _finish_request_measurement(
+                request_timer,
+                status=terminal_status,
+                route_mode=terminal_output.get(
+                    "route_mode", route_state.get("route_mode", "react")
+                ),
+                route_task_type=route_state.get("route_task_type", "unknown"),
+                stop_reason=terminal_stop_reason,
+                session_id=actual_session_id,
+                thread_id=thread_id,
+                run_id=run_id,
+                output={**terminal_output, **run_totals},
+            )
 
     return StreamingResponse(
         event_stream(),

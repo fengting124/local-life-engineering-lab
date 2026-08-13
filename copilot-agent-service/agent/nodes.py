@@ -639,19 +639,22 @@ async def llm_node(state: AgentState) -> dict:
                 output_tokens,
                 llm_duration_seconds,
             )
-        log.info(
-            "llm_call_measured",
-            session_id=state.get("session_id"),
-            thread_id=state.get("thread_id"),
-            step=state["step_count"],
-            provider=settings.llm_provider,
-            model=settings.llm_model or "provider-default",
-            duration_ms=int(llm_duration_seconds * 1000),
-            input_tokens=input_tokens if usage_reported else None,
-            output_tokens=output_tokens if usage_reported else None,
-            total_tokens=total_tokens,
-            usage_status="reported" if usage_reported else "missing",
-        )
+        try:
+            log.info(
+                "llm_call_measured",
+                session_id=state.get("session_id"),
+                thread_id=state.get("thread_id"),
+                step=state["step_count"],
+                provider=settings.llm_provider,
+                model=settings.llm_model or "provider-default",
+                duration_ms=int(llm_duration_seconds * 1000),
+                input_tokens=input_tokens if usage_reported else None,
+                output_tokens=output_tokens if usage_reported else None,
+                total_tokens=total_tokens,
+                usage_status="reported" if usage_reported else "missing",
+            )
+        except Exception:
+            pass
 
     usage_status = (
         "reported" if usage_reported
@@ -665,7 +668,9 @@ async def llm_node(state: AgentState) -> dict:
         usage_status=usage_status,
     )
 
-    new_tokens = total_tokens or 0
+    # Preserve the pre-instrumentation context-budget behavior. Provider total
+    # may include cached/system tokens that are not equal to input + output.
+    new_tokens = usage.get("total_tokens", 0) if isinstance(usage, Mapping) else 0
 
     # 检查是否是 Final Answer（无 tool_calls）
     final_answer = None
