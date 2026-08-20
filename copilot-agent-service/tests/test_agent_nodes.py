@@ -309,6 +309,69 @@ class TestToolNode:
         advance.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_policy_duplicate_knowledge_batch_is_rejected_without_execution(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.call_tool = AsyncMock(return_value="不该被调用")
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        state = controlled_state(
+            [ai_with_tool_calls([
+                {
+                    "name": "knowledge_search",
+                    "args": {"query": "优惠券最低使用门槛怎么设置？"},
+                    "id": "k1",
+                },
+                {
+                    "name": "knowledge_search",
+                    "args": {"query": "优惠券门槛配置规则"},
+                    "id": "k2",
+                },
+            ])],
+            "policy_configuration",
+            ["knowledge_search", "coupon_policy_lookup"],
+            ["knowledge_search", "coupon_policy_lookup"],
+            "knowledge_search",
+        )
+
+        result = await nodes.tool_node(state)
+
+        assert result["evidence_stop_reason"] == "internal_error"
+        assert result["last_tool_error"] == "invalid_controlled_tool_batch"
+        assert len(result["messages"]) == 2
+        mock_mcp.call_tool.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_policy_dispatch_uses_standard_tool_node_and_advances_evidence(
+        self, monkeypatch
+    ):
+        from rag import knowledge_tool
+
+        native = SimpleNamespace(ainvoke=AsyncMock(return_value='{"found":true}'))
+        native_factory = MagicMock(return_value=native)
+        monkeypatch.setattr(knowledge_tool, "make_knowledge_search_tool", native_factory)
+        state = controlled_state(
+            [HumanMessage(content="优惠券最低使用门槛怎么设置？")],
+            "policy_configuration",
+            ["knowledge_search", "coupon_policy_lookup"],
+            ["knowledge_search", "coupon_policy_lookup"],
+            "knowledge_search",
+        )
+        dispatch, error = nodes._build_controlled_knowledge_dispatch(
+            state, [{"name": "knowledge_search"}]
+        )
+
+        assert error is None
+        result = await nodes.tool_node({**state, "messages": [dispatch]})
+
+        assert result["route_next_tool"] == "coupon_policy_lookup"
+        assert result["evidence_collected"]["knowledge_search"]["status"] == "success"
+        native_factory.assert_called_once_with(merchant_id=42)
+        native.ainvoke.assert_awaited_once_with({
+            "query": "优惠券最低使用门槛怎么设置？"
+        })
+
+    @pytest.mark.asyncio
     async def test_tool_success_advances_payment_route(self, monkeypatch):
         mock_mcp = MagicMock()
         mock_mcp.call_tool = AsyncMock(return_value=json.dumps({
@@ -455,7 +518,7 @@ class TestToolNode:
 
         assert result["last_tool_failed"] is False
         assert result["messages"][0].content == '{"found": true}'
-        native_factory.assert_called_once()
+        native_factory.assert_called_once_with(merchant_id=42)
         mock_native.ainvoke.assert_awaited_once_with({"query": "平台规则"})
         mock_mcp.call_tool.assert_not_awaited()
 
@@ -2520,30 +2583,33 @@ class TestLlmNode:
         assert error == "controlled_knowledge_tool_not_routed"
 
     @pytest.mark.asyncio
-    async def test_policy_configuration_keeps_original_llm_tool_decision(
+    async def test_policy_configuration_dispatches_first_knowledge_call_without_llm(
         self, monkeypatch
     ):
         from rag import knowledge_tool
 
-        monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
         mock_mcp = MagicMock()
         mock_mcp.list_tools = AsyncMock(return_value=[{
             "name": "coupon_policy_lookup",
             "description": "查询券配置",
         }])
-        expected = ai_with_tool_call("knowledge_search", {"query": "优惠券门槛"})
-        fake_llm = FakeLLM(expected)
+        rejecting_llm = MagicMock()
+        rejecting_llm.ainvoke = AsyncMock(
+            side_effect=AssertionError("controlled policy dispatch must not call LLM")
+        )
+        rejecting_llm.bind_tools.return_value = rejecting_llm
         native_tool = SimpleNamespace(name="knowledge_search")
         monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
-        monkeypatch.setattr(nodes, "_llm", fake_llm)
+        monkeypatch.setattr(nodes, "_llm", rejecting_llm)
         monkeypatch.setattr(
             knowledge_tool,
             "make_knowledge_search_tool",
             MagicMock(return_value=native_tool),
         )
 
+        query = "优惠券最低使用门槛怎么设置？"
         result = await nodes.llm_node(make_state(
-            [HumanMessage(content="优惠券最低使用门槛怎么设置？")],
+            [HumanMessage(content="旧问题"), HumanMessage(content=query)],
             route_task_type="policy_configuration",
             route_mode="controlled",
             route_required_tools=["knowledge_search", "coupon_policy_lookup"],
@@ -2551,9 +2617,122 @@ class TestLlmNode:
             route_next_tool="knowledge_search",
         ))
 
-        assert fake_llm.seen_messages
-        assert result["llm_call_count"] == 1
-        assert result["messages"][0] == expected
+        assert result["messages"][0].tool_calls == [{
+            "name": "knowledge_search",
+            "args": {"query": query},
+            "id": "controlled-knowledge_search-1",
+            "type": "tool_call",
+        }]
+        assert result["llm_call_count"] == 0
+        rejecting_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_policy_configuration_dispatches_policy_lookup_without_llm(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[{
+            "name": "coupon_policy_lookup",
+            "description": "查询券配置",
+        }])
+        rejecting_llm = MagicMock()
+        rejecting_llm.ainvoke = AsyncMock(
+            side_effect=AssertionError("controlled policy dispatch must not call LLM")
+        )
+        rejecting_llm.bind_tools.return_value = rejecting_llm
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", rejecting_llm)
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="优惠券最低使用门槛怎么设置？")],
+            route_task_type="policy_configuration",
+            route_mode="controlled",
+            route_required_tools=["knowledge_search", "coupon_policy_lookup"],
+            route_authorized_tools=["knowledge_search", "coupon_policy_lookup"],
+            route_next_tool="coupon_policy_lookup",
+            evidence_collected={
+                "knowledge_search": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {"knowledge_found": True},
+                }
+            },
+        ))
+
+        assert result["messages"][0].tool_calls == [{
+            "name": "coupon_policy_lookup",
+            "args": {},
+            "id": "controlled-coupon_policy_lookup-1",
+            "type": "tool_call",
+        }]
+        assert result["llm_call_count"] == 0
+        rejecting_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("overrides", "routed_tools"),
+        [
+            ({"route_required_tools": ["knowledge_search"]}, [{"name": "knowledge_search"}]),
+            (
+                {"route_required_tools": [
+                    "knowledge_search", "coupon_policy_lookup", "query_order"
+                ]},
+                [{"name": "knowledge_search"}],
+            ),
+            ({"route_required_tools": None}, [{"name": "knowledge_search"}]),
+            ({"route_authorized_tools": ["knowledge_search"]}, [{"name": "knowledge_search"}]),
+            ({"route_authorized_tools": None}, [{"name": "knowledge_search"}]),
+            ({}, [{"name": "knowledge_search"}, {"name": "coupon_policy_lookup"}]),
+        ],
+    )
+    def test_policy_configuration_rejects_non_exact_route_contract(
+        self, overrides, routed_tools
+    ):
+        state = make_state(
+            [HumanMessage(content="优惠券最低使用门槛怎么设置？")],
+            route_task_type="policy_configuration",
+            route_mode="controlled",
+            route_required_tools=["knowledge_search", "coupon_policy_lookup"],
+            route_authorized_tools=["knowledge_search", "coupon_policy_lookup"],
+            route_next_tool="knowledge_search",
+        )
+        state.update(overrides)
+
+        response, error = nodes._build_controlled_knowledge_dispatch(
+            state, routed_tools
+        )
+
+        assert response is None
+        assert error is not None
+
+    @pytest.mark.parametrize("knowledge_record", [
+        None,
+        {"status": "not_found", "attempts": 1, "facts": {"knowledge_found": False}},
+        {"status": "success", "attempts": 1, "facts": {}},
+        {"status": "success", "attempts": 1, "facts": {"knowledge_found": False}},
+        "malformed",
+    ])
+    def test_policy_lookup_requires_successful_knowledge_evidence(
+        self, knowledge_record
+    ):
+        records = (
+            {} if knowledge_record is None else {"knowledge_search": knowledge_record}
+        )
+
+        response, error = nodes._build_controlled_knowledge_dispatch(
+            make_state(
+                [HumanMessage(content="优惠券最低使用门槛怎么设置？")],
+                route_task_type="policy_configuration",
+                route_mode="controlled",
+                route_required_tools=["knowledge_search", "coupon_policy_lookup"],
+                route_authorized_tools=["knowledge_search", "coupon_policy_lookup"],
+                route_next_tool="coupon_policy_lookup",
+                evidence_collected=records,
+            ),
+            [{"name": "coupon_policy_lookup"}],
+        )
+
+        assert response is None
+        assert error == "controlled_policy_knowledge_evidence_missing"
 
     @pytest.mark.asyncio
     async def test_cs_prompt_and_bindings_exclude_native_knowledge_tool(
