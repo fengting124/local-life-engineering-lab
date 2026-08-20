@@ -188,7 +188,7 @@ fix and full gates passed. The second review found incomplete field validation i
 entries; a second RED/GREEN cycle closed it while preserving omitted-field defaults. A final
 read-only review found no blocking or non-blocking findings (`BLOCKING FINDINGS=0`).
 
-- [ ] **Step 3: Push and create a Draft PR**
+- [x] **Step 3: Push and create a Draft PR**
 
 The PR body must include exact head, test numbers, Case 32/37 5x results, control results, runtime hashes, remaining risks, and `BLOCKING FINDINGS`.
 
