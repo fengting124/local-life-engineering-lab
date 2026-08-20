@@ -1,8 +1,8 @@
 {
-  "branch": "test/agent-post-product-baseline",
-  "base_sha": "6bbf266684af3d9caccc85d1da5e1179c66b9a46",
-  "verification_sha": "6bbf266684af3d9caccc85d1da5e1179c66b9a46",
-  "generated_at": "2026-08-12T17:38:00+0800",
+  "branch": "main",
+  "base_sha": "18542a6bea99f5b4e9adc7dcf079dc32638f809a",
+  "verification_sha": "18542a6bea99f5b4e9adc7dcf079dc32638f809a",
+  "generated_at": "2026-08-21T02:18:26+08:00",
   "environment": {
     "docker": "28.1.1",
     "docker_compose": "2.35.1",
@@ -15,10 +15,11 @@
     "cold_seconds": 548.55,
     "incremental_seconds": 42.51,
     "unchanged_seconds": 4.72,
+    "build_timing_scope": "historical standard Docker build measurements; the current image identity and source hashes were revalidated for the 2026-08-21 baseline",
     "container_health": "healthy",
-    "agent_image": "sha256:e18563a3e0ccdafcb733e8ef88a271b9734b8be7bcd5648351459f1a1444acb5",
-    "agent_source_sha256": "40a8b0693385055100e8e60f74a6309b4618ef6f6271ec9e9d05f7f2a1fd9010",
-    "tool_router_source_sha256": "8bb26a346b05ca1c7d304fc1c1ab9d96c135039591a24cc3ca840dbc0acdbc7a",
+    "agent_image": "sha256:d82103f7b1a625db56b3ee0f765ff2fadee1fa6ab8ed01ea78640f0010f31006",
+    "agent_source_sha256": "92f4c91d2a9fe7f3065559e25baedbc0ef696802493e6286758169f5b3b36e00",
+    "tool_router_source_sha256": "e8adc3e00d92c4496c445e9cea8f9c801ebcde5abd4685c909b82ca18bb070d1",
     "input_checker_source_sha256": "87fb5ba8ce891f4c20c66b8821013c75574cbf46fd3090e336bb654fb754610d",
     "agent_source_matches_container": true
   },
@@ -212,9 +213,10 @@
     "quality_improvement_claimed": false
   },
   "current_agent_baseline": {
-    "artifact": "artifacts/performance/agent-post-product-20260812-173003/deepseek-flash-post-product.json",
-    "baseline_runtime_sha": "6bbf266684af3d9caccc85d1da5e1179c66b9a46",
-    "prior_artifact": "artifacts/performance/agent-coupon-contract-20260731-211923/deepseek-flash-post-pr27.json",
+    "artifact": "artifacts/performance/agent-post-mq-20260820-181018/deepseek-flash-post-mq.json",
+    "artifact_sha256": "299b44814b0091d668add051eec0a0467f93e766049cd31d71fe2ea83c1f5de1",
+    "baseline_runtime_sha": "18542a6bea99f5b4e9adc7dcf079dc32638f809a",
+    "prior_artifact": "artifacts/performance/agent-post-controlled-20260820-163326/deepseek-flash-post-controlled.json",
     "case_count": 24,
     "total_runs": 48,
     "repeat": 2,
@@ -238,11 +240,11 @@
         "permission_accuracy": 1.0,
         "hitl_accuracy": 1.0,
         "refusal_accuracy": 1.0,
-        "latency_p50_ms": 9083,
-        "latency_p95_ms": 21508,
-        "latency_p99_ms": 25594,
-        "time_to_first_sse_p50_ms": 43,
-        "time_to_first_sse_p95_ms": 69,
+        "latency_p50_ms": 185,
+        "latency_p95_ms": 12562,
+        "latency_p99_ms": 13066,
+        "time_to_first_sse_p50_ms": 33,
+        "time_to_first_sse_p95_ms": 50,
         "expected_guardrail_blocks": 6,
         "failure_categories": {}
       }
@@ -271,12 +273,20 @@
       "case_49_not_found_count": 2,
       "case_37_coupon_policy_lookup_count": 2
     },
-    "database_evidence": {
-      "session_count": 42,
-      "tool_audit_count": 38,
-      "successful_tool_audits": 36,
-      "expected_not_found_tool_audits": 2,
-      "distinct_tool_audit_sessions": 28
+    "runtime_evidence": {
+      "agent_runs": 42,
+      "expected_guardrail_blocks": 6,
+      "llm_calls": 26,
+      "usage_reported_calls": 26,
+      "usage_missing_calls": 0,
+      "input_tokens": 23376,
+      "output_tokens": 5070,
+      "total_tokens": 28446,
+      "tool_calls": 48,
+      "controlled_tool_batch_rejected": 0,
+      "unknown_tool_count": 0,
+      "protocol_error_count": 0,
+      "preapproval_high_risk_tool_execution_count": 0
     },
     "quality_thresholds": {
       "task_completion_min_29": true,
@@ -285,12 +295,44 @@
       "tool_argument_min_47": true,
       "trajectory_min_34": true,
       "final_fact_min_42": true,
-      "latency_p95_max_20000_ms": false,
-      "latency_p99_max_25000_ms": false
+      "latency_p95_max_20000_ms": true,
+      "latency_p99_max_25000_ms": true
     },
     "quality_gate": "pass",
-    "latency_gate": "partial",
+    "latency_gate": "pass",
     "quality_improvement_claimed": true,
+    "history": [
+      {
+        "label": "pre-fast-path quality PASS",
+        "runtime_sha": "6bbf266684af3d9caccc85d1da5e1179c66b9a46",
+        "artifact": "artifacts/performance/agent-post-product-20260812-173003/deepseek-flash-post-product.json",
+        "task_completion": "48/48",
+        "latency_p50_ms": 9083,
+        "latency_p95_ms": 21508,
+        "latency_p99_ms": 25594,
+        "result": "quality_pass_latency_partial"
+      },
+      {
+        "label": "first post-fast-path baseline",
+        "runtime_sha": "f2e54bd991d3c41db3604ec717d57923ef64d247",
+        "artifact": "artifacts/performance/agent-post-fastpath-20260814-041547/deepseek-flash-post-fastpath.json",
+        "task_completion": "44/48",
+        "latency_p50_ms": 352,
+        "latency_p95_ms": 13712,
+        "latency_p99_ms": 20953,
+        "result": "partial"
+      },
+      {
+        "label": "post-PR42/43 baseline",
+        "runtime_sha": "bc796bbacb404c0f920f22d1ba9d2c9d79eae949",
+        "artifact": "artifacts/performance/agent-post-controlled-20260820-163326/deepseek-flash-post-controlled.json",
+        "task_completion": "47/48",
+        "latency_p50_ms": 298,
+        "latency_p95_ms": 12418,
+        "latency_p99_ms": 12740,
+        "result": "partial"
+      }
+    ],
     "claim_limit": "One fixed 24x2 run at concurrency one proves the current contract sample, not capacity, long-term stability, or deterministic model behavior."
   },
   "review_remediation": {
@@ -355,13 +397,11 @@
     "refusal_accuracy": 1.0,
     "avg_rerank_delta": 0.094444
   },
-  "overall_status": "agent_quality_pass_latency_partial",
+  "overall_status": "agent_quality_and_latency_pass_fixed_sample",
   "open_items": [
-    "Agent latency P95 is 21.508 seconds, above the 20-second threshold",
-    "Agent latency P99 is 25.594 seconds, above the 25-second threshold",
-    "Stage-level latency, token usage, and per-task cost are not yet observable",
     "A single 24x2 run at concurrency one does not establish capacity or long-term model stability",
-    "SSE does not expose reliable token usage or cost",
+    "Provider-reported token usage is captured, but per-task monetary cost is not yet computed",
+    "Compensation coupon binding management still requires direct SQL rather than an audited admin API",
     "long-duration capacity and fault-injection tests remain"
   ]
 }

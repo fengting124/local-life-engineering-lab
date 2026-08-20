@@ -76,5 +76,8 @@ still emits a standard `AIMessage(tool_calls=[...])` and enters the existing
 in force. `coupon_root_cause`, Prompt, Eval, HITL, RAG, MCP, and Java contracts
 were not changed.
 
-The complete 24x2 baseline was not run on this branch. It is authorized once,
-only after merge and green `main` CI.
+The complete 24x2 baseline was not run on this branch. After PR #44 merged as
+`18542a6` and `main` CI passed, the authorized baseline was run exactly once.
+All quality dimensions passed 48/48, the failure matrix was empty, and P50 / P95 /
+P99 were 185 / 12,562 / 13,066 ms. The tracked aggregate is published in
+`baseline-summary.json`; the raw artifact remains Git-ignored.

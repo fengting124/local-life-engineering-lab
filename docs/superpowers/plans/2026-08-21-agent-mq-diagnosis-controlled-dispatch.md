@@ -304,12 +304,16 @@ Draft PR: `#44` (`fix(agent): dispatch mq diagnosis deterministically`). The
 published body records the exact local gates and explicitly defers 24x2 until
 after merge and green `main` CI.
 
-- [ ] **Step 3: Merge only after all branch gates pass**
+- [x] **Step 3: Merge only after all branch gates pass**
 
 Require Docs and Agent CI success, zero behind, mergeable, no unresolved review
 thread, unchanged expected head, and `BLOCKING FINDINGS=0`. Convert to Ready,
 use a merge commit, wait for green `main` CI, synchronize local main, and remove
 the local/remote branch and worktree.
+
+PR #44 merged with merge commit `18542a6bea99f5b4e9adc7dcf079dc32638f809a`.
+Branch and `main` Docs/Agent CI passed, the expected head remained unchanged,
+and the local/remote branch and worktree were removed.
 
 ### Task 6: Run The One Authorized Fixed Baseline
 
@@ -320,25 +324,36 @@ the local/remote branch and worktree.
 - Consumes: clean merged `main`, unchanged fixed 24 cases, fixture, Prompt, scoring, DeepSeek V4 Flash, and concurrency 1.
 - Produces: one immutable 48-run artifact and a PASS/PARTIAL decision.
 
-- [ ] **Step 1: Record the exact runtime identity**
+- [x] **Step 1: Record the exact runtime identity**
 
 Record main SHA, Agent image/source hash, provider, model, start timestamp, and
 pre-run audit identifiers. Confirm open implementation PR count is zero and
 all `main` CI gates are green.
 
-- [ ] **Step 2: Run exactly 24 cases x 2 once**
+Recorded `main@18542a6`, image `sha256:d82103f...f31006`, matching runtime source
+hashes, DeepSeek V4 Flash, zero open PRs, and green `main` CI before execution.
+
+- [x] **Step 2: Run exactly 24 cases x 2 once**
 
 Never rerun to select a better result. Preserve every run and output the full
 failure matrix if any metric misses 48/48.
 
-- [ ] **Step 3: Apply the hard decision gate**
+Executed once from 2026-08-21 02:10:18 to 02:14:11 Asia/Shanghai. The ignored
+artifact is `agent-post-mq-20260820-181018/deepseek-flash-post-mq.json`; its
+SHA-256 is `299b4481...c1f5de1`. No rerun was performed.
+
+- [x] **Step 3: Apply the hard decision gate**
 
 Require Transport, Task completion, First tool, Tool arguments, Trajectory,
 Final facts, Permission, HITL, and Refusal all equal 48/48. Record P50/P95/P99
 and provider-reported LLM input/output/total tokens without estimating missing
 historical usage.
 
-- [ ] **Step 4: Publish only a real PASS**
+Every hard quality dimension passed 48/48 and the failure matrix was empty.
+P50/P95/P99 were 185/12,562/13,066 ms. All 26 LLM calls reported usage:
+23,376 input, 5,070 output, and 28,446 total tokens.
+
+- [x] **Step 4: Publish only a real PASS**
 
 If every hard gate passes, update the tracked summary and performance report,
 preserving old 48/48 PASS, first post-fastpath 44/48 PARTIAL, PR42/43 47/48

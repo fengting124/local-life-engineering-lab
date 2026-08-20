@@ -3,11 +3,11 @@
 - Status: Active
 - Type: Reference
 - Owners: Agent maintainers
-- Last verified: 2026-08-14
+- Last verified: 2026-08-21
 - Source of truth: ignored one-shot artifact, Docker Lite structured logs, tool audit, and the targeted regression suite
-- Runtime baseline: `main@f2e54bd991d3c41db3604ec717d57923ef64d247`
+- Runtime baseline: `main@18542a6bea99f5b4e9adc7dcf079dc32638f809a`
 - Environment: Docker Lite, DeepSeek V4 Flash, concurrency 1
-- Result: **PARTIAL**
+- Result: **PASS**
 
 ## 结论
 
@@ -15,10 +15,36 @@ PR #39、#40 和 #41 已依次以 merge commit 合入 `main`。三个结构化�
 中位延迟下降 `97.9%-99.0%`，工具调用、参数和事实保持正确，模型调用与 Token 均降为
 0。受控单工具 RAG 的重复派发也已消除，并保持 ToolPolicy、RBAC、商家隔离和真实检索。
 
-两项优化进入 `main` 后，按计划执行了一次且仅一次固定 24 Case x 2 基线。该次运行
+两项优化首次进入 `main` 后，按计划执行了一次且仅一次固定 24 Case x 2 基线。该次运行
 没有重试或挑选结果：P50 从 `9.083s` 降至 `0.352s`，P95 从 `21.508s` 降至
 `13.712s`，但 Task completion 和 Final facts 均为 `44/48`，没有通过 `48/48`
-质量硬门。因此本次结果不替换上一版正式 48/48 质量基线，也不发布为 PASS。
+质量硬门。因此该历史结果没有替换当时的正式 48/48 质量基线，也没有发布为 PASS。
+
+随后 PR #42 修复字母数字订单绑定，PR #43 将固定策略配置计划改为确定性派发，
+PR #44 补齐 MQ 诊断确定性派发。PR #42/#43 后的唯一基线为 47/48；PR #44 合并且
+`main` CI 通过后执行的下一次、也是唯一一次授权基线恢复为全部质量指标 48/48，
+P50/P95/P99 为 `185ms / 12.562s / 13.066s`。因此本文当前结论更新为
+**质量 PASS、延迟 PASS**，并保留下方首次 Fast Path 的 PARTIAL 证据作为历史。
+
+## 当前发布门禁
+
+| 门禁 | 当前结果 | 判定 |
+| --- | ---: | --- |
+| Transport | 48/48 | PASS |
+| Task completion | 48/48 | PASS |
+| First tool / arguments / trajectory | 48/48 | PASS |
+| Final facts | 48/48 | PASS |
+| Permission / HITL / Refusal | 48/48 | PASS |
+| Failure matrix | 空 | PASS |
+| P50 / P95 / P99 | 185 / 12,562 / 13,066 ms | PASS |
+| LLM calls | 26；usage 26/26 | 观测完整 |
+| Input / output / total tokens | 23,376 / 5,070 / 28,446 | 观测完整 |
+| Unknown tool / protocol error / preapproval execution | 0 / 0 / 0 | PASS |
+
+当前 artifact 为 Git 忽略目录中的
+`agent-post-mq-20260820-181018/deepseek-flash-post-mq.json`，SHA-256 为
+`299b44814b0091d668add051eec0a0467f93e766049cd31d71fe2ea83c1f5de1`。
+本次没有重跑挑选结果；一次并发 1 固定样本不能证明容量、生产 SLA 或长期稳定性。
 
 ## 合并记录
 
@@ -79,7 +105,7 @@ Token，合计 `38,063`。上一版 48/48 基线早于本轮 usage 埋点，无�
 全套调用和 Token 总数；不得用估算值伪造 before/after。三个结构化场景已有同口径
 比较，均从每请求 2 次 LLM 降为 0。
 
-## 失败矩阵与处理
+## 首次 Fast Path 失败矩阵与处理
 
 | Case | 次数 | 真实结果 | 分类与处理 |
 | --- | ---: | --- | --- |
@@ -121,6 +147,7 @@ Case 32/37 仍需后续在不扩大权限、不提高预算且不修改 Eval 的
 2. 质量重新建立可信门禁后，再评估补偿券绑定配置管理 API；本轮不提前实施。
 3. SSE 重复 `final_answer` 是既有独立问题，不影响本次数据库工具次数，但应另开小 PR。
 
-本轮没有触碰 Milvus、RAG 算法、模型、Prompt、HITL、Checkpoint、RBAC、工具预算、
-Eval 合同或 Java/MCP 接口。最终结论为 **PARTIAL，BLOCKING FINDINGS=2**：固定质量门
-未通过，以及多工具知识路由仍存在两次随机重复派发。
+首次 Fast Path 基线没有触碰 Milvus、RAG 算法、模型、Prompt、HITL、Checkpoint、
+RBAC、工具预算、Eval 合同或 Java/MCP 接口。当时结论为 **PARTIAL，BLOCKING
+FINDINGS=2**；这两个历史阻塞项已由 PR #42/#43/#44 的最小受控派发修复关闭。当前
+固定基线结论见本文开头，不应把历史失败矩阵误读为当前状态。

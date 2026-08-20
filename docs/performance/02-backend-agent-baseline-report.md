@@ -457,6 +457,45 @@ DeepSeek V4 Flash 基线。没有因结果或延迟重跑。脱敏产物位于�
 知识检索段出现 21-28 秒长尾，下一步应先补齐分阶段耗时和 token/cost 可观测性，
 再定位 LLM、RAG、MCP 与持久化各自占比，而不是重复整套基线挑选更好结果。
 
+## 5.3 受控派发收口后的固定 24×2 基线
+
+PR #39 至 #44 依次加入分阶段观测、订单/支付/发券状态 Fast Path、单工具 RAG、
+字母数字订单绑定、策略配置固定计划和 MQ 诊断固定计划。PR #44 合并并通过 `main`
+CI 后，在 `main@18542a6bea99f5b4e9adc7dcf079dc32638f809a` 上执行了一次且仅一次
+固定 24 Case × 2 基线。模型、Prompt、EvalCase、fixture、评分规则和并发均未改变。
+
+- 产物：`artifacts/performance/agent-post-mq-20260820-181018/deepseek-flash-post-mq.json`
+- 产物 SHA-256：`299b44814b0091d668add051eec0a0467f93e766049cd31d71fe2ea83c1f5de1`
+- 执行窗口：2026-08-21 02:10:18 至 02:14:11（Asia/Shanghai）
+- Agent 镜像：`sha256:d82103f7b1a625db56b3ee0f765ff2fadee1fa6ab8ed01ea78640f0010f31006`
+- Provider / model：`deepseek` / `deepseek-v4-flash`
+
+| 指标 | 8 月 12 日旧 PASS | 首次 Fast Path | PR #42/#43 后 | 当前 | 结果 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Task completion | 48/48 | 44/48 | 47/48 | 48/48 | PASS |
+| First tool | 48/48 | 48/48 | 48/48 | 48/48 | PASS |
+| Tool argument | 48/48 | 46/48 | 47.5/48 | 48/48 | PASS |
+| Trajectory | 48/48 | 46/48 | 47/48 | 48/48 | PASS |
+| Final fact | 48/48 | 46/48 | 47/48 | 48/48 | PASS |
+| Permission | 48/48 | 48/48 | 48/48 | 48/48 | PASS |
+| HITL | 48/48 | 48/48 | 48/48 | 48/48 | PASS |
+| Refusal | 48/48 | 48/48 | 48/48 | 48/48 | PASS |
+| End-to-end P50 | 9,083 ms | 352 ms | 298 ms | 185 ms | PASS |
+| End-to-end P95 | 21,508 ms | 13,712 ms | 12,418 ms | 12,562 ms | PASS |
+| End-to-end P99 | 25,594 ms | 20,953 ms | 12,740 ms | 13,066 ms | PASS |
+
+当前失败矩阵为空，`invalid_eval_contract=0`，fixture 解析 `47/47`。42 次进入
+Agent 图的请求加 6 次预期 Guardrail 拒绝构成完整 48 次结果。运行日志记录 26 次
+LLM 调用，26 次均返回 usage：输入 `23,376`、输出 `5,070`、合计 `28,446`
+Token；工具调用 48 次。相较 PR #42/#43 后的正式观测，模型调用从 30 降至 26，
+总 Token 从 `32,253` 降至 `28,446`。
+
+安全门禁同时满足：controlled batch rejection、unknown tool、protocol error 和
+审批前高风险实际执行均为 0。`stop_reason` 分布为 completed 34、fast_path 4、
+not_found 2、permission_denied 2；另有 6 次预期 Guardrail 阻断。此次结果可以发布为
+**固定样本质量 PASS、延迟 PASS**，但不能推导容量、生产 SLA、长期模型稳定性或
+统计显著性。P95/P99 相较前一轮有小幅随机波动，没有据此重复运行选择更好结果。
+
 ## 6. RAG Benchmark
 
 最终真实产物：
@@ -484,7 +523,8 @@ DeepSeek V4 Flash 基线。没有因结果或延迟重跑。脱敏产物位于�
 | Eval 合同、fixture、评分回归 | PR #33 当时固定 24 条合同未修改，Case 22/25 单独纠正；当前产品语义分支对 Case 17/19/49 的合同调整见 5.1 节 |
 | 修复后唯一真实 DeepSeek 复测 | 历史 PR #26：24 cases × 2，48/48 传输完成，并发 1 |
 | PR #27 后唯一真实 DeepSeek 复测 | 历史：24 cases × 2；`tool_execution_failure=0`；Coupon SQL 3/3 成功 |
-| PR #33/#34 后固定 DeepSeek 基线 | 24 cases × 2；质量 48/48；失败矩阵为空；P95/P99 延迟门禁未通过 |
+| PR #33/#34 后固定 DeepSeek 基线 | 历史：24 cases × 2；质量 48/48；P95/P99 延迟门禁未通过 |
+| PR #44 后固定 DeepSeek 基线 | 当前：24 cases × 2；全部质量指标 48/48；P50/P95/P99 为 185/12,562/13,066 ms；失败矩阵为空 |
 | Compose Lite | 7 个必要服务 healthy，Agent 镜像源码 hash 一致 |
 | 后端四场景 | 0 HTTP failure |
 | k6 spike | 通过阈值、无超卖 |
@@ -517,19 +557,19 @@ PR #26 审查修复另完成了一次当前源码 Docker Lite 烟雾测试：
   数据库只产生一条审批，也没有重复执行高风险工具。该流式展示问题不在本次
   安全审查修复边界内，需由后续独立 API PR 处理。
 
-当前 Agent 固定质量合同状态为 **PASS**，延迟状态为 **PARTIAL**。2026-08-12 的
-48 次固定样本中，参数、轨迹、最终事实、权限、HITL 和拒答均通过，Case 37 两轮也
-进入 Coupon SQL；但 P95/P99 分别为 21.508/25.594 秒，略高于当前门槛。本轮仍是
-并发 1 的单次质量观测，不替代容量压测、长稳测试或多次统计显著性实验。
+当前 Agent 固定质量合同与延迟门禁均为 **PASS**。2026-08-21 的唯一 48 次固定
+样本中，任务、参数、轨迹、最终事实、权限、HITL 和拒答均为 48/48，P50/P95/P99
+为 185/12,562/13,066 ms。它仍是并发 1 的单次质量观测，不替代容量压测、长稳测试
+或多次统计显著性实验。
 
 ## 8. 下一轮优先级
 
 1. 固定 24x2 已按发布节点执行完毕，不为挑选更好结果重复运行；下一次全量基线
    只在新的行为或发布节点发生后执行。
-2. 增加 LLM、RAG、MCP、Checkpoint 和事件持久化的分阶段 P50/P95/P99，并记录
-   模型调用次数、token 与成本，定位当前 21-28 秒长尾。
-3. 在分阶段可观测性完成后做 10-30 分钟稳态与故障注入，区分模型随机波动、外部
-   依赖抖动和应用自身瓶颈。
+2. 调研补偿券绑定配置管理 API，让门店运营不再依赖直接 SQL；本阶段先冻结权限、
+   生命周期和审计合同，不直接实现。
+3. 在现有分阶段观测基础上补每任务成本，再做 10-30 分钟稳态与故障注入，区分
+   模型随机波动、外部依赖抖动和应用自身瓶颈。
 4. SSE 的重复 `final_answer` / `hitl_request` 展示事件应在独立 API PR 去重，
    保持现有数据库幂等和高风险单次执行语义不变。
 5. Agent 入口仍直接信任客户端身份 Header；生产必须由可信网关认证并覆盖或
