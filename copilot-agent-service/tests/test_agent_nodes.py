@@ -342,6 +342,71 @@ class TestToolNode:
         mock_mcp.call_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_mq_wrong_controlled_tool_is_rejected_without_execution(
+        self, monkeypatch
+    ):
+        order_id = "202606100002"
+        mock_mcp = MagicMock()
+        mock_mcp.call_tool = AsyncMock(return_value="不该被调用")
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        state = controlled_state(
+            [ai_with_tool_call(
+                "query_coupon_issue_log",
+                {"order_id": order_id},
+            )],
+            "mq_diagnosis",
+            ["query_order", "query_mq_dead_letter"],
+            ["query_order", "query_mq_dead_letter"],
+            "query_mq_dead_letter",
+            user_role="admin",
+            route_target_order_hash=order_target_hash(order_id),
+        )
+
+        result = await nodes.tool_node(state)
+
+        assert result["evidence_stop_reason"] == "internal_error"
+        assert result["last_tool_error"] == "invalid_controlled_tool_batch"
+        mock_mcp.call_tool.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_mq_dispatch_uses_standard_tool_node_and_advances_evidence(
+        self, monkeypatch
+    ):
+        order_id = "BULK2026061000000095"
+        mock_mcp = MagicMock()
+        mock_mcp.call_tool = AsyncMock(return_value=json.dumps({
+            "order_no": order_id,
+            "order_status": "PAID",
+            "payment": {"pay_status": "SUCCESS"},
+            "coupon": {"coupon_status": None},
+        }))
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        state = controlled_state(
+            [HumanMessage(content=f"查一下 {order_id} 的 MQ 死信情况")],
+            "mq_diagnosis",
+            ["query_order", "query_mq_dead_letter"],
+            ["query_order", "query_mq_dead_letter"],
+            "query_order",
+            user_role="admin",
+            route_target_order_hash=order_target_hash(order_id),
+        )
+        dispatch, error = nodes._build_controlled_dispatch(
+            state, [{"name": "query_order"}]
+        )
+
+        assert error is None
+        result = await nodes.tool_node({**state, "messages": [dispatch]})
+
+        assert result["route_next_tool"] == "query_mq_dead_letter"
+        assert result["evidence_collected"]["query_order"]["status"] == "success"
+        mock_mcp.call_tool.assert_awaited_once_with(
+            tool_name="query_order",
+            arguments={"order_id": order_id},
+            session_id=0,
+            thread_id="t-1",
+        )
+
+    @pytest.mark.asyncio
     async def test_policy_dispatch_uses_standard_tool_node_and_advances_evidence(
         self, monkeypatch
     ):
@@ -1193,12 +1258,102 @@ class TestLlmNode:
         assert response is None
         assert error is None
 
+    @pytest.mark.parametrize(
+        ("overrides", "routed_tools", "expected_error"),
+        [
+            ({"route_required_tools": ["query_order"]}, [{"name": "query_order"}], "invalid_controlled_plan"),
+            ({"route_required_tools": ["query_order", "query_mq_dead_letter", "query_coupon_issue_log"]}, [{"name": "query_order"}], "invalid_controlled_plan"),
+            ({"route_required_tools": None}, [{"name": "query_order"}], "invalid_controlled_plan"),
+            ({"route_next_tool": "query_payment"}, [{"name": "query_payment"}], "invalid_controlled_next_tool"),
+            ({"route_authorized_tools": ["query_order"]}, [{"name": "query_mq_dead_letter"}], "unauthorized_controlled_tool"),
+            ({}, [], "controlled_tool_not_routed"),
+            ({}, [{"name": "query_coupon_issue_log"}], "controlled_tool_not_routed"),
+            ({"route_target_order_hash": None}, [{"name": "query_mq_dead_letter"}], "controlled_order_binding_failed"),
+        ],
+    )
+    def test_mq_dispatch_rejects_non_exact_route_contract(
+        self, overrides, routed_tools, expected_error
+    ):
+        order_id = "202606100002"
+        state = controlled_state(
+            [
+                HumanMessage(content=f"查一下 {order_id} 的 MQ 死信情况"),
+                ai_with_tool_call("query_order", {"order_id": order_id}),
+                ToolMessage(
+                    content=json.dumps({
+                        "order_no": order_id,
+                        "order_status": "PAID",
+                    }),
+                    tool_call_id="c1",
+                    name="query_order",
+                ),
+            ],
+            "mq_diagnosis",
+            ["query_order", "query_mq_dead_letter"],
+            ["query_order", "query_mq_dead_letter"],
+            "query_mq_dead_letter",
+            user_role="admin",
+            route_target_order_hash=order_target_hash(order_id),
+            evidence_collected={
+                "query_order": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {"found": True, "order_status": "PAID"},
+                }
+            },
+        )
+        state.update(overrides)
+
+        response, error = nodes._build_controlled_dispatch(state, routed_tools)
+
+        assert response is None
+        assert error == expected_error
+
+    def test_mq_later_dispatch_rejects_order_evidence_for_another_target(self):
+        requested_order = "BULK2026061000000095"
+        other_order = "BULK2026061000000096"
+        state = controlled_state(
+            [
+                HumanMessage(content=f"查一下 {requested_order} 的 MQ 死信情况"),
+                ai_with_tool_call("query_order", {"order_id": requested_order}),
+                ToolMessage(
+                    content=json.dumps({
+                        "order_no": other_order,
+                        "order_status": "PAID",
+                    }),
+                    tool_call_id="c1",
+                    name="query_order",
+                ),
+            ],
+            "mq_diagnosis",
+            ["query_order", "query_mq_dead_letter"],
+            ["query_order", "query_mq_dead_letter"],
+            "query_mq_dead_letter",
+            user_role="admin",
+            route_target_order_hash=order_target_hash(requested_order),
+            evidence_collected={
+                "query_order": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {"found": True, "order_status": "PAID"},
+                }
+            },
+        )
+
+        response, error = nodes._build_controlled_dispatch(
+            state, [{"name": "query_mq_dead_letter"}]
+        )
+
+        assert response is None
+        assert error == "controlled_order_binding_failed"
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("task_type", "next_tool"),
         [
             ("payment_diagnosis", "query_payment"),
             ("coupon_issue", "query_coupon_issue_log"),
+            ("mq_diagnosis", "query_mq_dead_letter"),
         ],
     )
     async def test_later_controlled_read_dispatches_from_order_evidence_without_llm(
@@ -1476,21 +1631,25 @@ class TestLlmNode:
         assert llm.tool_choice == "query_order"
 
     @pytest.mark.asyncio
-    async def test_complex_controlled_route_keeps_named_llm_tool(self, monkeypatch):
+    async def test_mq_diagnosis_dispatches_bound_order_without_llm(
+        self, monkeypatch
+    ):
+        order_id = "BULK2026061000000095"
         mock_mcp = MagicMock()
         mock_mcp.list_tools = AsyncMock(return_value=[
             {"name": "query_order", "description": "查订单"},
-            {"name": "query_payment", "description": "查支付"},
+            {"name": "query_mq_dead_letter", "description": "查 MQ 死信"},
         ])
-        fake_llm = FakeLLM(ai_with_tool_call(
-            "query_order", {"order_id": "202606100001"}
-        ))
+        rejecting_llm = MagicMock()
+        rejecting_llm.bind_tools.return_value = rejecting_llm
+        rejecting_llm.ainvoke = AsyncMock(
+            side_effect=AssertionError("controlled MQ dispatch must not call LLM")
+        )
         monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
-        monkeypatch.setattr(nodes, "_llm", fake_llm)
-        monkeypatch.setattr(nodes.settings, "llm_provider", "openai")
+        monkeypatch.setattr(nodes, "_llm", rejecting_llm)
 
         result = await nodes.llm_node(make_state(
-            [HumanMessage(content="查订单 202606100001")],
+            [HumanMessage(content=f"排查订单 {order_id} 的 MQ 死信失败原因")],
             user_role="admin",
             route_task_type="mq_diagnosis",
             route_mode="controlled",
@@ -1498,16 +1657,17 @@ class TestLlmNode:
             route_authorized_tools=["query_order", "query_mq_dead_letter"],
             route_next_tool="query_order",
             route_missing_fields=[],
+            route_target_order_hash=order_target_hash(order_id),
         ))
 
-        names = {
-            tool["name"] if isinstance(tool, dict) else tool.name
-            for tool in fake_llm.bound_tools
-        }
-        assert names == {"query_order"}
-        assert fake_llm.tool_choice == "query_order"
-        assert fake_llm.seen_messages
-        assert result["final_answer"] is None
+        assert result["messages"][0].tool_calls == [{
+            "name": "query_order",
+            "args": {"order_id": order_id},
+            "id": "controlled-query_order-1",
+            "type": "tool_call",
+        }]
+        assert result["llm_call_count"] == 0
+        rejecting_llm.ainvoke.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_general_fallback_still_invokes_react_llm(self, monkeypatch):

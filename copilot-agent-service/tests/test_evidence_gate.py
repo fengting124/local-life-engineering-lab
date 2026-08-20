@@ -383,6 +383,64 @@ def test_root_not_found_stops_without_downstream_tool():
     assert update["evidence_stop_reason"] == "not_found"
 
 
+def test_mq_diagnosis_advances_only_after_successful_order_evidence():
+    state = _state(
+        "mq_diagnosis",
+        ["query_order", "query_mq_dead_letter"],
+        ["query_order", "query_mq_dead_letter"],
+        "query_order",
+    )
+
+    success = advance_evidence(
+        state,
+        [ToolOutcome(
+            "query_order",
+            "success",
+            {
+                "found": True,
+                "order_status": "PAID",
+                "payment_status": "SUCCESS",
+                "coupon_usage_status": "NONE",
+            },
+        )],
+    )
+    not_found = advance_evidence(
+        state,
+        [ToolOutcome("query_order", "not_found", {"found": False})],
+    )
+
+    assert success["route_next_tool"] == "query_mq_dead_letter"
+    assert success["evidence_stop_reason"] is None
+    assert not_found["route_next_tool"] is None
+    assert not_found["evidence_stop_reason"] == "not_found"
+
+
+def test_mq_diagnosis_stops_when_next_tool_is_not_authorized():
+    state = _state(
+        "mq_diagnosis",
+        ["query_order", "query_mq_dead_letter"],
+        ["query_order"],
+        "query_order",
+    )
+
+    update = advance_evidence(
+        state,
+        [ToolOutcome(
+            "query_order",
+            "success",
+            {
+                "found": True,
+                "order_status": "PAID",
+                "payment_status": "SUCCESS",
+                "coupon_usage_status": "NONE",
+            },
+        )],
+    )
+
+    assert update["route_next_tool"] is None
+    assert update["evidence_stop_reason"] == "permission_denied"
+
+
 def test_refund_unlock_requires_structured_order_status():
     eligible = advance_evidence(
         _state(
