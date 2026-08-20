@@ -184,7 +184,9 @@ Verify no Prompt, Eval, permissions, budget, RAG, model, HITL, Checkpointer, Jav
 
 First review found three fail-closed gaps: malformed second-step messages, noncanonical
 knowledge evidence, and malformed MCP catalogs. RED tests reproduced all three; the minimal
-fix and full gates passed. A second independent review is required before this step closes.
+fix and full gates passed. The second review found incomplete field validation in MCP catalog
+entries; a second RED/GREEN cycle closed it while preserving omitted-field defaults. A final
+read-only review is required before this step closes.
 
 - [ ] **Step 3: Push and create a Draft PR**
 

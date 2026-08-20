@@ -61,6 +61,26 @@ CONTROLLED_KNOWLEDGE_DISPATCH_PLANS = MappingProxyType({
     "policy_configuration": ("knowledge_search", "coupon_policy_lookup"),
 })
 
+
+def _valid_mcp_tool_spec(tool: object) -> bool:
+    """Validate catalog fields that are present while retaining schema defaults."""
+    if (
+        not isinstance(tool, Mapping)
+        or not isinstance(tool.get("name"), str)
+        or not tool["name"].strip()
+    ):
+        return False
+    if "description" in tool and not isinstance(tool["description"], str):
+        return False
+    if "inputSchema" not in tool:
+        return True
+    schema = tool["inputSchema"]
+    return (
+        isinstance(schema, Mapping)
+        and schema.get("type", "object") == "object"
+        and isinstance(schema.get("properties", {}), Mapping)
+    )
+
 # =========================================================
 # LLM 工厂（支持多 Provider 切换）
 # =========================================================
@@ -675,12 +695,7 @@ async def llm_node(state: AgentState) -> dict:
                 all_tools = await mcp.list_tools()
                 if (
                     not isinstance(all_tools, list)
-                    or any(
-                        not isinstance(tool, Mapping)
-                        or not isinstance(tool.get("name"), str)
-                        or not tool["name"].strip()
-                        for tool in all_tools
-                    )
+                    or any(not _valid_mcp_tool_spec(tool) for tool in all_tools)
                 ):
                     raise ValueError("malformed MCP tool catalog")
                 mcp_available = True

@@ -2772,11 +2772,24 @@ class TestLlmNode:
         assert error == "controlled_knowledge_query_missing"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("malformed_tool", [
+        None,
+        {"name": "coupon_policy_lookup", "description": None},
+        {"name": "coupon_policy_lookup", "inputSchema": []},
+        {
+            "name": "coupon_policy_lookup",
+            "inputSchema": {"type": "array", "properties": {}},
+        },
+        {
+            "name": "coupon_policy_lookup",
+            "inputSchema": {"type": "object", "properties": []},
+        },
+    ])
     async def test_controlled_malformed_mcp_catalog_fails_closed(
-        self, monkeypatch
+        self, monkeypatch, malformed_tool
     ):
         mock_mcp = MagicMock()
-        mock_mcp.list_tools = AsyncMock(return_value=[None])
+        mock_mcp.list_tools = AsyncMock(return_value=[malformed_tool])
         rejecting_llm = MagicMock()
         rejecting_llm.ainvoke = AsyncMock()
         monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
