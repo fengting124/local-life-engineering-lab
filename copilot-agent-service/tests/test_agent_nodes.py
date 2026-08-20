@@ -2707,6 +2707,14 @@ class TestLlmNode:
     @pytest.mark.parametrize("knowledge_record", [
         None,
         {"status": "not_found", "attempts": 1, "facts": {"knowledge_found": False}},
+        {"status": "success", "facts": {"knowledge_found": True}},
+        {"status": "success", "attempts": 0, "facts": {"knowledge_found": True}},
+        {"status": "success", "attempts": True, "facts": {"knowledge_found": True}},
+        {
+            "status": "success",
+            "attempts": 1,
+            "facts": {"knowledge_found": True, "unbounded": True},
+        },
         {"status": "success", "attempts": 1, "facts": {}},
         {"status": "success", "attempts": 1, "facts": {"knowledge_found": False}},
         "malformed",
@@ -2733,6 +2741,66 @@ class TestLlmNode:
 
         assert response is None
         assert error == "controlled_policy_knowledge_evidence_missing"
+
+    @pytest.mark.parametrize("messages", [
+        None,
+        [HumanMessage(content="优惠券门槛"), None],
+        [HumanMessage(content="   ")],
+        [AIMessage(content="只有旧响应")],
+    ])
+    def test_policy_lookup_rejects_malformed_current_message_state(self, messages):
+        response, error = nodes._build_controlled_knowledge_dispatch(
+            make_state(
+                messages,
+                route_task_type="policy_configuration",
+                route_mode="controlled",
+                route_required_tools=["knowledge_search", "coupon_policy_lookup"],
+                route_authorized_tools=["knowledge_search", "coupon_policy_lookup"],
+                route_next_tool="coupon_policy_lookup",
+                evidence_collected={
+                    "knowledge_search": {
+                        "status": "success",
+                        "attempts": 1,
+                        "facts": {"knowledge_found": True},
+                    }
+                },
+            ),
+            [{"name": "coupon_policy_lookup"}],
+        )
+
+        assert response is None
+        assert error == "controlled_knowledge_query_missing"
+
+    @pytest.mark.asyncio
+    async def test_controlled_malformed_mcp_catalog_fails_closed(
+        self, monkeypatch
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[None])
+        rejecting_llm = MagicMock()
+        rejecting_llm.ainvoke = AsyncMock()
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", rejecting_llm)
+
+        result = await nodes.llm_node(make_state(
+            [HumanMessage(content="优惠券最低使用门槛怎么设置？")],
+            route_task_type="policy_configuration",
+            route_mode="controlled",
+            route_required_tools=["knowledge_search", "coupon_policy_lookup"],
+            route_authorized_tools=["knowledge_search", "coupon_policy_lookup"],
+            route_next_tool="coupon_policy_lookup",
+            evidence_collected={
+                "knowledge_search": {
+                    "status": "success",
+                    "attempts": 1,
+                    "facts": {"knowledge_found": True},
+                }
+            },
+        ))
+
+        assert result["evidence_stop_reason"] == "internal_error"
+        assert result["stop_reason"] == "internal_error"
+        rejecting_llm.ainvoke.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cs_prompt_and_bindings_exclude_native_knowledge_tool(

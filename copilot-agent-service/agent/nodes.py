@@ -572,30 +572,6 @@ def _build_controlled_knowledge_dispatch(
     ):
         return None, "controlled_knowledge_tool_not_routed"
 
-    if next_tool == "coupon_policy_lookup":
-        records = state.get("evidence_collected")
-        knowledge_record = (
-            records.get("knowledge_search") if isinstance(records, Mapping) else None
-        )
-        facts = (
-            knowledge_record.get("facts")
-            if isinstance(knowledge_record, Mapping)
-            else None
-        )
-        if (
-            not isinstance(knowledge_record, Mapping)
-            or knowledge_record.get("status") != "success"
-            or not isinstance(facts, Mapping)
-            or facts.get("knowledge_found") is not True
-        ):
-            return None, "controlled_policy_knowledge_evidence_missing"
-        return AIMessage(content="", tool_calls=[{
-            "name": next_tool,
-            "args": {},
-            "id": f"controlled-{next_tool}-{state['step_count']}",
-            "type": "tool_call",
-        }]), None
-
     messages = state.get("messages")
     if (
         not isinstance(messages, (list, tuple))
@@ -613,6 +589,36 @@ def _build_controlled_knowledge_dispatch(
     query = current_message.content if current_message is not None else None
     if not isinstance(query, str) or not query.strip():
         return None, "controlled_knowledge_query_missing"
+
+    if next_tool == "coupon_policy_lookup":
+        records = state.get("evidence_collected")
+        knowledge_record = (
+            records.get("knowledge_search") if isinstance(records, Mapping) else None
+        )
+        facts = (
+            knowledge_record.get("facts")
+            if isinstance(knowledge_record, Mapping)
+            else None
+        )
+        if (
+            not isinstance(knowledge_record, Mapping)
+            or set(knowledge_record) != {"status", "attempts", "facts"}
+            or knowledge_record.get("status") != "success"
+            or not isinstance(knowledge_record.get("attempts"), int)
+            or isinstance(knowledge_record.get("attempts"), bool)
+            or knowledge_record.get("attempts", 0) < 1
+            or not isinstance(facts, Mapping)
+            or set(facts) != {"knowledge_found"}
+            or facts.get("knowledge_found") is not True
+        ):
+            return None, "controlled_policy_knowledge_evidence_missing"
+        return AIMessage(content="", tool_calls=[{
+            "name": next_tool,
+            "args": {},
+            "id": f"controlled-{next_tool}-{state['step_count']}",
+            "type": "tool_call",
+        }]), None
+
     return AIMessage(content="", tool_calls=[{
         "name": next_tool,
         "args": {"query": query},
@@ -667,6 +673,16 @@ async def llm_node(state: AgentState) -> dict:
             )
             try:
                 all_tools = await mcp.list_tools()
+                if (
+                    not isinstance(all_tools, list)
+                    or any(
+                        not isinstance(tool, Mapping)
+                        or not isinstance(tool.get("name"), str)
+                        or not tool["name"].strip()
+                        for tool in all_tools
+                    )
+                ):
+                    raise ValueError("malformed MCP tool catalog")
                 mcp_available = True
             except Exception as e:
                 log.error("mcp_list_tools_failed", error=str(e))

@@ -123,7 +123,7 @@ For `knowledge_search`, validate all message elements are `BaseMessage`, select 
 
 - [x] **Step 4: Build the second call only from successful evidence**
 
-For `coupon_policy_lookup`, require the exact policy plan plus `evidence_collected["knowledge_search"].status == "success"` and normalized `facts.found is True`; emit `{}` and rely on authenticated Java `RbacContext` for merchant scope.
+For `coupon_policy_lookup`, require the exact policy plan plus canonical successful knowledge evidence with `facts.knowledge_found is True`; emit `{}` and rely on authenticated Java `RbacContext` for merchant scope.
 
 - [x] **Step 5: Run focused GREEN tests**
 
@@ -181,6 +181,10 @@ Run focused tests, Agent full suite with coverage, the current mutation gate, `s
 - [ ] **Step 2: Perform an independent final diff review**
 
 Verify no Prompt, Eval, permissions, budget, RAG, model, HITL, Checkpointer, Java, or MCP semantic changes and no sensitive data.
+
+First review found three fail-closed gaps: malformed second-step messages, noncanonical
+knowledge evidence, and malformed MCP catalogs. RED tests reproduced all three; the minimal
+fix and full gates passed. A second independent review is required before this step closes.
 
 - [ ] **Step 3: Push and create a Draft PR**
 
