@@ -338,6 +338,36 @@ def test_payment_route_advances_one_tool_at_a_time():
     }
 
 
+def test_policy_configuration_advances_then_completes_in_fixed_order():
+    first = advance_evidence(
+        _state(
+            "policy_configuration",
+            ["knowledge_search", "coupon_policy_lookup"],
+            ["knowledge_search", "coupon_policy_lookup"],
+            "knowledge_search",
+        ),
+        [ToolOutcome("knowledge_search", "success", {"knowledge_found": True})],
+    )
+
+    assert first["route_next_tool"] == "coupon_policy_lookup"
+    assert first["evidence_complete"] is False
+    assert first["evidence_collected"]["knowledge_search"] == {
+        "status": "success",
+        "attempts": 1,
+        "facts": {"knowledge_found": True},
+    }
+
+    second = advance_evidence(
+        first,
+        [ToolOutcome("coupon_policy_lookup", "success", {"policy_available": True})],
+    )
+
+    assert second["route_next_tool"] is None
+    assert second["evidence_complete"] is True
+    assert second["evidence_stop_reason"] is None
+    assert second["synthesis_only"] is True
+
+
 def test_root_not_found_stops_without_downstream_tool():
     update = advance_evidence(
         _state(

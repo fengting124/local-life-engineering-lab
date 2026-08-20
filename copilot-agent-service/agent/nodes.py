@@ -16,6 +16,7 @@ import re
 import time
 import structlog
 from collections.abc import Mapping
+from types import MappingProxyType
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -55,6 +56,30 @@ CONTROLLED_DISPATCH_PLANS = {
     "payment_diagnosis": ("query_order", "query_payment"),
     "coupon_issue": ("query_order", "query_coupon_issue_log"),
 }
+CONTROLLED_KNOWLEDGE_DISPATCH_PLANS = MappingProxyType({
+    "knowledge": ("knowledge_search",),
+    "policy_configuration": ("knowledge_search", "coupon_policy_lookup"),
+})
+
+
+def _valid_mcp_tool_spec(tool: object) -> bool:
+    """Validate catalog fields that are present while retaining schema defaults."""
+    if (
+        not isinstance(tool, Mapping)
+        or not isinstance(tool.get("name"), str)
+        or not tool["name"].strip()
+    ):
+        return False
+    if "description" in tool and not isinstance(tool["description"], str):
+        return False
+    if "inputSchema" not in tool:
+        return True
+    schema = tool["inputSchema"]
+    return (
+        isinstance(schema, Mapping)
+        and schema.get("type", "object") == "object"
+        and isinstance(schema.get("properties", {}), Mapping)
+    )
 
 # =========================================================
 # LLM 工厂（支持多 Provider 切换）
@@ -537,29 +562,33 @@ def _build_controlled_knowledge_dispatch(
     state: AgentState,
     routed_tools: list[dict],
 ) -> tuple[AIMessage | None, str | None]:
-    """Build the single native RAG call from the current user request."""
-    if (
-        state.get("route_mode") != "controlled"
-        or state.get("route_task_type") != "knowledge"
-    ):
+    """Build a whitelisted knowledge-plan call without bypassing tool_node."""
+    if state.get("route_mode") != "controlled":
+        return None, None
+    task_type = state.get("route_task_type")
+    plan = CONTROLLED_KNOWLEDGE_DISPATCH_PLANS.get(task_type)
+    if plan is None:
         return None, None
     required_tools = state.get("route_required_tools")
-    if not isinstance(required_tools, (list, tuple)) or tuple(required_tools) != (
-        "knowledge_search",
+    if (
+        not isinstance(required_tools, (list, tuple))
+        or tuple(required_tools) != plan
     ):
         return None, "invalid_controlled_knowledge_plan"
-    if state.get("route_next_tool") != "knowledge_search":
+    next_tool = state.get("route_next_tool")
+    if next_tool not in plan:
         return None, "invalid_controlled_knowledge_next_tool"
     authorized_tools = state.get("route_authorized_tools")
-    if not isinstance(authorized_tools, (list, tuple)) or tuple(
-        authorized_tools
-    ) != ("knowledge_search",):
+    if (
+        not isinstance(authorized_tools, (list, tuple))
+        or tuple(authorized_tools) != plan
+    ):
         return None, "unauthorized_controlled_knowledge_tool"
     if (
         not isinstance(routed_tools, list)
         or len(routed_tools) != 1
         or not isinstance(routed_tools[0], Mapping)
-        or routed_tools[0].get("name") != "knowledge_search"
+        or routed_tools[0].get("name") != next_tool
     ):
         return None, "controlled_knowledge_tool_not_routed"
 
@@ -580,10 +609,40 @@ def _build_controlled_knowledge_dispatch(
     query = current_message.content if current_message is not None else None
     if not isinstance(query, str) or not query.strip():
         return None, "controlled_knowledge_query_missing"
+
+    if next_tool == "coupon_policy_lookup":
+        records = state.get("evidence_collected")
+        knowledge_record = (
+            records.get("knowledge_search") if isinstance(records, Mapping) else None
+        )
+        facts = (
+            knowledge_record.get("facts")
+            if isinstance(knowledge_record, Mapping)
+            else None
+        )
+        if (
+            not isinstance(knowledge_record, Mapping)
+            or set(knowledge_record) != {"status", "attempts", "facts"}
+            or knowledge_record.get("status") != "success"
+            or not isinstance(knowledge_record.get("attempts"), int)
+            or isinstance(knowledge_record.get("attempts"), bool)
+            or knowledge_record.get("attempts", 0) < 1
+            or not isinstance(facts, Mapping)
+            or set(facts) != {"knowledge_found"}
+            or facts.get("knowledge_found") is not True
+        ):
+            return None, "controlled_policy_knowledge_evidence_missing"
+        return AIMessage(content="", tool_calls=[{
+            "name": next_tool,
+            "args": {},
+            "id": f"controlled-{next_tool}-{state['step_count']}",
+            "type": "tool_call",
+        }]), None
+
     return AIMessage(content="", tool_calls=[{
-        "name": "knowledge_search",
+        "name": next_tool,
         "args": {"query": query},
-        "id": f"controlled-knowledge_search-{state['step_count']}",
+        "id": f"controlled-{next_tool}-{state['step_count']}",
         "type": "tool_call",
     }]), None
 
@@ -634,6 +693,11 @@ async def llm_node(state: AgentState) -> dict:
             )
             try:
                 all_tools = await mcp.list_tools()
+                if (
+                    not isinstance(all_tools, list)
+                    or any(not _valid_mcp_tool_spec(tool) for tool in all_tools)
+                ):
+                    raise ValueError("malformed MCP tool catalog")
                 mcp_available = True
             except Exception as e:
                 log.error("mcp_list_tools_failed", error=str(e))
