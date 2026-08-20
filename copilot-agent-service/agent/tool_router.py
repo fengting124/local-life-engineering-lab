@@ -99,6 +99,11 @@ _CURRENCY_AMOUNT_PATTERN = re.compile(
     r")",
     re.IGNORECASE,
 )
+_ORDER_ID_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])(?=[A-Za-z0-9]{12,32}(?![A-Za-z0-9_]))"
+    r"(?=[A-Za-z]*\d{12})[A-Za-z0-9]+(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
 
 
 def _state_string_tuple(value: object) -> tuple[str, ...]:
@@ -189,8 +194,12 @@ def _contains_any(text: str, terms: Sequence[str]) -> bool:
 
 
 def _order_ids(text: str) -> tuple[str, ...]:
-    matches = re.findall(r"(?<!\d)\d{12,}(?!\d)", text)
-    return tuple(dict.fromkeys(matches))
+    return extract_order_ids(text)
+
+
+def extract_order_ids(text: str) -> tuple[str, ...]:
+    """Extract supported numeric or alphanumeric business order numbers."""
+    return tuple(dict.fromkeys(_ORDER_ID_PATTERN.findall(text)))
 
 
 def order_target_hash(value: object) -> str | None:
@@ -325,8 +334,9 @@ def _campaign_plan(text: str) -> tuple[str, ...]:
 
 def classify_request(user_role: str, message: str) -> RouteDecision:
     """Classify one user request without consulting conversation or tool output."""
-    text = re.sub(r"\s+", " ", message.lower()).strip()
-    order_ids = _order_ids(text)
+    normalized_message = re.sub(r"\s+", " ", message).strip()
+    text = normalized_message.lower()
+    order_ids = _order_ids(normalized_message)
     has_one_order = len(order_ids) == 1
     has_order_reference = has_one_order or _contains_any(text, ("订单", "order"))
 

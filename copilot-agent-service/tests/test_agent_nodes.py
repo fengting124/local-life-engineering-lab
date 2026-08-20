@@ -1037,6 +1037,37 @@ class TestLlmNode:
         rejecting_llm.ainvoke.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_order_query_preserves_complete_alphanumeric_order_id(
+        self, monkeypatch
+    ):
+        order_id = "BULK2026061000000095"
+        mock_mcp = MagicMock()
+        mock_mcp.list_tools = AsyncMock(return_value=[
+            {"name": "query_order", "description": "查订单"},
+        ])
+        rejecting_llm = MagicMock()
+        rejecting_llm.bind_tools.return_value = rejecting_llm
+        rejecting_llm.ainvoke = AsyncMock(
+            side_effect=AssertionError("controlled dispatch must not call LLM")
+        )
+        monkeypatch.setattr(nodes, "McpClient", lambda **kw: mock_mcp)
+        monkeypatch.setattr(nodes, "_llm", rejecting_llm)
+
+        result = await nodes.llm_node(controlled_state(
+            [HumanMessage(content=f"查询订单 {order_id} 的支付状态")],
+            "order_query",
+            ["query_order"],
+            ["query_order"],
+            "query_order",
+            route_target_order_hash=order_target_hash(order_id),
+        ))
+
+        call = result["messages"][0].tool_calls[0]
+        assert call["args"] == {"order_id": order_id}
+        assert result["llm_call_count"] == 0
+        rejecting_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_order_dispatch_never_reuses_binding_from_older_turn(
         self, monkeypatch
     ):
