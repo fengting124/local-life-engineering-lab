@@ -510,7 +510,11 @@ def classify_request(user_role: str, message: str) -> RouteDecision:
                 required_tools=TASK_TOOL_PLANS[task_type],
                 target_order_hash=(
                     order_target_hash(order_ids[0])
-                    if task_type in {"payment_diagnosis", "coupon_issue"}
+                    if task_type in {
+                        "payment_diagnosis",
+                        "coupon_issue",
+                        "mq_diagnosis",
+                    }
                     else None
                 ),
             )

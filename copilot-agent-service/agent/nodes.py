@@ -55,6 +55,7 @@ CONTROLLED_DISPATCH_PLANS = {
     "order_query": ("query_order",),
     "payment_diagnosis": ("query_order", "query_payment"),
     "coupon_issue": ("query_order", "query_coupon_issue_log"),
+    "mq_diagnosis": ("query_order", "query_mq_dead_letter"),
 }
 CONTROLLED_KNOWLEDGE_DISPATCH_PLANS = MappingProxyType({
     "knowledge": ("knowledge_search",),
@@ -536,13 +537,21 @@ def _build_controlled_dispatch(
     plan = CONTROLLED_DISPATCH_PLANS.get(task_type)
     if plan is None:
         return None, None
-    if tuple(state.get("route_required_tools", ())) != plan:
+    required_tools = state.get("route_required_tools")
+    if (
+        not isinstance(required_tools, (list, tuple))
+        or tuple(required_tools) != plan
+    ):
         return None, "invalid_controlled_plan"
 
     next_tool = state.get("route_next_tool")
     if next_tool not in plan:
         return None, "invalid_controlled_next_tool"
-    if next_tool not in state.get("route_authorized_tools", ()):
+    authorized_tools = state.get("route_authorized_tools")
+    if (
+        not isinstance(authorized_tools, (list, tuple))
+        or next_tool not in authorized_tools
+    ):
         return None, "unauthorized_controlled_tool"
     if next_tool not in {tool.get("name") for tool in routed_tools}:
         return None, "controlled_tool_not_routed"

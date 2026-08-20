@@ -511,6 +511,19 @@ def test_supported_alphanumeric_order_binds_the_complete_target():
     ).hexdigest()
 
 
+def test_mq_diagnosis_binds_the_complete_order_target():
+    order_id = "BULK2026061000000095"
+
+    decision = classify_request(
+        "admin", f"排查订单 {order_id} 的 MQ 死信失败原因"
+    )
+
+    assert decision.task_type == "mq_diagnosis"
+    assert decision.target_order_hash == hashlib.sha256(
+        order_id.encode("utf-8")
+    ).hexdigest()
+
+
 def test_high_risk_route_binds_hashed_order_and_explicit_amount():
     order_id = "202606100001"
 
