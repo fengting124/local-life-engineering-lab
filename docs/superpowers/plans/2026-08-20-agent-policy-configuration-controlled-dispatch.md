@@ -1,5 +1,11 @@
 # Agent Policy Configuration Controlled Dispatch Implementation Plan
 
+- Status: Active
+- Type: Plan
+- Owners: Agent maintainers
+- Last verified: 2026-08-20
+- Source of truth: `agent/nodes.py`, fixed Eval contracts, Docker Lite evidence, and `docs/performance/07-agent-policy-configuration-controlled-dispatch.md`
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Eliminate stochastic duplicate `knowledge_search` calls in the fixed `policy_configuration` plan without changing product semantics, permissions, tools, prompts, or evaluation contracts.
@@ -143,23 +149,23 @@ Commit with Goal, Changes, Verification, and Risk sections; do not include gener
 - Consumes: current branch Agent image and frozen Case 32/37 contracts.
 - Produces: sanitized aggregate evidence, not raw prompts, IDs, keys, or database payloads.
 
-- [ ] **Step 1: Rebuild the standard Agent image from the worktree**
+- [x] **Step 1: Rebuild the standard Agent image from the worktree**
 
 Run the repository-standard Docker build, recreate only `copilot-agent`, and verify the container source hashes match the worktree.
 
-- [ ] **Step 2: Run Case 32 five times and Case 37 five times**
+- [x] **Step 2: Run Case 32 five times and Case 37 five times**
 
 Use DeepSeek V4 Flash, concurrency 1, isolated sessions, and the unchanged requests/contracts.
 
-- [ ] **Step 3: Run controls**
+- [x] **Step 3: Run controls**
 
 Run public single-tool knowledge twice and CS permission-negative twice.
 
-- [ ] **Step 4: Verify runtime evidence**
+- [x] **Step 4: Verify runtime evidence**
 
 Require one `knowledge_search` and one `coupon_policy_lookup` per policy run, no duplicate/rejected/unknown/protocol/high-risk events, complete facts, correct permission behavior, and real RAG/tool audit spans.
 
-- [ ] **Step 5: Record the sanitized report**
+- [x] **Step 5: Record the sanitized report**
 
 Document all attempts including failures; do not rerun to replace an unfavorable result.
 
