@@ -178,7 +178,7 @@ Document all attempts including failures; do not rerun to replace an unfavorable
 
 Run focused tests, Agent full suite with coverage, the current mutation gate, `scripts/check_docs.py`, and `git diff --check`.
 
-- [ ] **Step 2: Perform an independent final diff review**
+- [x] **Step 2: Perform an independent final diff review**
 
 Verify no Prompt, Eval, permissions, budget, RAG, model, HITL, Checkpointer, Java, or MCP semantic changes and no sensitive data.
 
@@ -186,7 +186,7 @@ First review found three fail-closed gaps: malformed second-step messages, nonca
 knowledge evidence, and malformed MCP catalogs. RED tests reproduced all three; the minimal
 fix and full gates passed. The second review found incomplete field validation in MCP catalog
 entries; a second RED/GREEN cycle closed it while preserving omitted-field defaults. A final
-read-only review is required before this step closes.
+read-only review found no blocking or non-blocking findings (`BLOCKING FINDINGS=0`).
 
 - [ ] **Step 3: Push and create a Draft PR**
 

@@ -88,6 +88,8 @@ Python 3.10 和 LangGraph 0.2.45，不代表当前生产依赖，因此未用它
 新增边界测试先得到 9 failed / 5 passed 的 RED 证据，修复后为 14/14 passed。第二轮
 复审进一步发现 MCP 已出现字段的类型仍需校验；结构化畸形样本 RED 为 4 failed / 1
 passed，修复后 5/5 passed。最终相关节点、路由和 Evidence Gate 定向测试为 310/310。
+第三次只读复审确认全部 finding 已关闭，且没有新增阻塞或非阻塞问题：
+`BLOCKING FINDINGS=0`。
 
 ## 限制
 
