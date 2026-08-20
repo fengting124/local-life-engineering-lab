@@ -293,12 +293,16 @@ boundaries, and final Docker evidence. Its only code observation, malformed
 to the existing fail-closed error path before this final review. Result:
 `BLOCKING FINDINGS=0`.
 
-- [ ] **Step 2: Push and create a Draft PR**
+- [x] **Step 2: Push and create a Draft PR**
 
 The PR body must contain Goal, Root cause, Changes, Scope guard, RED/GREEN,
 full tests, coverage, mutation, Case 20 x10, controls, high-risk safety, known
 limitations, and `BLOCKING FINDINGS`. State explicitly that this PR did not run
 the complete 24x2 baseline.
+
+Draft PR: `#44` (`fix(agent): dispatch mq diagnosis deterministically`). The
+published body records the exact local gates and explicitly defers 24x2 until
+after merge and green `main` CI.
 
 - [ ] **Step 3: Merge only after all branch gates pass**
 
