@@ -69,6 +69,20 @@ Case 32 和 Case 37 各运行 5 次，共 10 次，全部完成固定两工具�
 `tool_result` 交叉核验；MCP 工具由 `tool_audit_log` 核验。评测器合并两类证据后得到
 完整两工具轨迹。
 
+## 质量门禁
+
+| 门禁 | 结果 |
+| --- | --- |
+| Agent 完整行为测试 | 839/839 passed |
+| Agent 覆盖率 | 81.58%（门槛 45%） |
+| Mutation | 857 killed / 345 survived / 0 other，共 1,202；kill rate 71.3%（门槛 50%） |
+| Checkpointer / HITL 定向测试 | 53/53 passed |
+| Testcontainers 迁移与安全测试 | 11/11 passed |
+
+完整 Agent 测试在隔离的 Python 3.11 CI 镜像中运行。其中主测试集为 838 passed，
+Embedding 镜像中的模型依赖测试为 1 passed；两者合计 839/839。宿主机旧虚拟环境仍是
+Python 3.10 和 LangGraph 0.2.45，不代表当前生产依赖，因此未用它声明门禁结果。
+
 ## 限制
 
 - 这是 14 次定向功能验收，不是容量、长稳或完整 `24x2` 基线。

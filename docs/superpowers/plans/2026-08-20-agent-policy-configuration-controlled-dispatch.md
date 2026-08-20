@@ -135,7 +135,7 @@ pytest -q tests/test_agent_nodes.py tests/test_evidence_gate.py tests/test_tool_
 
 Expected: all pass; no existing single-tool, RBAC, ToolPolicy, budget, not-found, or unavailable-tool regression.
 
-- [ ] **Step 6: Commit the implementation**
+- [x] **Step 6: Commit the implementation**
 
 Commit with Goal, Changes, Verification, and Risk sections; do not include generated artifacts or secrets.
 
@@ -174,7 +174,7 @@ Document all attempts including failures; do not rerun to replace an unfavorable
 **Files:**
 - Modify only documentation required to record verified results.
 
-- [ ] **Step 1: Run deterministic gates**
+- [x] **Step 1: Run deterministic gates**
 
 Run focused tests, Agent full suite with coverage, the current mutation gate, `scripts/check_docs.py`, and `git diff --check`.
 
