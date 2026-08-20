@@ -36,7 +36,7 @@
 - Consumes: `classify_request()`, `_build_controlled_dispatch()`, `llm_node()`, `tool_node()`, and `advance_evidence()`.
 - Produces: failing executable contracts for the exact MQ route and its fail-closed boundaries.
 
-- [ ] **Step 1: Add a router binding RED test**
+- [x] **Step 1: Add a router binding RED test**
 
 Add a test using an alphanumeric order ID and assert the complete normalized ID is represented by `RouteDecision.target_order_hash`:
 
@@ -52,7 +52,7 @@ def test_mq_diagnosis_binds_the_complete_order_target():
     ).hexdigest()
 ```
 
-- [ ] **Step 2: Run the router RED test**
+- [x] **Step 2: Run the router RED test**
 
 Run:
 
@@ -62,7 +62,7 @@ python -m pytest -q tests/test_tool_router.py::test_mq_diagnosis_binds_the_compl
 
 Expected: FAIL because current `mq_diagnosis` decisions store `target_order_hash=None`.
 
-- [ ] **Step 3: Replace the obsolete MQ LLM expectation with first-step RED**
+- [x] **Step 3: Replace the obsolete MQ LLM expectation with first-step RED**
 
 Create the exact route state with a rejecting LLM and assert one standard
 `query_order` call, the complete order ID, and `llm_call_count == 0`:
@@ -77,19 +77,19 @@ assert result["messages"][0].tool_calls == [{
 rejecting_llm.ainvoke.assert_not_awaited()
 ```
 
-- [ ] **Step 4: Add second-step MQ RED**
+- [x] **Step 4: Add second-step MQ RED**
 
 Provide canonical successful `query_order` evidence plus its matching raw
 `ToolMessage`, set `route_next_tool="query_mq_dead_letter"`, expose only that
 catalog tool, and assert exactly one bound call with zero LLM calls.
 
-- [ ] **Step 5: Run both dispatch RED tests**
+- [x] **Step 5: Run both dispatch RED tests**
 
 Run the two exact node test IDs. Expected: FAIL because
 `CONTROLLED_DISPATCH_PLANS` has no `mq_diagnosis` entry and the path invokes the
 rejecting LLM.
 
-- [ ] **Step 6: Add the fail-closed regression matrix**
+- [x] **Step 6: Add the fail-closed regression matrix**
 
 Add product-level tests for:
 
@@ -122,7 +122,7 @@ refund, compensation, and HITL tests unchanged.
 - Consumes: one parsed order ID, `order_target_hash()`, canonical order evidence, current route state, and the single routed next-tool spec.
 - Produces: one existing-format ToolCall for the current MQ plan step.
 
-- [ ] **Step 1: Bind the MQ route target in classification**
+- [x] **Step 1: Bind the MQ route target in classification**
 
 Extend only the existing diagnostic `_decision()` call so `mq_diagnosis` stores:
 
@@ -140,7 +140,7 @@ target_order_hash=(
 
 Do not add `coupon_root_cause` in this PR.
 
-- [ ] **Step 2: Add the exact plan to the existing dispatcher whitelist**
+- [x] **Step 2: Add the exact plan to the existing dispatcher whitelist**
 
 Modify only the existing mapping:
 
@@ -155,7 +155,7 @@ CONTROLLED_DISPATCH_PLANS = {
 
 Do not create a helper specific to Case 20 or MQ.
 
-- [ ] **Step 3: Run GREEN route and node tests**
+- [x] **Step 3: Run GREEN route and node tests**
 
 Run:
 
@@ -166,7 +166,7 @@ python -m pytest -q tests/test_tool_router.py tests/test_agent_nodes.py
 Expected: all pass, including zero LLM calls for both MQ steps and unchanged
 existing deterministic routes.
 
-- [ ] **Step 4: Run focused Evidence/graph/policy regressions**
+- [x] **Step 4: Run focused Evidence/graph/policy regressions**
 
 Run:
 
@@ -182,7 +182,7 @@ python -m pytest -q \
 Expected: all pass with no Evidence Gate, answer, graph, permission, budget, or
 HITL behavior change.
 
-- [ ] **Step 5: Commit the production fix**
+- [x] **Step 5: Commit the production fix**
 
 Commit only the Router, node, and test changes with Goal, Changes,
 Verification, and Risk sections.
@@ -196,12 +196,12 @@ Verification, and Risk sections.
 - Consumes: final branch source.
 - Produces: fresh test, coverage, mutation, documentation, and diff evidence.
 
-- [ ] **Step 1: Run the full Agent suite with coverage**
+- [x] **Step 1: Run the full Agent suite with coverage**
 
 Run the repository CI command with `LANGGRAPH_STRICT_MSGPACK=true` and
 `--cov-fail-under=45`. Require zero failures and a generated coverage report.
 
-- [ ] **Step 2: Run the current mutation gate**
+- [x] **Step 2: Run the current mutation gate**
 
 Run:
 
@@ -213,7 +213,7 @@ python scripts/check_mutmut_score.py --min-kill-rate 50 --max-other 0
 Require kill rate at or above the current gate and `other=0`; do not add tests
 solely to increase the score.
 
-- [ ] **Step 3: Run repository hygiene checks**
+- [x] **Step 3: Run repository hygiene checks**
 
 Run:
 
@@ -237,12 +237,12 @@ performance artifacts in commits.
 - Consumes: standard Agent Dockerfile, unchanged Eval fixtures/contracts, DeepSeek V4 Flash, and current Lite services.
 - Produces: sanitized aggregate evidence and runtime/source hashes.
 
-- [ ] **Step 1: Rebuild the standard Agent image from this worktree**
+- [x] **Step 1: Rebuild the standard Agent image from this worktree**
 
 Use the repository Compose files and current branch source. Recreate only the
 Agent, wait on its healthcheck, and prove image/source hashes match the branch.
 
-- [ ] **Step 2: Run Case 20 ten times at concurrency 1**
+- [x] **Step 2: Run Case 20 ten times at concurrency 1**
 
 Require every run to complete this exact trajectory:
 
@@ -258,14 +258,14 @@ Record per-run latency, LLM calls, input/output/total tokens, final fact scores,
 tool audit status, model, provider, image, source hash, and timestamp. Do not
 discard or replace an unfavorable run.
 
-- [ ] **Step 3: Run the fixed control group**
+- [x] **Step 3: Run the fixed control group**
 
 Run payment diagnosis x2, coupon diagnosis x2, Case 32 x2, Case 37 x2, public
 knowledge x2, CS permission-negative x2, refund proposal x1, and compensation
 proposal x1. The two high-risk controls must stop at `PENDING`; do not approve
 them. Require pre-approval high-risk execution count zero.
 
-- [ ] **Step 4: Record a compact report and commit it**
+- [x] **Step 4: Record a compact report and commit it**
 
 Document before/after Case 20 latency, LLM usage, trajectory, all controls, any
 limitations, and raw evidence locations without storing sensitive payloads.
