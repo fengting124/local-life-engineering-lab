@@ -5,8 +5,9 @@
 - Owners: Agent maintainers
 - Last verified: 2026-08-21
 - Source of truth: fixed Eval contracts, Docker Lite structured traces, approval and side-effect ledger audit
-- Runtime source: `fix/agent-mq-diagnosis-controlled-dispatch@9e31216`
-- Agent image: `sha256:bdadabb59380cdc2fd0099957a82d1094c9b9acb74fd0ade55e6777aab9e9b59`
+- Runtime `nodes.py` SHA-256: `92f4c91d2a9fe7f3065559e25baedbc0ef696802493e6286758169f5b3b36e00`
+- Runtime `tool_router.py` SHA-256: `e8adc3e00d92c4496c445e9cea8f9c801ebcde5abd4685c909b82ca18bb070d1`
+- Agent image: `sha256:d82103f7b1a625db56b3ee0f765ff2fadee1fa6ab8ed01ea78640f0010f31006`
 - Provider/model: `deepseek` / `deepseek-v4-flash`
 
 ## Result
@@ -26,8 +27,8 @@ run. No LLM call was made to select a tool or synthesize the final answer.
 | Controlled batch rejections | 0 |
 | LLM calls | 0 |
 | Input / output / total tokens | 0 / 0 / 0 |
-| Agent request duration | 147-312 ms |
-| Eval client latency | 154-344 ms; P50 161 ms |
+| Agent request duration | 142-338 ms |
+| Eval client latency | 151-361 ms; P50 166 ms |
 
 The preceding fixed baseline had two Case 20 observations at 9,690 ms and
 9,924 ms. Its failed first observation made two model calls, consumed 1,613
@@ -59,9 +60,9 @@ zero.
 ## Deterministic Gates
 
 - Focused route, node, Evidence Gate, graph, answer, E2E, and policy tests:
-  `407 passed`.
-- Full Agent suite: `867 passed`.
-- Coverage: `81.65%` with the required `45%` gate.
+  `408 passed`.
+- Full Agent suite: `868 passed`.
+- Coverage: `81.66%` with the required `45%` gate.
 - Mutation: `859/1204` killed, `71.3%`, `other=0` with the required `50%` gate.
 - Documentation and Compose recovery checks: PASS.
 - Container and worktree `nodes.py` / `tool_router.py` SHA-256 values matched.

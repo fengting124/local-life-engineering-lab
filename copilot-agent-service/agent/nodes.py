@@ -547,7 +547,11 @@ def _build_controlled_dispatch(
     next_tool = state.get("route_next_tool")
     if next_tool not in plan:
         return None, "invalid_controlled_next_tool"
-    if next_tool not in state.get("route_authorized_tools", ()):
+    authorized_tools = state.get("route_authorized_tools")
+    if (
+        not isinstance(authorized_tools, (list, tuple))
+        or next_tool not in authorized_tools
+    ):
         return None, "unauthorized_controlled_tool"
     if next_tool not in {tool.get("name") for tool in routed_tools}:
         return None, "controlled_tool_not_routed"

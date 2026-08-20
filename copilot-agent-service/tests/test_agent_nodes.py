@@ -1266,6 +1266,7 @@ class TestLlmNode:
             ({"route_required_tools": None}, [{"name": "query_order"}], "invalid_controlled_plan"),
             ({"route_next_tool": "query_payment"}, [{"name": "query_payment"}], "invalid_controlled_next_tool"),
             ({"route_authorized_tools": ["query_order"]}, [{"name": "query_mq_dead_letter"}], "unauthorized_controlled_tool"),
+            ({"route_authorized_tools": None}, [{"name": "query_mq_dead_letter"}], "unauthorized_controlled_tool"),
             ({}, [], "controlled_tool_not_routed"),
             ({}, [{"name": "query_coupon_issue_log"}], "controlled_tool_not_routed"),
             ({"route_target_order_hash": None}, [{"name": "query_mq_dead_letter"}], "controlled_order_binding_failed"),
