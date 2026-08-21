@@ -163,11 +163,11 @@ mvn -B -pl local-life-server -Dtest=CompensationCouponBindingPersistenceIntegrat
 - `PUT /api/v1/shops/{shopId}/compensation-coupon-bindings/{faceValueMinor}` with `{ "couponTemplateId": "4001" }`
 - `PUT /api/v1/shops/{shopId}/compensation-coupon-bindings/{faceValueMinor}/status/disabled`
 
-- [ ] **Step 1: Write failing MVC and auth-inventory tests**
+- [x] **Step 1: Write failing MVC and auth-inventory tests**
 
 Assert JSON ID strings, money fields, validation, error mapping, and service arguments. Add all four routes to `AuthInterceptorTest` as protected; nested GET must not match public `/api/v1/shops/*`.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 mvn -B -pl local-life-server -Dtest=CompensationCouponBindingControllerTest,AuthInterceptorTest test
@@ -175,17 +175,17 @@ mvn -B -pl local-life-server -Dtest=CompensationCouponBindingControllerTest,Auth
 
 Expected: controller tests fail because the controller/DTO is absent; auth inventory additions pass independently.
 
-- [ ] **Step 3: Add minimal controller, request/response DTOs, and error codes**
+- [x] **Step 3: Add minimal controller, request/response DTOs, and error codes**
 
 The request contains only a positive `couponTemplateId`. Service validation remains fail-closed. Do not modify the public endpoint whitelist.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 ```bash
 mvn -B -pl local-life-server -Dtest=CompensationCouponBindingControllerTest,AuthInterceptorTest test
 ```
 
-- [ ] **Step 5: Commit `feat(api): expose merchant compensation binding management`**
+- [x] **Step 5: Commit `feat(api): expose merchant compensation binding management`**
 
 ### Task 5: Cross-Service And Release Verification
 

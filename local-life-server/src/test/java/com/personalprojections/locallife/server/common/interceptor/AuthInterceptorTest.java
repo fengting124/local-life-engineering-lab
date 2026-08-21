@@ -42,7 +42,7 @@ import static org.mockito.Mockito.when;
  * <p>修复方式是把白名单收敛到 {@link AuthInterceptor} 内部的
  * {@code PUBLIC_ENDPOINTS}，按「HTTP 方法 + Ant 路径模式」二元组精确匹配。
  * 本测试类的核心目标——也是 Bug#3 当初能潜伏的根本原因——是把当前系统中
- * 全部 11 个 Controller 的每一个端点都列出来，与白名单逐一交叉核对，
+ * 全部 12 个 Controller 的每一个端点都列出来，与白名单逐一交叉核对，
  * 而不是只抽查几个接口。任何人以后修改 {@code PUBLIC_ENDPOINTS} 或新增/
  * 修改端点，只要破坏了「该公开的公开、该保护的保护」这条不变量，本测试必须失败。
  *
@@ -151,6 +151,12 @@ class AuthInterceptorTest {
                 Arguments.of("PUT", "/api/v1/shops/2063848616358965249", false, "更新门店 —— Bug#3 曾在这条路径上被静默放行"),
                 Arguments.of("PUT", "/api/v1/shops/2063848616358965249/status/online", false, "门店上线"),
                 Arguments.of("PUT", "/api/v1/shops/2063848616358965249/status/offline", false, "门店下线"),
+
+                // ---------- CompensationCouponBindingController —— 商家自有门店配置，读写均需登录 ----------
+                Arguments.of("GET", "/api/v1/shops/2063848616358965249/compensation-coupon-bindings", false, "查询门店补偿券配置"),
+                Arguments.of("GET", "/api/v1/shops/2063848616358965249/compensation-coupon-bindings/2000", false, "查询单个补偿券配置"),
+                Arguments.of("PUT", "/api/v1/shops/2063848616358965249/compensation-coupon-bindings/2000", false, "创建或替换补偿券配置"),
+                Arguments.of("PUT", "/api/v1/shops/2063848616358965249/compensation-coupon-bindings/2000/status/disabled", false, "停用补偿券配置"),
 
                 // ---------- UserController /api/v1/users —— 全部需登录（含查看他人主页）----------
                 Arguments.of("GET", "/api/v1/users/me", false, "我的信息"),
