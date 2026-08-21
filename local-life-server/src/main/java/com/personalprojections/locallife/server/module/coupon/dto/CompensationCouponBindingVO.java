@@ -30,4 +30,3 @@ public class CompensationCouponBindingVO {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }
-

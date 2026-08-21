@@ -12,4 +12,3 @@ public class CompensationCouponBindingRequest {
     @Positive(message = "优惠券模板 ID 必须是正整数")
     private Long couponTemplateId;
 }
-

@@ -8,4 +8,3 @@ import org.apache.ibatis.annotations.Mapper;
 public interface CompensationCouponBindingAuditMapper
         extends BaseMapper<CompensationCouponBindingAudit> {
 }
-

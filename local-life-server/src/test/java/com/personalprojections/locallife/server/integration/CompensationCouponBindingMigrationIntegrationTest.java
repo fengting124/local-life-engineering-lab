@@ -172,4 +172,3 @@ class CompensationCouponBindingMigrationIntegrationTest {
         throw new IllegalStateException("cannot locate repository root");
     }
 }
-

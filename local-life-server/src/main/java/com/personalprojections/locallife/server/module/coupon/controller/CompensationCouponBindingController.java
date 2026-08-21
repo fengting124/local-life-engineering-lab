@@ -54,4 +54,3 @@ public class CompensationCouponBindingController {
         return Result.ok(service.disable(shopId, faceValueMinor));
     }
 }
-

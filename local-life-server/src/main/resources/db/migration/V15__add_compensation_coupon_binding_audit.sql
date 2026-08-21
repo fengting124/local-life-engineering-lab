@@ -21,4 +21,3 @@ CREATE TABLE IF NOT EXISTS `compensation_coupon_binding_audit`
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_unicode_ci
   COMMENT = 'durable compensation coupon binding change audit';
-
