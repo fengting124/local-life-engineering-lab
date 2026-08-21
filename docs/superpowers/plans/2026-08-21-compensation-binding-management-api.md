@@ -125,30 +125,34 @@ mvn -B -pl local-life-server -Dtest=CompensationCouponBindingServiceTest test
 - Consumes Tasks 1-2.
 - Proves dual unique identities, per-shop serialization, no-op idempotency, and rollback with MySQL 8.4.
 
-- [ ] **Step 1: Write failing Testcontainers journeys**
+- [x] **Step 1: Write Testcontainers journeys**
 
 Cover create, identical PUT, replace, disable twice, re-enable, two concurrent writes for one shop, independent shops, audit failure rollback, and visibility of disabled/invalid historical bindings.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run the first persistence verification**
 
 ```bash
 mvn -B -pl local-life-server -Dtest=CompensationCouponBindingPersistenceIntegrationTest test
 ```
 
-Expected: FAIL on missing or incorrect transaction/concurrency behavior.
+Result: PASS (4/4). Task 2's implementation already satisfied the real MySQL
+contract, so no production correction was justified.
 
-- [ ] **Step 3: Make only persistence corrections required by RED evidence**
+- [x] **Step 3: Make only persistence corrections required by evidence**
 
 Keep the shop row lock. Map duplicate-key races to `COUPON_COMPENSATION_BINDING_CONFLICT` without SQL details. Do not add distributed locks or retry libraries.
 
-- [ ] **Step 4: Run GREEN twice**
+No correction was required: the shop row lock serialized both requests before
+either unique key could race.
+
+- [x] **Step 4: Run the real MySQL suite twice**
 
 ```bash
 mvn -B -pl local-life-server -Dtest=CompensationCouponBindingPersistenceIntegrationTest test
 mvn -B -pl local-life-server -Dtest=CompensationCouponBindingPersistenceIntegrationTest test
 ```
 
-- [ ] **Step 5: Commit `test(coupon): verify binding concurrency and audit atomicity`**
+- [x] **Step 5: Commit `test(coupon): verify binding concurrency and audit atomicity`**
 
 ### Task 4: REST And Authentication Contract
 
