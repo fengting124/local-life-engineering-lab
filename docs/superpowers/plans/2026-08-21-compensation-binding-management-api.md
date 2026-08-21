@@ -58,11 +58,11 @@
 - Produces `compensation_coupon_binding_audit` with actions `CREATE`, `REPLACE`, `ENABLE`, `DISABLE`.
 - Produces `CompensationCouponBindingAuditMapper.insert(...)` for the service transaction.
 
-- [ ] **Step 1: Write the failing MySQL migration test**
+- [x] **Step 1: Write the failing MySQL migration test**
 
 Apply V1-V14, prove the audit table is absent, apply V15, insert a binding and audit row, then verify JSON snapshots, indexes, and the action check constraint.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 mvn -B -pl local-life-server -Dtest=CompensationCouponBindingMigrationIntegrationTest test
@@ -70,11 +70,11 @@ mvn -B -pl local-life-server -Dtest=CompensationCouponBindingMigrationIntegratio
 
 Expected: FAIL because V15/table does not exist.
 
-- [ ] **Step 3: Add the minimal migration, entity, and mapper**
+- [x] **Step 3: Add the minimal migration, entity, and mapper**
 
 Use one additive InnoDB table with `operator_user_id`, MDC `request_id`, nullable JSON snapshots, and `created_at`. Do not add audit update/delete APIs.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 ```bash
 mvn -B -pl local-life-server -Dtest=CompensationCouponBindingMigrationIntegrationTest,CompensationCouponMigrationIntegrationTest test
@@ -82,7 +82,7 @@ mvn -B -pl local-life-server -Dtest=CompensationCouponBindingMigrationIntegratio
 
 Expected: all selected tests PASS.
 
-- [ ] **Step 5: Commit `feat(coupon): add durable binding audit schema`**
+- [x] **Step 5: Commit `feat(coupon): add durable binding audit schema`**
 
 Record Goal, Changes, Verification, and Risk.
 
