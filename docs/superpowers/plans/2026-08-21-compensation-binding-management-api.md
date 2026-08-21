@@ -193,7 +193,7 @@ mvn -B -pl local-life-server -Dtest=CompensationCouponBindingControllerTest,Auth
 
 Document authorization, endpoint payloads, no-op semantics, errors, and audit. Do not add a large security document.
 
-- [ ] **Step 2: Run full deterministic gates**
+- [x] **Step 2: Run full deterministic gates**
 
 ```bash
 mvn -B -pl local-life-server clean verify
@@ -204,17 +204,43 @@ git diff --check
 
 Run the existing Server mutation command if `verify` does not execute it.
 
-- [ ] **Step 3: Rebuild Docker Lite from current source**
+Evidence: Server `clean verify` passed with 223 Surefire and 5 Failsafe tests,
+and all JaCoCo checks met. Copilot passed 154 tests. PIT passed with 87/136
+mutations killed (64%), 80% line coverage of mutated classes, and 78% test
+strength. Documentation passed for 97 Markdown files.
+
+- [x] **Step 3: Rebuild Docker Lite from current source**
 
 ```bash
-docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.lite.yml --profile app build locallife-server local-life-copilot
-docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.lite.yml --profile app up -d locallife-server local-life-copilot
+docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.lite.yml --profile app build locallife-server locallife-copilot
+docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.lite.yml --profile app up -d locallife-server locallife-copilot
 docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.lite.yml --profile app ps
 ```
 
-- [ ] **Step 4: Run one isolated real journey**
+Evidence: both standard Dockerfiles rebuilt from the branch source. The first
+Copilot dependency download hit a transient Maven Central TLS handshake failure;
+the Dockerfile's existing retry succeeded on attempt two. V15 then applied to
+the persistent Lite database, and both applications reported health `UP`.
+
+- [x] **Step 4: Run one isolated real journey**
 
 Using a seeded APPROVED merchant token and owned shop: list, create/replace, identical replay, resolver READY, disable twice, resolver rejection, re-enable, exact DB binding/audit counts, and foreign-shop 403. Do not approve or execute compensation in this configuration smoke.
+
+Evidence: the Bearer-authenticated journey returned 401 without a token and 403
+for another merchant's shop. It produced one binding and exactly four audit
+actions (`CREATE`, `REPLACE`, `DISABLE`, `ENABLE`); identical PUT and repeated
+disable added no rows. The signed MCP resolver succeeded before disable, rejected
+the disabled binding, and succeeded after re-enable. No approval or coupon was
+created, and all isolated smoke data and login state were removed afterward.
+
+The first direct MCP smoke client omitted the production Agent contract's
+`X-Session-Id` and `X-Thread-Id`, so the asynchronous audit insert emitted a
+warning even though the resolver result was correct. A corrected isolated call
+with both headers returned HTTP 200 and `READY`, then persisted exactly one
+successful `resolve_compensation_coupon` audit with the expected session,
+thread, user, and admin role. It still created zero approvals and zero coupons;
+the audit and all seeded business rows were removed, both applications remained
+`UP`, and the post-run log window contained no warning or error.
 
 - [ ] **Step 5: Scope review and Draft PR**
 
