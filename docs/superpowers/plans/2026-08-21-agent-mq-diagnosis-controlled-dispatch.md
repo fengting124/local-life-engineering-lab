@@ -370,13 +370,25 @@ automatically fixing another case.
 - Consumes: existing admin APIs, auth/RBAC, shop ownership, coupon template lifecycle, `compensation_coupon_binding`, audit, errors, and migration constraints.
 - Produces: a read-only design decision for GET, PUT/upsert, DISABLE, and optional list APIs.
 
-- [ ] **Step 1: Audit existing compensation binding management boundaries**
+- [x] **Step 1: Audit existing compensation binding management boundaries**
 
 Confirm `(shop_id, face_value_minor)` uniqueness, same-shop template ownership,
 merchant consistency, CASH type, matching face value, no automatic template
 creation, no LLM template selection, and configuration audit.
 
-- [ ] **Step 2: Stop at product decisions**
+Audit completed against `main@bf60655`. V14 and the runtime resolver enforce the
+two shop-scoped unique identities, merchant/shop consistency, CASH type, matching
+face value, and no model-selected template. The Server has no durable HTTP config
+audit and no trusted platform-admin identity; the proposed design adds synchronous
+before/after audit and does not reuse MCP audit.
+
+- [x] **Step 2: Stop at product decisions**
 
 Do not implement the API in this task. Report any unresolved authorization,
 lifecycle, or API semantics decision for explicit product approval.
+
+Stopped before implementation as required. Product subsequently approved model A:
+an authenticated APPROVED merchant may manage bindings only for shops it owns.
+`merchant_id` is derived server-side; client role claims, `X-Internal-Key`, and
+Agent/MCP mutation remain rejected. A future platform-operations admin requires a
+separate trusted Admin IAM project.
