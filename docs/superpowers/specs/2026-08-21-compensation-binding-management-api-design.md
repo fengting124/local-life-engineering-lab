@@ -6,7 +6,7 @@
 - Last verified: 2026-08-21
 - Source of truth: Server auth/shop/coupon code, V14, real compensation journey, and Copilot resolver
 - Baseline: `main@bf606553631d6986126ebc82136b1cfbbfdee444`
-- Target branch: future implementation branch, not this design branch
+- Implementation branch: `feat/compensation-binding-management-api`
 
 ## 1. Outcome
 
@@ -273,3 +273,19 @@ This approval permits a separate TDD implementation PR. It does not authorize a
 platform-admin identity, template CRUD, frontend work, Agent/MCP mutation tools,
 client-supplied `merchant_id` or role claims, or `X-Internal-Key` as a human
 management identity.
+
+## 13. Implementation Traceability
+
+The implementation branch maps the approved contract to the following bounded
+surfaces:
+
+| Contract | Implementation evidence |
+| --- | --- |
+| Durable same-transaction audit | V15 migration, audit entity/mapper, migration and rollback tests |
+| Server-derived merchant ownership | `CompensationCouponBindingService` plus owner/unapproved/foreign-shop tests |
+| Per-shop serialization | `ShopMapper.selectByIdForUpdate` plus repeated MySQL concurrency tests |
+| Deterministic template validation | Service validation and real MySQL invalid-history visibility tests |
+| Protected REST management | Four controller routes, request DTO, MVC tests, and auth inventory tests |
+
+Release verification, Docker Lite evidence, and the final PR head remain tracked
+in the implementation plan rather than duplicated in this design.

@@ -228,6 +228,18 @@ public enum ErrorCode {
      */
     COUPON_ALREADY_RECEIVED(400, "COUPON_ALREADY_RECEIVED", "您已领取过该优惠券"),
 
+    COUPON_COMPENSATION_BINDING_NOT_FOUND(
+            400, "COUPON_COMPENSATION_BINDING_NOT_FOUND", "补偿券配置不存在"),
+
+    COUPON_TEMPLATE_NOT_FOUND(
+            400, "COUPON_TEMPLATE_NOT_FOUND", "优惠券模板不存在"),
+
+    COUPON_COMPENSATION_TEMPLATE_INVALID(
+            400, "COUPON_COMPENSATION_TEMPLATE_INVALID", "优惠券模板不符合补偿配置要求"),
+
+    COUPON_COMPENSATION_BINDING_CONFLICT(
+            400, "COUPON_COMPENSATION_BINDING_CONFLICT", "优惠券模板已用于其他补偿面值"),
+
     // ===================================================
     // SECKILL - 秒杀
     // ===================================================
