@@ -189,7 +189,7 @@ mvn -B -pl local-life-server -Dtest=CompensationCouponBindingControllerTest,Auth
 
 ### Task 5: Cross-Service And Release Verification
 
-- [ ] **Step 1: Update API reference, document index, design evidence, and completed plan checkboxes**
+- [x] **Step 1: Update API reference, document index, design evidence, and completed plan checkboxes**
 
 Document authorization, endpoint payloads, no-op semantics, errors, and audit. Do not add a large security document.
 
