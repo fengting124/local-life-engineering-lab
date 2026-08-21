@@ -94,11 +94,11 @@ Record Goal, Changes, Verification, and Risk.
 - Uses `MerchantService.requireApprovedMerchant()` and `ShopMapper.selectByIdForUpdate()`; no caller-provided merchant identity.
 - Produces `READY`, `DISABLED`, `TEMPLATE_MISSING`, `TEMPLATE_INVALID`, or `MERCHANT_MISMATCH`.
 
-- [ ] **Step 1: Write failing service tests**
+- [x] **Step 1: Write failing service tests**
 
 Cover: approved owner; non-merchant/unapproved; missing/foreign shop; non-positive face value; missing template; wrong shop/type/value/status; template conflict; CREATE/REPLACE/ENABLE/DISABLE audits; identical PUT/repeated disable no-op; missing binding; and server-derived merchant identity.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 mvn -B -pl local-life-server -Dtest=CompensationCouponBindingServiceTest test
@@ -106,17 +106,17 @@ mvn -B -pl local-life-server -Dtest=CompensationCouponBindingServiceTest test
 
 Expected: test compilation fails because the service/DTO contract does not exist.
 
-- [ ] **Step 3: Implement the smallest service and mapper surface**
+- [x] **Step 3: Implement the smallest service and mapper surface**
 
 Use one concrete service, MyBatis mappers, private validation/view helpers, and one private immutable audit-snapshot record. Do not introduce repository interfaces, factories, policy engines, or a generic audit framework. Write methods use `@Transactional(rollbackFor = Exception.class)`.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 ```bash
 mvn -B -pl local-life-server -Dtest=CompensationCouponBindingServiceTest test
 ```
 
-- [ ] **Step 5: Commit `feat(coupon): manage owned-shop compensation bindings`**
+- [x] **Step 5: Commit `feat(coupon): manage owned-shop compensation bindings`**
 
 ### Task 3: Real MySQL Concurrency And Atomicity
 

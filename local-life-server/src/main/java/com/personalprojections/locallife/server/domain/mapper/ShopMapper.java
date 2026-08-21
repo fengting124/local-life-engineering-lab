@@ -3,6 +3,8 @@ package com.personalprojections.locallife.server.domain.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.personalprojections.locallife.server.domain.entity.Shop;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 
 /**
  * 门店 Mapper，继承 BaseMapper 获得完整 CRUD 能力。
@@ -31,4 +33,13 @@ import org.apache.ibatis.annotations.Mapper;
  */
 @Mapper
 public interface ShopMapper extends BaseMapper<Shop> {
+
+    @Select("""
+            SELECT *
+            FROM shop
+            WHERE id = #{shopId}
+              AND deleted = 0
+            FOR UPDATE
+            """)
+    Shop selectByIdForUpdate(@Param("shopId") long shopId);
 }
