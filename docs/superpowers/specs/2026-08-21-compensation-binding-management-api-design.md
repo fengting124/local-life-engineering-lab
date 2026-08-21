@@ -1,6 +1,6 @@
 # Compensation Coupon Binding Management API Design
 
-- Status: Proposed - product authorization decision required
+- Status: Approved
 - Type: Design
 - Owners: Server and product maintainers
 - Last verified: 2026-08-21
@@ -15,20 +15,22 @@ configuration still requires reviewed SQL. This design proposes an authenticated
 audited Server API for reading, upserting, and disabling
 `(shop_id, face_value_minor) -> coupon_template_id` mappings.
 
-No implementation starts until the product owner chooses who owns this
-configuration:
+The authority model is frozen as a merchant B-side setting:
 
 | Option | Current support | Decision |
 | --- | --- | --- |
-| Shop-owning approved merchant | Reuses login token, merchant status, and shop ownership | **Recommended** |
-| Platform operations admin | Server has no trusted admin identity or role | Requires a separate IAM decision first |
+| Shop-owning approved merchant | Reuses login token, merchant status, and shop ownership | **Approved for v1** |
+| Platform operations admin | Server has no trusted admin identity or role | Deferred until a separate trusted Admin IAM exists |
 | `X-Internal-Key` caller | Shared service secret has no human identity or shop scope | Rejected |
 | Agent/MCP write tool | Makes configuration reachable from model-driven execution | Rejected |
 
-The recommendation treats this as a merchant B-side setting. If the product
-requires platform-operations ownership instead, this API must wait for a trusted
-gateway/admin claim and Server-side authorization contract; a client-supplied role
-header is not acceptable.
+An authenticated user must resolve to an APPROVED merchant, and that merchant
+must own the path `shopId`. Only then may the user list, create, replace,
+re-enable, or disable that shop's compensation bindings. `merchant_id` is always
+derived from the authenticated user and owned shop; it is never accepted from a
+request body or header. A future platform-operations capability requires its own
+trusted Admin IAM and Server authorization contract. A client-supplied role,
+shared internal key, or Agent/MCP mutation does not satisfy that contract.
 
 ## 2. Verified Current State
 
@@ -49,11 +51,10 @@ The API does not create or mutate coupon templates. Automatic template creation,
 LLM template selection, and accepting an arbitrary cross-shop template remain
 forbidden.
 
-## 3. Proposed Resource API
+## 3. Resource API
 
-All paths are protected by the existing Bearer-token interceptor and, under the
-recommended authorization decision, require an APPROVED merchant who owns
-`shopId`.
+All paths are protected by the existing Bearer-token interceptor and require an
+APPROVED merchant who owns `shopId`.
 
 | Method | Path | Semantics |
 | --- | --- | --- |
@@ -192,7 +193,7 @@ authoritative change history and may be rotated.
 The implementation should follow the repository's existing HTTP/business-code
 convention rather than introduce a new response envelope:
 
-| Condition | HTTP | Proposed code |
+| Condition | HTTP | Code |
 | --- | ---: | --- |
 | Not logged in / expired token | 401 | Existing auth codes |
 | Merchant not approved | 403 | `MERCHANT_NOT_APPROVED` |
@@ -256,14 +257,19 @@ data.
 - Approval, HITL, resolver, issuance, stock, or terms-digest changes.
 - Notifications, bulk import, multi-shop operations, and policy engines.
 
-## 12. Decision Required Before Implementation
-
-Choose exactly one authority model:
+## 12. Approved Authority Decision
 
 ```text
-A. APPROVED merchant may manage only its own shops (recommended, immediately implementable)
-B. Platform operations admin manages bindings (requires a separate trusted admin IAM design first)
+AUTHORITY MODEL: A
+STATUS: APPROVED
+
+authenticated user
+    -> APPROVED merchant
+    -> owns shopId
+    -> may GET / PUT / DISABLE only that shop's compensation bindings
 ```
 
-Until that choice is explicit, this specification remains `Proposed`; no API,
-migration, or production behavior should be implemented.
+This approval permits a separate TDD implementation PR. It does not authorize a
+platform-admin identity, template CRUD, frontend work, Agent/MCP mutation tools,
+client-supplied `merchant_id` or role claims, or `X-Internal-Key` as a human
+management identity.

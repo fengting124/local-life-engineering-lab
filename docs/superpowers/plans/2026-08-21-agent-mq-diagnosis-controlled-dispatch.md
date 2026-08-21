@@ -387,7 +387,8 @@ before/after audit and does not reuse MCP audit.
 Do not implement the API in this task. Report any unresolved authorization,
 lifecycle, or API semantics decision for explicit product approval.
 
-Stopped before implementation. The unresolved product decision is whether the
-authority is the existing APPROVED merchant constrained to its own shops
-(recommended) or a future platform-operations admin. The latter cannot be built
-safely from the current role-less Server login context or `X-Internal-Key`.
+Stopped before implementation as required. Product subsequently approved model A:
+an authenticated APPROVED merchant may manage bindings only for shops it owns.
+`merchant_id` is derived server-side; client role claims, `X-Internal-Key`, and
+Agent/MCP mutation remain rejected. A future platform-operations admin requires a
+separate trusted Admin IAM project.
